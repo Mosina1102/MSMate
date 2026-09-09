@@ -1,0 +1,20 @@
+// 调试：extractPaperFormatSpec 的图片资产导出为何为空
+const fs = require('fs')
+const path = require('path')
+const os = require('os')
+const JSZip = require('jszip')
+const office = require('../ai/office.js')
+
+;(async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-'))
+  const z = new JSZip()
+  z.file('[Content_Types].xml', '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="png" ContentType="image/png"/></Types>')
+  z.file('word/media/image1.png', Buffer.from('89504e47', 'hex'))
+  const p = path.join(dir, 't.docx')
+  fs.writeFileSync(p, await z.generateAsync({ type: 'nodebuffer' }))
+  const zz = await JSZip.loadAsync(fs.readFileSync(p))
+  console.log('keys:', Object.keys(zz.files))
+  console.log('media:', Object.keys(zz.files).filter((f) => /^word\/media\//.test(f)))
+  const spec = await office.extractPaperFormatSpec(p, { assetsDir: path.join(dir, 'out') })
+  console.log('images:', spec.images)
+})().catch((e) => console.error('ERR', e.message))

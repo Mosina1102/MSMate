@@ -1,0 +1,23 @@
+node_modules/
+dist/
+out/
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+ai/seed_key.txt
+.trae/
+
+# 打包产物
+release_build_*/
+
+# 运行时数据（用户库 + token 签名密钥，严禁入库）
+api-server/data/
+
+# 中转服务器自签名证书（首次运行自动生成）
+relay/certs/
+relay/*.pem
+
+# 测试临时产物
+test/tmp-*/

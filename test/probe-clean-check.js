@@ -1,0 +1,25 @@
+// 调试：干净产出体检的误报项
+const fs = require('fs')
+const path = require('path')
+const os = require('os')
+const JSZip = require('jszip')
+const office = require('../ai/office.js')
+
+;(async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 's265-'))
+  const W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+  const zt = new JSZip()
+  zt.file('[Content_Types].xml', `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/comments.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"/></Types>`)
+  zt.file('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`)
+  zt.file('word/document.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document ${W}><w:body><w:p><w:r><w:t>摘  要</w:t></w:r></w:p><w:p><w:r><w:t>1.1 研究背景</w:t></w:r><w:commentRangeStart w:id="0"/><w:r><w:t>研究背景示范</w:t></w:r><w:commentRangeEnd w:id="0"/><w:r><w:commentReference w:id="0"/></w:r></w:p><w:p><w:r><w:t>模板正文示范段落。</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr></w:body></w:document>`)
+  zt.file('word/comments.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:comments ${W}><w:comment w:id="0" w:author="教务处" w:date="2026-09-07T10:00:00Z"><w:p><w:r><w:t>二级标题，四号，黑体，固定值20磅</w:t></w:r></w:p></w:comment></w:comments>`)
+  const tpl = path.join(dir, 't.docx')
+  fs.writeFileSync(tpl, await zt.generateAsync({ type: 'nodebuffer' }))
+  const clean = path.join(dir, 'c.docx')
+  await office.createDocx(clean, { title: '干净', noTitle: true, firstLine: true, paragraphs: [{ text: '这是一段足够长的干净正文文字用于体检对照不应触发任何问题。', style: 'normal', font: '宋体' }], fonts: { heading: '黑体', body: '宋体' } })
+  const chk = await office.checkPaperFormat(clean, tpl)
+  console.log('issues:', JSON.stringify(chk.issues, null, 1))
+  const parsed = await office.parseWordFormat(clean)
+  const body = parsed.paragraphs.find((p) => p.role === 'normal' && (p.text || '').length >= 30)
+  console.log('产出正文字段:', JSON.stringify({ run: body.run, para: body.para }))
+})().catch((e) => console.error('ERR', e.message))

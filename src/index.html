@@ -1,0 +1,1183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MSMate - 互联 · AI 电脑助手</title>
+  <script>
+    // 渲染前应用主题：默认执事风（灰阶分层浅色），可选经典白/深色
+    try {
+      var _t = localStorage.getItem('msmate_theme') || 'butler'
+      if (_t !== 'dark') document.documentElement.classList.add('theme-light')
+      if (_t === 'butler') document.documentElement.classList.add('theme-butler')
+    } catch (e) {
+      document.documentElement.classList.add('theme-light')
+      document.documentElement.classList.add('theme-butler')
+    }
+  </script>
+  <link rel="stylesheet" href="styles/main.css">
+</head>
+<body>
+  <!-- 自定义背景层（全局设置 → 外观 里配置，半透明浮于内容之下） -->
+  <div id="appBackground" class="app-bg hidden">
+    <div class="app-bg-img" id="appBgImg"></div>
+    <div class="app-bg-mask" id="appBgMask"></div>
+  </div>
+  <div id="app">
+    <!-- 顶栏 -->
+    <header class="top-bar">
+      <div class="brand">
+        <img class="logo-icon" src="../assets/icon.png" alt="MSMate">
+        <div class="brand-text">
+          <h1>MSMate <span id="appVersion" class="version-tag">v1.0.0</span></h1>
+          <span class="subtitle">互联 · AI 电脑助手</span>
+        </div>
+      </div>
+      <div class="device-info">
+        <div class="local-device-pill" title="本机信息（修改设备名：全局设置 → 设备）">
+          <svg class="ldp-icon" viewBox="0 0 24 24" width="16" height="16"><rect x="2.5" y="4" width="19" height="13" rx="2" stroke="currentColor" stroke-width="1.8" fill="none"/><path d="M8.5 20.5h7M12 17v3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          <div class="ldp-text">
+            <span id="localName" class="ldp-name" title="本机设备名称">...</span>
+            <span id="localIP" class="ldp-ip" title="本机局域网 IP">...</span>
+          </div>
+        </div>
+        <button id="refreshBtn" class="btn btn-ghost btn-sm" title="刷新设备">
+          <span>扫描</span>
+        </button>
+        <button id="showPairCode" class="btn btn-accent btn-sm" title="显示配对码">
+          <span>配对码</span>
+        </button>
+        <button id="globalSettingsBtn" class="btn btn-ghost btn-sm global-settings-btn" title="全局设置（外观 / 互联与传输 / 设备）">
+          <svg viewBox="0 0 24 24" width="15" height="15"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z" stroke="currentColor" stroke-width="1.7" fill="none"/><path d="M19.3 12a7.3 7.3 0 0 0-.1-1.1l2-1.5-2-3.4-2.3.9a7.4 7.4 0 0 0-1.9-1.1L14.6 3h-4l-.4 2.4a7.4 7.4 0 0 0-1.9 1.1l-2.3-.9-2 3.4 2 1.5a7.3 7.3 0 0 0 0 2.2l-2 1.5 2 3.4 2.3-.9a7.4 7.4 0 0 0 1.9 1.1l.4 2.4h4l.4-2.4a7.4 7.4 0 0 0 1.9-1.1l2.3.9 2-3.4-2-1.5c.06-.36.1-.73.1-1.1z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" fill="none"/></svg>
+        </button>
+        <button id="helpBtn" class="btn btn-ghost btn-sm" title="操作手册与功能说明">
+          <span data-icon="circle-help"></span>
+        </button>
+        <div id="pairCodeDisplay" class="pair-code hidden">
+          <span>配对码：</span>
+          <span id="pairCode" class="pair-code-value">------</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- 主体：左侧栏 + 右侧双窗口 -->
+    <main class="main-content">
+      <!-- 左侧栏：设备 + 传输 -->
+      <aside class="sidebar">
+        <!-- 模式切换：互联 ⇄ Work -->
+        <div class="mode-slider-wrap">
+          <div class="mode-slider" id="modeSlider">
+            <button class="mode-opt active" data-mode="link" id="modeLink">互联</button>
+            <button class="mode-opt" data-mode="work" id="modeWork">Work</button>
+          </div>
+        </div>
+
+        <!-- 互联模式：设备 + 传输 -->
+        <div id="linkModeSections" class="link-mode-sections">
+        <!-- 设备列表 -->
+        <div class="sidebar-section devices-section">
+          <div class="sidebar-header">
+            <span class="sidebar-title">设备</span>
+            <span id="deviceCount" class="count-tag">0</span>
+          </div>
+          <div class="manual-connect">
+            <input type="text" id="manualIPInput" class="ip-input" placeholder="输入对方 IP 直连..." />
+            <button class="btn btn-accent btn-xs" id="manualConnectBtn" title="通过 IP 直接连接">
+              <span>连接</span>
+            </button>
+          </div>
+          <div class="relay-row" id="relayRow" title="互联网模式：通过中转服务器连接异地设备">
+            <span class="relay-icon" data-icon="globe"></span>
+            <span class="relay-label">互联网模式</span>
+            <span id="relayStatusTag" class="relay-status off">关闭</span>
+            <button class="btn btn-ghost btn-xs" id="relaySettingsBtn" title="互联网模式设置" data-icon="settings"></button>
+          </div>
+          <div class="relay-row" id="ipv6Row" title="IPv6 直连：双方都有 IPv6 时免服务器直接连接">
+            <span class="relay-icon" data-icon="radio-tower"></span>
+            <span class="relay-label">IPv6 直连</span>
+            <span id="ipv6StatusTag" class="relay-status off">未检测</span>
+            <button class="btn btn-ghost btn-xs" id="ipv6OpenBtn" title="IPv6 直连：交换邀请码">邀请码</button>
+          </div>
+          <div id="deviceList" class="device-list">
+            <div id="deviceItems" class="device-items">
+              <div class="empty-state">
+                <div class="empty-icon" data-icon="radio-tower"></div>
+                <div>正在扫描局域网...</div>
+                <div class="empty-hint">扫不到？输入对方 IP 直连</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 传输中心 -->
+        <div class="sidebar-section transfers-section">
+          <div class="sidebar-header">
+            <div class="tab-group">
+              <button class="tab-btn active" data-tab="active" id="tabActive">进行中</button>
+              <button class="tab-btn" data-tab="history" id="tabHistory">历史</button>
+            </div>
+            <button class="btn btn-ghost btn-xs" id="clearTransfers" title="清空已完成">
+              <span>清空</span>
+            </button>
+          </div>
+          <div class="transfer-list" id="transferList">
+            <div class="empty-state">
+              <div class="empty-icon" data-icon="clipboard"></div>
+              <div>暂无传输任务</div>
+              <div class="empty-hint">右键文件或拖拽到对方面板</div>
+            </div>
+          </div>
+          <div class="transfer-history-list hidden" id="transferHistoryList">
+            <div class="empty-state">
+              <div class="empty-icon" data-icon="file-text"></div>
+              <div>暂无历史记录</div>
+            </div>
+          </div>
+        </div>
+        </div><!-- /linkModeSections -->
+
+        <!-- Work 模式：AI 助手 -->
+        <div id="workSection" class="sidebar-section work-section hidden">
+          <div class="sidebar-header work-header">
+            <div class="work-header-row session-row">
+              <div class="session-bar" id="sessionBar">
+                <button class="session-bar-btn" id="sessionBarBtn" title="切换 / 管理会话（多个会话可同时运行）">
+                  <span class="session-dot hidden" id="sessionRunDot"></span>
+                  <span class="session-bar-title" id="sessionBarTitle">新会话</span>
+                  <span class="session-bar-caret" data-icon="chevron-down"></span>
+                </button>
+                <div class="session-menu hidden" id="sessionMenu">
+                  <div class="session-menu-list" id="sessionMenuList"></div>
+                </div>
+              </div>
+              <button class="btn btn-ghost btn-xs" id="aiNewChatBtn" title="新建会话（多项目可并行推进）" data-icon="plus"></button>
+              <button class="btn btn-ghost btn-xs" id="aiSettingsBtn" title="AI 设置（模型 / API Key）" data-icon="sliders-horizontal"></button>
+            </div>
+          </div>
+          <div class="chat-list" id="chatList">
+            <div class="empty-state">
+              <div class="empty-title">我是 MSMate 助手</div>
+              <div class="empty-hint">让我帮你复制/移动/创建/编辑文件<br>本机和已连接设备都行，试试看喵</div>
+            </div>
+          </div>
+          <div class="chat-input-row">
+            <div class="dl-bar" id="dlBar"></div>
+            <div class="chat-refs" id="chatRefs"></div>
+            <div class="input-meta-row">
+              <div class="gen-menu-wrap">
+                <button class="input-icon-btn" id="chatGenBtn" title="AI 生成：生成图片 / 生成视频（模型可在设置里更换）">
+                  <svg viewBox="0 0 24 24" width="14" height="14"><path d="M11 4l1.7 4.3L17 10l-4.3 1.7L11 16l-1.7-4.3L5 10l4.3-1.7z M18.5 13l.9 2.2 2.1.8-2.1.8-.9 2.2-.9-2.2-2.1-.8 2.1-.8z" fill="currentColor"/></svg>
+                </button>
+                <div class="gen-menu hidden" id="chatGenMenu">
+                  <button class="gen-menu-item" data-mode="image"><span class="gi" data-icon="image"></span><span class="gt">生成图片<i>文生图 · 模型可在设置里更换</i></span></button>
+                  <button class="gen-menu-item" data-mode="video"><span class="gi" data-icon="video"></span><span class="gt">生成视频<i>文生视频 · 耗时数分钟</i></span></button>
+                  <div class="gen-menu-ratio" id="chatGenRatio" title="画幅比例：仅对图片生成生效；不选则默认方图">
+                    <span class="gr-label">比例</span>
+                    <button class="gr-btn active" data-ratio="">默认</button>
+                    <button class="gr-btn" data-ratio="1:1">1:1</button>
+                    <button class="gr-btn" data-ratio="16:9">16:9</button>
+                    <button class="gr-btn" data-ratio="9:16">9:16</button>
+                    <button class="gr-btn" data-ratio="4:3">4:3</button>
+                    <button class="gr-btn" data-ratio="3:4">3:4</button>
+                  </div>
+                  <div class="gen-menu-ratio" id="chatGenCount" title="一次生成张数，不选则从描述自动识别">
+                    <span class="gr-label">张数</span>
+                    <button class="gr-btn active" data-count="">自动</button>
+                    <button class="gr-btn" data-count="1">1张</button>
+                    <button class="gr-btn" data-count="2">2张</button>
+                    <button class="gr-btn" data-count="4">4张</button>
+                  </div>
+                  <div class="gen-menu-ratio" id="chatGenQuality" title="推理步数：越多越清晰、越慢">
+                    <span class="gr-label">质量</span>
+                    <button class="gr-btn active" data-steps="30">低·30</button>
+                    <button class="gr-btn" data-steps="50">中·50</button>
+                    <button class="gr-btn" data-steps="100">高·100</button>
+                    <span class="gr-btn gr-toggle active" id="chatGenPolish" title="发送前先自动扩写成结构化提示词，生图更准（多几秒）"><span data-icon="sparkles"></span>润色</span>
+                  </div>
+                </div>
+              </div>
+              <button class="input-icon-btn" id="chatAttachBtn" title="选择文件引用到聊天（也可直接拖进来）">
+                <svg viewBox="0 0 24 24" width="14" height="14"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" fill="none"/></svg>
+              </button>
+              <button class="input-icon-btn voice-btn" id="voiceInputBtn" title="语音输入：点击开始/结束；聊天界面内也可按住 V 说话（松开自动转文字）">
+                <svg viewBox="0 0 24 24" width="14" height="14"><rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor"/><path d="M6 11a6 6 0 0 0 12 0M12 17.5V21" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
+              </button>
+              <select id="chatModelQuick" class="model-quick-select" title="主模型快捷切换（清单在 设置 → AI设置 → 我的常用模型 里维护）"></select>
+              <button class="approval-switch manual" id="aiApprovalTag" title="点击切换审批模式：手动批准=每个风险操作都要确认；自动信任=全自动（C盘除桌面仍需确认）">
+                <span class="as-label">手动批准</span>
+                <span class="as-track"><span class="as-knob"></span></span>
+              </button>
+            </div>
+            <textarea id="chatInput" class="chat-input" rows="2" placeholder="让 AI 帮你干活…（Enter 发送，拖文件进来可引用）"></textarea>
+            <button class="chat-send" id="chatSend" title="发送（Enter）">
+              <svg viewBox="0 0 24 24" width="20" height="20"><path d="M12 19V5M5 12l7-7 7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- 账号（两种模式都显示，钉在侧栏底部） -->
+        <div class="account-row" id="accountRow" title="账号：登录后可使用云同步、远程等在线能力">
+          <span class="account-avatar" id="accountAvatar" data-icon="user"></span>
+          <div class="account-text">
+            <span class="account-name" id="accountName">未登录</span>
+            <span class="account-sub" id="accountSub">点击登录 / 注册</span>
+          </div>
+        </div>
+      </aside>
+
+      <!-- 拖拽分割条：侧栏 | 工作台（仅 Work 模式显示） -->
+      <div class="pane-splitter" id="splitSidebar" title="拖拽调节侧栏宽度"></div>
+
+      <!-- 右侧双窗口 -->
+      <div class="dual-pane">
+        <!-- Work 模式：工作台（标签页 + 内置预览/编辑器，按会话独立保存） -->
+        <section class="panel workbench-panel hidden" id="workbenchPanel">
+          <div class="wb-tabs-bar">
+            <div class="wb-tabs" id="wbTabs"></div>
+            <div class="wb-tabs-actions">
+              <span id="wbCount" class="count-tag">0</span>
+              <button class="btn btn-ghost btn-xs" id="wbNewFileBtn" title="新建文本文件（当前浏览的文件夹，未浏览时在桌面）">
+                <span data-icon="file-plus"></span><span>文件</span>
+              </button>
+              <button class="btn btn-ghost btn-xs" id="wbNewDirBtn" title="新建文件夹（当前浏览的文件夹，未浏览时在桌面）">
+                <span data-icon="folder-plus"></span><span>文件夹</span>
+              </button>
+              <button class="btn btn-ghost btn-xs" id="wbClearBtn" title="清空工作台（不删除文件本身）">
+                <span>清空</span>
+              </button>
+            </div>
+          </div>
+          <div class="wb-view" id="wbView">
+            <div class="wb-view-toolbar hidden" id="wbViewToolbar">
+              <span class="wb-view-icon" id="wbViewIcon" data-icon="file-text"></span>
+              <div class="wb-view-title">
+                <span class="wb-view-name" id="wbViewName"></span>
+                <span class="wb-view-meta" id="wbViewMeta"></span>
+              </div>
+              <div class="wb-view-actions">
+                <button class="btn btn-primary btn-xs hidden" id="wbSaveBtn" title="保存编辑内容 (Ctrl+S)">
+                  <span>保存 (Ctrl+S)</span>
+                </button>
+                <button class="btn btn-ghost btn-xs" id="wbRefBtn" title="引用给 AI 当上下文">
+                  <span>引用 AI</span>
+                </button>
+                <button class="btn btn-ghost btn-xs" id="wbSendOneBtn" title="发送当前文件（本地→对方 / 远程→本机）">
+                  <span>发送</span>
+                </button>
+                <button class="btn btn-ghost btn-xs" id="wbOpenSysBtn" title="用系统默认程序打开（可编辑）">
+                  <span>系统打开</span>
+                </button>
+                <button class="btn btn-ghost btn-xs" id="wbLocateBtn" title="在系统资源管理器中显示当前文件的位置">
+                  <span>资源管理器</span>
+                </button>
+              </div>
+            </div>
+            <div class="wb-view-body" id="wbViewBody">
+              <div class="empty-state">
+                <div class="empty-icon" data-icon="folder-open"></div>
+                <div>工作台还是空的</div>
+                <div class="empty-hint">在右侧资源面板选中文件/文件夹<br>点「加入工作台」或直接拖进来</div>
+              </div>
+            </div>
+          </div>
+          <div class="panel-footer">
+            <div class="file-stats">
+              <span id="wbStats">0 项</span>
+            </div>
+            <div class="footer-actions">
+              <button class="btn btn-accent btn-sm" id="wbSendBtn" title="把工作台内容发给当前连接的设备（远程来源的则下载回本机）">
+                <span>发送对方</span>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 拖拽分割条：工作台 | 资源面板（必须在两者之间，Work 模式下本地/远程面板被搬进资源面板后分割条才贴着它） -->
+        <div class="pane-splitter" id="splitWorkbench" title="拖拽调节工作台宽度"></div>
+
+        <!-- Work 模式：资源面板（本地|远程页签，面板本体从下方两个 section 搬进来复用） -->
+        <section class="panel resource-panel hidden" id="resourcePanel">
+          <div class="res-tabs">
+            <button class="res-tab active" data-rtab="local" id="resTabLocal">本地</button>
+            <button class="res-tab" data-rtab="remote" id="resTabRemote">远程</button>
+            <span class="res-tab-hint" id="resTabHint">选中文件后点「加入工作台」收进左侧</span>
+          </div>
+          <div class="res-body">
+            <div class="res-tab-body active" data-rtab="local" id="resLocalHome"></div>
+            <div class="res-tab-body hidden" data-rtab="remote" id="resRemoteHome"></div>
+          </div>
+        </section>
+
+        <!-- 本地窗口 -->
+        <section class="panel local-panel">
+          <div class="panel-header">
+            <div class="panel-title">
+              <span class="panel-icon" data-icon="laptop"></span>
+              <span>我的电脑</span>
+            </div>
+            <div class="panel-actions">
+              <button class="btn btn-ghost btn-xs wb-add-btn" id="localAddToWb" title="把选中的文件/文件夹加入工作台">
+                <span data-icon="folder-input"></span>
+              </button>
+              <button class="btn btn-ghost btn-xs" id="localUp" title="上级目录">
+                <span data-icon="arrow-up-left"></span>
+              </button>
+              <input type="text" id="localPath" class="path-input" readonly>
+            </div>
+          </div>
+          <div class="toolbar">
+            <input type="text" id="localSearch" class="search-input" placeholder="搜索当前目录..." />
+            <select id="localSort" class="sort-select" title="排序方式">
+              <option value="date-asc" selected>修改时间 ↑</option>
+              <option value="name-asc">名称 ↑</option>
+              <option value="name-desc">名称 ↓</option>
+              <option value="size-desc">大小 ↓</option>
+              <option value="size-asc">大小 ↑</option>
+              <option value="date-desc">修改时间 ↓</option>
+            </select>
+          </div>
+          <div class="file-list" id="localFileList">
+            <div class="empty-state">
+              <div class="empty-icon" data-icon="folder-open"></div>
+              <div>请选择本地目录</div>
+            </div>
+          </div>
+          <div class="panel-footer">
+            <div class="file-stats">
+              <span id="localFileCount">0</span> 项
+              <span id="localSelectedCount" class="selected-count hidden"></span>
+            </div>
+            <div class="disk-space" id="localDiskSpace"></div>
+            <div class="footer-actions">
+              <button class="btn btn-accent btn-sm hidden" id="localBatchUpload" title="上传选中的文件到远程">
+                <span>上传选中</span>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 远程窗口 -->
+        <section class="panel remote-panel">
+          <div class="panel-header">
+            <div class="panel-title">
+              <span class="panel-icon" data-icon="globe"></span>
+              <span>远程设备</span>
+            </div>
+            <div class="panel-actions">
+              <button class="btn btn-ghost btn-xs wb-add-btn" id="remoteAddToWb" title="把选中的文件/文件夹加入工作台">
+                <span data-icon="folder-input"></span>
+              </button>
+              <button class="btn btn-accent btn-xs ptt-btn" id="pttBtn" title="按住对当前设备喊话，右键设置热键" disabled>
+                <span data-icon="mic"></span><span>对讲</span>
+              </button>
+              <button class="btn btn-ghost btn-xs" id="remoteUp" title="上级目录" disabled>
+                <span data-icon="arrow-up-left"></span>
+              </button>
+              <input type="text" id="remotePath" class="path-input" readonly disabled>
+            </div>
+          </div>
+          <div class="remote-content">
+            <div class="remote-file-view hidden" id="remoteFileView">
+              <div class="toolbar">
+                <input type="text" id="remoteSearch" class="search-input" placeholder="搜索当前目录..." />
+                <select id="remoteSort" class="sort-select" title="排序方式">
+                  <option value="date-asc" selected>修改时间 ↑</option>
+                  <option value="name-asc">名称 ↑</option>
+                  <option value="name-desc">名称 ↓</option>
+                  <option value="size-desc">大小 ↓</option>
+                  <option value="size-asc">大小 ↑</option>
+                  <option value="date-desc">修改时间 ↓</option>
+                </select>
+              </div>
+              <div class="file-list" id="remoteFileList">
+                <div class="empty-state">
+                  <div class="empty-icon" data-icon="folder-open"></div>
+                  <div>连接设备以浏览文件</div>
+                </div>
+              </div>
+            </div>
+            <div class="not-connected-hint" id="notConnectedHint">
+              <div class="empty-icon" data-icon="link"></div>
+              <div>未连接远程设备</div>
+              <div class="empty-hint">从左侧设备列表点击连接</div>
+            </div>
+          </div>
+          <div class="panel-footer">
+            <div class="file-stats">
+              <span id="remoteFileCount">0</span> 项
+              <span id="remoteSelectedCount" class="selected-count hidden"></span>
+            </div>
+            <div class="disk-space" id="remoteDiskSpace"></div>
+            <div class="footer-actions">
+              <button class="btn btn-accent btn-sm hidden" id="remoteBatchDownload" title="下载选中的文件到本地">
+                <span>下载选中</span>
+              </button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <!-- 底栏 -->
+    <footer class="bottom-bar">
+      <div class="status-indicator">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">就绪</span>
+      </div>
+      <div class="quick-actions">
+        <button class="btn btn-ghost btn-sm" id="selectLocalFolder">
+          <span>打开目录</span>
+        </button>
+        <button class="btn btn-ghost btn-sm" id="selectFiles">
+          <span>选择文件上传</span>
+        </button>
+      </div>
+      <div class="download-dir-section">
+        <button class="btn btn-ghost btn-sm" id="changeDownloadDir" title="更改下载保存目录（当前显示的是目录名）">
+          <span>下载位置：</span>
+          <span id="downloadDirDisplay" class="download-dir-name">下载</span>
+        </button>
+        <button class="btn btn-ghost btn-sm" id="openDownloadDir" title="在资源管理器中打开下载文件夹">
+          <span>打开文件夹</span>
+        </button>
+      </div>
+    </footer>
+
+    <!-- 快捷键说明见操作手册「快捷键」节 -->
+  </div>
+
+    <!-- 对讲机喊话提示条 -->
+    <div id="pttIncomingBar" class="ptt-incoming hidden">
+      <span class="ptt-pulse"></span>
+      <span data-icon="volume-2"></span> <span id="pttIncomingName">对方</span> 正在喊话…
+    </div>
+
+    <!-- 对讲机设置弹窗 -->
+    <div class="modal-overlay hidden" id="pttModal">
+      <div class="modal">
+        <div class="modal-header">
+          <h3><span data-icon="mic"></span>对讲机设置</h3>
+        </div>
+        <div class="modal-body">
+          <div class="pair-code-input">
+            <label>全局热键（按住喊话；任意单键或组合键均可，如右Ctrl、V、F1、Ctrl+Alt+V）：</label>
+            <input type="text" id="pttHotkeyInput" class="ptt-hotkey-input" readonly placeholder="点击此处，然后按下想要的按键或组合键">
+          </div>
+          <div class="pair-code-input">
+            <label>对讲音量（接收方，超 100% 会放大但可能轻微破音）：</label>
+            <div class="ptt-volume-row">
+              <input type="range" id="pttVolumeSlider" min="0" max="200" step="5" value="100">
+              <span id="pttVolumeLabel" class="ptt-volume-label">100%</span>
+            </div>
+          </div>
+          <div class="ptt-modal-actions">
+            <button class="btn btn-ghost btn-xs" id="pttClearHotkey">清空热键（仅用按钮）</button>
+          </div>
+          <p class="ptt-hint">按住热键或远程面板的「对讲」按钮即可向当前浏览的设备喊话，松开结束。</p>
+          <details class="help-more">
+            <summary>了解更多</summary>
+            <p>喊话时本端会自动静音对方声音（半双工防回声），外放也能用，佩戴耳机效果更佳。</p>
+            <p>热键系统级全局生效，可能与游戏、录屏等软件的快捷键冲突，可在上方更换。</p>
+          </details>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="pttCancel">取消</button>
+          <button class="btn btn-primary" id="pttSave">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- IPv6 直连弹窗 -->
+    <div class="modal-overlay hidden" id="ipv6Modal">
+      <div class="modal">
+        <div class="modal-header">
+          <h3><span data-icon="radio-tower"></span>IPv6 直连</h3>
+        </div>
+        <div class="modal-body">
+          <div class="pair-code-input">
+            <label>我的本机状态：<strong id="ipv6SelfStatus">检测中...</strong></label>
+          </div>
+          <div class="pair-code-input">
+            <label>我的邀请码（复制发给对方）：</label>
+            <textarea id="ipv6MyInvite" class="ipv6-invite-text" rows="3" readonly></textarea>
+            <button class="btn btn-secondary btn-xs" id="ipv6CopyInvite" style="margin-top:6px;">复制我的邀请码</button>
+          </div>
+          <div class="pair-code-input">
+            <label>粘贴对方的邀请码（或 IPv6 地址）：</label>
+            <textarea id="ipv6PeerInvite" class="ipv6-invite-text" rows="3" placeholder="MS6.xxxx... 或 2408:8456:xxxx::xxxx"></textarea>
+            <button class="btn btn-primary btn-xs" id="ipv6ConnectBtn" style="margin-top:6px;">连接对方</button>
+          </div>
+          <p class="ptt-hint">双方都有公网 IPv6 时可免服务器直连（大多数宽带和手机热点已具备）。</p>
+          <details class="help-more">
+            <summary>了解更多</summary>
+            <p>首次连接需照常配对；成功后会记住对方地址，之后在设备列表里点击即可重连。</p>
+            <p>连接失败时：检查 Windows 防火墙是否放行本程序、对方程序是否在运行。</p>
+          </details>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="ipv6Close">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 互联网模式设置弹窗 -->
+    <div class="modal-overlay hidden" id="relayModal">
+      <div class="modal">
+        <div class="modal-header">
+          <h3><span data-icon="globe"></span>互联网模式</h3>
+        </div>
+        <div class="modal-body">
+          <div class="pair-code-input">
+            <label>当前状态：<strong id="relayStatusText">未启用</strong></label>
+          </div>
+          <div class="pair-code-input">
+            <label>中转服务器地址（域名或IP:端口）：</label>
+            <input type="text" id="relayHostInput" placeholder="例如：relay.example.com:9769">
+          </div>
+          <p class="ptt-hint">启用后可与异地的设备互通，全程 TLS 加密；局域网直连不受影响，两边可同时使用。</p>
+          <details class="help-more">
+            <summary>了解更多</summary>
+            <p>首次连接会记录服务器证书指纹，证书变化将拒绝连接（防劫持）；服务器换证书时点下方「重置服务器指纹」。</p>
+            <p>首次连接异地的设备仍需照常配对。</p>
+          </details>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost btn-xs" id="relayResetPin">重置服务器指纹</button>
+          <button class="btn btn-secondary" id="relayCancel">关闭</button>
+          <button class="btn btn-primary" id="relaySave">保存并连接</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 账号弹窗（登录 / 注册 / 已登录信息；游客可用互传全部功能） -->
+    <div class="modal-overlay hidden" id="accountModal">
+      <div class="modal">
+        <div class="modal-header">
+          <h3><span data-icon="circle-user-round"></span>账号</h3>
+        </div>
+        <div class="modal-body">
+          <!-- 未登录：登录 / 注册表单 -->
+          <div id="authForms">
+            <div class="auth-tabs">
+              <button class="auth-tab active" data-authtab="login" id="authTabLogin">登录</button>
+              <button class="auth-tab" data-authtab="register" id="authTabRegister">注册</button>
+            </div>
+            <div class="auth-field">
+              <label>邮箱</label>
+              <input type="email" id="authEmail" placeholder="you@example.com" autocomplete="off">
+            </div>
+            <div class="auth-field hidden" id="authNicknameField">
+              <label>昵称（可选）</label>
+              <input type="text" id="authNickname" placeholder="怎么称呼你" maxlength="32" autocomplete="off">
+            </div>
+            <div class="auth-field">
+              <label>密码</label>
+              <input type="password" id="authPassword" placeholder="至少 8 位" autocomplete="off">
+            </div>
+            <p class="auth-error hidden" id="authError"></p>
+            <p class="ptt-hint">不登录也能用全部互传功能；账号用于云同步、远程等在线能力。</p>
+          </div>
+          <!-- 已登录：资料卡 -->
+          <div id="authProfile" class="auth-profile hidden">
+            <div class="auth-avatar-big" id="authProfileAvatar">M</div>
+            <div class="auth-profile-info">
+              <div class="auth-profile-name" id="authProfileName">-</div>
+              <div class="auth-profile-email" id="authProfileEmail">-</div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost btn-xs" id="authCancel">关闭</button>
+          <button class="btn btn-secondary hidden" id="authLogout"><span data-icon="log-out"></span><span>退出登录</span></button>
+          <button class="btn btn-primary" id="authSubmit">登录</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 配对弹窗（发起方输码；被连方通过右下角通知+顶栏显示配对码，不弹挡屏弹窗） -->
+    <div class="modal-overlay hidden" id="pairRequestModal">
+      <div class="modal">
+        <div class="modal-header">
+          <h3 id="pairModalTitle">配对验证</h3>
+        </div>
+        <div class="modal-body">
+          <div id="pairRequesterView">
+            <p>连接 <strong id="pairTargetName">未知</strong> 需要配对验证</p>
+            <div class="pair-code-input">
+              <label>请输入对方屏幕上显示的 6 位配对码：</label>
+              <input type="text" id="pairCodeInput" placeholder="6位数字" maxlength="6" inputmode="numeric">
+            </div>
+            <p class="ptt-hint" id="pairRequesterHint"></p>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="pairReject">取消</button>
+          <button class="btn btn-primary" id="pairSubmitCode">确认配对</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 重命名弹窗 -->
+    <div class="modal-overlay hidden" id="renameModal">
+      <div class="modal">
+        <div class="modal-header">
+          <h3 id="renameTitle">重命名</h3>
+        </div>
+        <div class="modal-body">
+          <div class="pair-code-input">
+            <label id="renameLabel">新名称：</label>
+            <input type="text" id="renameInput" placeholder="输入新名称">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="renameCancel">取消</button>
+          <button class="btn btn-primary" id="renameConfirm">确定</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 操作手册弹窗 -->
+    <div class="modal-overlay hidden" id="helpModal">
+      <div class="modal modal-lg">
+        <div class="modal-header">
+          <h3><span data-icon="book-open"></span>操作手册与功能说明</h3>
+        </div>
+        <div class="modal-body help-content">
+          <div class="help-section">
+            <h4><span data-icon="link"></span>连接设备</h4>
+            <ul>
+              <li>程序启动后会自动扫描局域网内的设备，左侧"设备"列表会显示发现的设备。</li>
+              <li>点击设备即可发起连接；首次连接需输入对方显示的<strong>配对码</strong>（点击顶栏"配对码"查看本机配对码）。</li>
+              <li>扫不到设备时，可在输入框填写对方 IP 直接连接。</li>
+              <li><strong>支持同时连接多台设备</strong>：新设备连入不会打断当前浏览，点击设备列表中"已连接·切换"可切换浏览的设备；当前设备显示"浏览中"，点击它可断开。</li>
+              <li>连接断开后会自动重连，无需手动操作。</li>
+            </ul>
+          </div>
+          <div class="help-section">
+            <h4><span data-icon="folder-open"></span>浏览文件</h4>
+            <ul>
+              <li>左侧"我的电脑"面板浏览本机文件，右侧"远程设备"面板浏览对方文件。</li>
+              <li>根目录下提供 <strong><span data-icon="monitor"></span> 桌面</strong> 快捷入口，与 C/D/E 盘同级，可快速进入桌面。</li>
+              <li>双击文件夹进入，双击本地文件用系统默认程序打开。</li>
+              <li>顶部"上级"按钮或 <strong>⌫</strong> 键返回上一级。</li>
+              <li>工具栏可搜索当前目录、按名称/大小/时间排序（默认按修改时间升序，新文件在最下面）。</li>
+              <li>面板底部状态栏显示当前磁盘的<strong>已用/总计/可用空间</strong>，方便决策传输大文件。</li>
+            </ul>
+          </div>
+          <div class="help-section">
+            <h4><span data-icon="send"></span>传输文件</h4>
+            <ul>
+              <li><strong>右键</strong>文件 → "上传到远程" / "下载到本地"。</li>
+              <li><strong>拖拽</strong>本地文件到右侧远程面板即可上传；拖拽远程文件到左侧本地面板即可下载。</li>
+              <li>按住 <strong>Shift+拖拽</strong> 本地文件可拖出到系统桌面/资源管理器。</li>
+              <li><strong>拖拽远程文件到窗口外</strong>（桌面/资源管理器）可直接下载到本机桌面。</li>
+              <li>支持多选（Ctrl/Shift+点击）后批量上传/下载，支持文件夹递归传输。</li>
+              <li>传输进度实时显示在左侧"进行中"列表，对方传给你的文件也会显示接收进度。</li>
+            </ul>
+          </div>
+          <div class="help-section">
+            <h4><span data-icon="square-pen"></span>编辑与新建</h4>
+            <ul>
+              <li><strong>远程编辑</strong>：右键远程文件 → "远程编辑"，文件会下载到本地用默认程序打开，保存后自动回传。</li>
+              <li>在空白处<strong>右键</strong>可新建文件夹、文本文档、Word、Excel、PPT，新建时可先输入文件名。</li>
+              <li>右键文件 → "重命名 (F2)" 或选中后按 F2 重命名，默认选中文件名部分（不含扩展名），按 <strong>Enter</strong> 确认、<strong>Esc</strong> 取消。</li>
+            </ul>
+          </div>
+          <div class="help-section">
+            <h4><span data-icon="clipboard"></span>复制 / 剪切 / 粘贴</h4>
+            <ul>
+              <li><strong>Ctrl+C</strong> 复制选中文件，<strong>Ctrl+X</strong> 剪切，<strong>Ctrl+V</strong> 粘贴到当前目录。</li>
+              <li>也可右键文件 → "复制/剪切"，在目标目录空白处右键 → "粘贴"。</li>
+              <li>同设备粘贴=复制/移动文件；跨设备粘贴=上传/下载，剪切=传输完成后删除源文件。</li>
+              <li>支持远程设备内复制/剪切整理文件，如在远程把文件从一个文件夹移到另一个。</li>
+            </ul>
+          </div>
+          <div class="help-section">
+            <h4><span data-icon="trash-2"></span>删除与同步</h4>
+            <ul>
+              <li>右键文件 → "删除 (Del)"，或选中后按 Del 键删除。</li>
+              <li>删除对方设备上的文件时，对方会收到通知并自动刷新文件列表。</li>
+              <li>对方删除你设备上的文件时，本机列表也会自动刷新。</li>
+            </ul>
+          </div>
+          <div class="help-section">
+            <h4><span data-icon="laptop"></span>设备备注与改名</h4>
+            <ul>
+              <li>点击顶栏本机名称旁的 <strong><span data-icon="square-pen"></span></strong> 按钮可修改本机设备名称，改名后对方会同步看到新名称。</li>
+              <li><strong>右键</strong>设备列表中的设备可添加/修改备注，备注仅本机可见，方便区分设备。</li>
+            </ul>
+          </div>
+          <div class="help-section">
+            <h4><span data-icon="keyboard"></span>快捷键</h4>
+            <ul>
+              <li><strong>Ctrl+A</strong> 全选 · <strong>Del</strong> 删除 · <strong>F2</strong> 重命名</li>
+              <li><strong>⌫</strong> 上级目录 · <strong>F5</strong> 刷新 · <strong>Esc</strong> 取消选择</li>
+              <li><strong>Ctrl/Shift+点击</strong> 多选 · <strong>右键/拖拽</strong> 传输 · <strong>Shift+拖出</strong> 导出到系统</li>
+            </ul>
+          </div>
+          <div class="help-section">
+            <h4><span data-icon="mic"></span>对讲机</h4>
+            <ul>
+              <li>连接设备后，点击右侧远程面板的 <strong>「对讲」</strong> 按钮并按住不放，即可向对方实时喊话，松开结束。</li>
+              <li>支持 <strong>全局热键</strong>（默认 Ctrl+Alt+V），<strong>任意单键或组合键</strong>均可（如右Ctrl、V、F1，在设置里按下松开即可）；注意单键热键全局生效，打字也会触发。右键「对讲」按钮可自定义。</li>
+              <li>对方喊话时会自动外放并显示提示条，无需接听。已内置<strong>半双工防回声</strong>：喊话时自动静音本端接收，外放（不戴耳机）也不会产生回音啸叫。</li>
+              <li>双端固定 48000Hz 采样率传输，不会因系统音量/设备格式调整出现慢放卡顿。</li>
+              <li>对讲功能需要双方都升级到支持该功能的版本。</li>
+            </ul>
+          </div>
+          <div class="help-section">
+            <h4><span data-icon="bell"></span>通知</h4>
+            <ul>
+              <li>接收/发送文件、远程编辑、新建文件时均有通知。</li>
+              <li>窗口可见时显示界面提示；最小化到托盘时显示系统通知，点击可打开对应文件。</li>
+              <li>关闭窗口不会退出程序，而是隐藏到系统托盘继续运行。</li>
+            </ul>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-primary" id="helpClose">知道了</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 设备右键菜单 -->
+    <div id="device-context-menu" class="context-menu hidden">
+      <div class="menu-item" data-action="device-remark"><span data-icon="file-pen"></span> 添加/修改备注</div>
+      <div class="menu-item" data-action="device-clear-remark"><span data-icon="trash-2"></span> 清除备注</div>
+    </div>
+
+    <!-- AI 设置弹窗（左侧导航 + 分组面板） -->
+    <div class="modal-overlay hidden" id="aiSettingsModal">
+      <div class="modal ai-settings-modal">
+        <div class="modal-header">
+          <h3>AI 设置</h3>
+        </div>
+        <div class="ai-settings-layout">
+          <div class="ai-settings-nav">
+            <button class="ai-nav-item active" data-pane="model">模型服务</button>
+            <button class="ai-nav-item" data-pane="chat">对话偏好</button>
+            <button class="ai-nav-item" data-pane="rules">规则与记忆</button>
+            <button class="ai-nav-item" data-pane="data">数据同步</button>
+          </div>
+          <div class="ai-settings-panes">
+            <div class="ai-pane active" data-pane="model">
+              <div class="pair-code-input">
+                <label>服务商：</label>
+                <select id="aiProviderSelect" class="sort-select">
+                  <option value="siliconflow">硅基流动</option>
+                  <option value="deepseek">DeepSeek 官方</option>
+                  <option value="zhipu">智谱 GLM</option>
+                  <option value="openrouter">OpenRouter</option>
+                  <option value="custom">自定义（OpenAI 兼容）</option>
+                </select>
+              </div>
+              <div class="pair-code-input" id="aiBaseUrlRow">
+                <label>接口地址：</label>
+                <input type="text" id="aiBaseUrlInput" placeholder="https://api.xxx.com/v1" autocomplete="off">
+              </div>
+              <div class="pair-code-input">
+                <label>API Key：</label>
+                <input type="password" id="aiApiKeyInput" placeholder="未设置" autocomplete="off">
+              </div>
+              <div class="pair-code-input" id="aiProviderLibRow">
+                <label>服务商库：</label>
+                <select id="aiProviderLibSelect" class="sort-select"><option value="">已存服务商（空：下面填写后点「存入」）</option></select>
+                <button type="button" id="aiProviderLibDelBtn" class="ai-model-btn" title="删除选中的服务商" data-icon="trash-2"></button>
+              </div>
+              <div class="pair-code-input" id="aiProviderLibEditRow">
+                <label>库名：</label>
+                <input type="text" id="aiProviderLibName" list="aiProviderNamePresets" placeholder="自定义输入 / OpenRouter / DeepSeek官网 / 硅基流动" autocomplete="off" style="flex:0 0 150px">
+                <datalist id="aiProviderNamePresets">
+                  <option value="OpenRouter"></option>
+                  <option value="DeepSeek官网"></option>
+                  <option value="硅基流动"></option>
+                </datalist>
+                <input type="text" id="aiProviderLibBaseUrl" placeholder="https://api.xxx.com/v1" autocomplete="off">
+                <input type="password" id="aiProviderLibKey" placeholder="该服务商 API Key" autocomplete="off">
+                <button type="button" id="aiProviderLibSaveBtn" class="ai-model-btn" title="保存/更新到服务商库" data-icon="save"></button>
+              </div>
+              <div class="pair-code-input">
+                <label>模型：</label>
+                <input type="text" id="aiModelInput" placeholder="deepseek-ai/DeepSeek-R1-0528-Qwen3-8B">
+                <datalist id="aiModelPresets"></datalist>
+                <div class="ai-model-row">
+                  <select id="aiMainProviderSelect" class="sort-select ai-provider-pick" title="主模型用的运营商"><option value="">默认</option></select>
+                  <select id="aiModelPresetSelect" class="sort-select ai-model-pick"><option value="">我的常用模型（空：输入后点「添加」）</option></select>
+                  <button type="button" id="aiModelAddBtn" class="ai-model-btn" title="把上面输入框里的模型加进常用" data-icon="plus"></button>
+                  <button type="button" id="aiModelDelBtn" class="ai-model-btn" title="删除选中的常用模型" data-icon="trash-2"></button>
+                </div>
+              </div>
+              <div class="pair-code-input">
+                <label>上下文压缩：</label>
+                <label style="display:flex;align-items:center;gap:6px;flex:1 1 auto;white-space:nowrap">
+                  <input type="checkbox" id="aiCompactToggle">
+                  <span>达上限 80% 自动压缩历史为交接摘要（默认关，仅本地 API 模式，压缩期间暂停模型活动）</span>
+                </label>
+                <input type="text" id="aiContextLimitInput" placeholder="上下文上限 tokens（按模型保存，空=默认 65536）" style="flex:0 0 210px" title="每个模型的上下文容量不同：这里填的数值只对当前主模型生效，换模型各自记各自的">
+              </div>
+              <div class="pair-code-input">
+                <label>识图模型：</label>
+                <input type="text" id="aiVisionModelInput" placeholder="PaddlePaddle/PaddleOCR-VL-1.5（默认，硅基流动免费）">
+                <datalist id="aiVisionModelPresets"></datalist>
+                <div class="ai-model-row">
+                  <select id="aiVisionProviderSelect" class="sort-select ai-provider-pick" title="识图模型用的运营商"><option value="">默认</option></select>
+                  <select id="aiVisionModelPresetSelect" class="sort-select ai-model-pick"><option value="">我的常用识图模型（空：输入后点「添加」）</option></select>
+                  <button type="button" id="aiVisionModelAddBtn" class="ai-model-btn" title="把上面输入框里的识图模型加进常用" data-icon="plus"></button>
+                  <button type="button" id="aiVisionModelDelBtn" class="ai-model-btn" title="删除选中的常用识图模型" data-icon="trash-2"></button>
+                </div>
+              </div>
+              <div class="pair-code-input">
+                <label>语音模型：</label>
+                <input type="text" id="aiVoiceModelInput" placeholder="FunAudioLLM/SenseVoiceSmall（默认，硅基流动）">
+                <datalist id="aiVoiceModelPresets"></datalist>
+                <div class="ai-model-row">
+                  <select id="aiVoiceProviderSelect" class="sort-select ai-provider-pick" title="语音模型用的运营商"><option value="">默认</option></select>
+                  <select id="aiVoiceModelPresetSelect" class="sort-select ai-model-pick"><option value="">我的常用语音模型（空：输入后点「添加」）</option></select>
+                  <button type="button" id="aiVoiceModelAddBtn" class="ai-model-btn" title="把上面输入框里的语音模型加进常用" data-icon="plus"></button>
+                  <button type="button" id="aiVoiceModelDelBtn" class="ai-model-btn" title="删除选中的常用语音模型" data-icon="trash-2"></button>
+                </div>
+              </div>
+              <div class="pair-code-input">
+                <label>生图模型：</label>
+                <input type="text" id="aiImageModelInput" placeholder="Kwai-Kolors/Kolors（默认，硅基流动）">
+                <datalist id="aiImageModelPresets"></datalist>
+                <div class="ai-model-row">
+                  <select id="aiImageProviderSelect" class="sort-select ai-provider-pick" title="生图模型用的运营商"><option value="">默认</option></select>
+                </div>
+              </div>
+              <div class="pair-code-input">
+                <label>图片编辑：</label>
+                <input type="text" id="aiImageEditModelInput" placeholder="Qwen/Qwen-Image-Edit-2509（硅基流动，支持改图/图生图）">
+                <datalist id="aiImageEditModelPresets"></datalist>
+                <div class="ai-model-row">
+                  <select id="aiImageEditProviderSelect" class="sort-select ai-provider-pick" title="图片编辑模型用的运营商"><option value="">默认</option></select>
+                </div>
+              </div>
+              <div class="pair-code-input">
+                <label>视频模型：</label>
+                <input type="text" id="aiVideoModelInput" placeholder="Wan-AI/Wan2.2-T2V-A14B（默认，硅基流动，可能产生费用）">
+                <datalist id="aiVideoModelPresets"></datalist>
+                <div class="ai-model-row">
+                  <select id="aiVideoProviderSelect" class="sort-select ai-provider-pick" title="视频模型用的运营商"><option value="">默认</option></select>
+                </div>
+              </div>
+              <div class="pair-code-input">
+                <label>语音合成：</label>
+                <input type="text" id="aiTtsModelInput" placeholder="FunAudioLLM/CosyVoice2-0.5B（默认，硅基流动，约0.05元/千字符）">
+                <datalist id="aiTtsModelPresets"></datalist>
+                <div class="ai-model-row">
+                  <select id="aiTtsProviderSelect" class="sort-select ai-provider-pick" title="语音合成用的运营商"><option value="">默认</option></select>
+                  <select id="aiTtsVoiceSelect" class="sort-select" title="音色">
+                    <option value="">音色：Alex（沉稳男声）</option>
+                    <option value="FunAudioLLM/CosyVoice2-0.5B:benjamin">Benjamin（磁性男声）</option>
+                    <option value="FunAudioLLM/CosyVoice2-0.5B:charles">Charles（活力男声）</option>
+                    <option value="FunAudioLLM/CosyVoice2-0.5B:david">David（阳光男声）</option>
+                    <option value="FunAudioLLM/CosyVoice2-0.5B:anna">Anna（温柔女声）</option>
+                    <option value="FunAudioLLM/CosyVoice2-0.5B:bella">Bella（甜美女声）</option>
+                    <option value="FunAudioLLM/CosyVoice2-0.5B:claire">Claire（知性女声）</option>
+                    <option value="FunAudioLLM/CosyVoice2-0.5B:diana">Diana（活泼女声）</option>
+                  </select>
+                </div>
+                <div class="ai-model-row">
+                  <input type="text" id="aiTtsTestText" placeholder="试听文本，默认：你好喵，我是 MSMate 的 AI 助手" style="flex:1">
+                  <button type="button" id="aiTtsTestBtn" class="btn btn-sm" data-icon="play"><span>试听</span>/button>
+                </div>
+              </div>
+              <div class="pair-code-input">
+                <label>网页版：</label>
+                <button type="button" id="aiWebDeepseekBtn" class="btn btn-accent btn-sm">启用 DeepSeek（网页版）</button>
+                <button type="button" id="aiWebRulesBtn" class="btn btn-sm" title="网页版对话自动附带 MSM 默认规则 + 大记事本内容">打开大记事本</button>
+              </div>
+              <p class="ptt-hint">内嵌 DeepSeek 官方网页自动对话，用你自己的网页账号和免费额度。</p>
+              <details class="help-more">
+                <summary>了解更多</summary>
+                <p>启用后工作台出现「网页」页签，首次先在网页里登录账号，再在模型清单选「[网页]DeepSeek」发消息。</p>
+                <p>网页改版可能导致自动对话失效（实验性功能）。</p>
+              </details>
+              <p class="ptt-hint">识图模型用于看图，语音模型用于语音转文字，生图/视频模型用于「生成」模式和 AI 自主调用（视频可能产生费用）。</p>
+            </div>
+            <div class="ai-pane" data-pane="chat">
+              <div class="pair-code-input">
+                <label>审批模式：</label>
+                <select id="aiModeSelect" class="sort-select">
+                  <option value="manual">手动批准（每个风险操作都要确认）</option>
+                  <option value="auto">自动信任（C盘除桌面仍需确认）</option>
+                </select>
+              </div>
+              <div class="pair-code-input">
+                <label>主题：</label>
+                <select id="aiThemeSelect" class="sort-select">
+                  <option value="butler">执事风（默认 · 灰阶分层）</option>
+                  <option value="classic">经典白（高对比纯白）</option>
+                  <option value="dark">深色模式</option>
+                </select>
+              </div>
+              <div class="pair-code-input">
+                <label>文件打开方式：</label>
+                <select id="preferOpenSelect" class="sort-select">
+                  <option value="builtin">内置优先（表格/Word 进工作台预览编辑）</option>
+                  <option value="system">系统优先（始终用系统默认程序打开）</option>
+                </select>
+              </div>
+              <p class="ptt-hint">删除/覆盖文件前 AI 会自动备份；聊天记录里任意一条消息可「回到此处」整体还原（含删除 AI 新建的文件）。<br>C 盘（除桌面）是保护区：无论什么模式，动 C 盘都要手动批准。</p>
+              <div class="ai-rules-block">
+                <div class="mem-header-row">
+                  <label><span data-icon="clock"></span> 定时任务（每天到点自动给 AI 派活，应用开着才触发）：</label>
+                  <button class="btn btn-sm" id="aiScheduleAddBtn" data-icon="plus"><span>添加</span>/button>
+                </div>
+                <div class="data-sync-row">
+                  <input type="time" id="aiScheduleTime" class="sort-input" style="width:110px">
+                  <input type="text" id="aiScheduleTask" class="sort-input" placeholder="任务描述，如：整理下载文件夹，按类型归档" style="flex:1" autocomplete="off">
+                  <select id="aiScheduleSession" class="sort-select" style="max-width:130px" title="派给哪个会话"><option value="">默认会话</option></select>
+                </div>
+                <div id="aiScheduleList" class="ai-rules-list"></div>
+              </div>
+            </div>
+            <div class="ai-pane" data-pane="rules">
+              <div class="ai-rules-block">
+                <label>自定义规则（逐条添加，AI 必须遵守）：</label>
+                <div class="rule-add-row">
+                  <input type="text" id="aiRuleNewInput" placeholder="输入一条规则，Enter 或点「添加」" autocomplete="off">
+                  <button class="btn btn-primary" id="aiRuleAddBtn">添加</button>
+                </div>
+                <div id="aiRulesList" class="ai-rules-list"></div>
+              </div>
+              <div class="ai-rules-block">
+                <div class="mem-header-row">
+                  <label>AI 工作台（助理的专属文件区，含记事本与中间成果）：</label>
+                  <span>
+                    <button class="btn btn-sm" id="aiOpenNotesBtn">看记事本</button>
+                    <button class="btn btn-sm" id="aiOpenWorkspaceBtn">打开工作台</button>
+                  </span>
+                </div>
+              </div>
+              <div class="ai-rules-block">
+                <div class="mem-header-row">
+                  <label>AI 长期记忆（AI 自动记录你的偏好，跨会话生效）：</label>
+                  <button class="btn btn-sm" id="aiMemoryClearBtn">清空</button>
+                </div>
+                <div id="aiMemoryList" class="ai-rules-list"></div>
+              </div>
+            </div>
+            <div class="ai-pane" data-pane="data">
+              <div class="ai-rules-block">
+                <label>把设置、规则、长期记忆、所有会话记录、工作台（含记事本）打包成一个 zip，拷到另一台电脑导入即可无缝续接。</label>
+                <div class="data-sync-row">
+                  <button class="btn btn-primary" id="aiExportDataBtn" data-icon="upload"><span>导出数据</span>/button>
+                  <button class="btn btn-secondary" id="aiImportDataBtn" data-icon="download"><span>导入数据</span>/button>
+                </div>
+              </div>
+              <p class="ptt-hint">典型用法：在家导出 → U盘/局域网互传拷到公司 → 公司导入继续推进。<br>导入会<b>覆盖</b>本机的同名数据（导入前自动备份到快照目录），完成后应用会自动重启生效。</p>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="aiSettingsCancel">取消</button>
+          <button class="btn btn-primary" id="aiSettingsSave">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 全局设置弹窗（外观 / 互联与传输 / 设备 / 关于，样式同 AI 设置） -->
+    <div class="modal-overlay hidden" id="globalSettingsModal">
+      <div class="modal ai-settings-modal">
+        <div class="modal-header">
+          <h3>全局设置</h3>
+        </div>
+        <div class="ai-settings-layout">
+          <div class="ai-settings-nav">
+            <button class="gs-nav-item active" data-pane="appearance">外观</button>
+            <button class="gs-nav-item" data-pane="link">互联与传输</button>
+            <button class="gs-nav-item" data-pane="device">设备</button>
+            <button class="gs-nav-item" data-pane="about">关于</button>
+          </div>
+          <div class="ai-settings-panes">
+            <!-- 外观 -->
+            <div class="ai-pane active" data-pane="appearance">
+              <div class="pair-code-input">
+                <label>主题：</label>
+                <select id="gsThemeSelect" class="sort-select">
+                  <option value="butler">执事风（默认 · 灰阶分层）</option>
+                  <option value="classic">经典白（高对比纯白）</option>
+                  <option value="dark">深色模式</option>
+                </select>
+              </div>
+              <div class="ai-rules-block">
+                <label>自定义背景（图片 / GIF 动图 / 视频，半透明图层铺在界面底层）：</label>
+                <div class="gs-bg-row">
+                  <div class="gs-bg-thumb" id="gsBgThumb"><span class="gs-bg-thumb-empty">未设置</span></div>
+                  <div class="gs-bg-actions">
+                    <div class="data-sync-row">
+                      <button class="btn btn-primary" id="gsBgPickBtn">选择背景素材</button>
+                      <button class="btn btn-secondary" id="gsBgClearBtn">清除背景</button>
+                    </div>
+                    <p class="ptt-hint">支持 jpg / png / webp / GIF 动图 / mp4 / webm 视频（视频静音循环播放），大图自动压缩；透明度/模糊/缩放滑块对动图视频同样生效。</p>
+                  </div>
+                </div>
+              </div>
+              <div class="gs-slider-row">
+                <label>背景不透明度</label>
+                <input type="range" id="gsBgOpacity" min="10" max="100" step="5" value="100">
+                <span class="gs-slider-val" id="gsBgOpacityVal">100%</span>
+              </div>
+              <div class="gs-slider-row">
+                <label>模糊度</label>
+                <input type="range" id="gsBgBlur" min="0" max="40" step="2" value="0">
+                <span class="gs-slider-val" id="gsBgBlurVal">0px</span>
+              </div>
+              <div class="gs-slider-row">
+                <label>缩放度</label>
+                <input type="range" id="gsBgScale" min="100" max="200" step="5" value="100">
+                <span class="gs-slider-val" id="gsBgScaleVal">100%</span>
+              </div>
+              <div class="gs-slider-row">
+                <label>遮罩暗化</label>
+                <input type="range" id="gsBgMask" min="0" max="60" step="5" value="0">
+                <span class="gs-slider-val" id="gsBgMaskVal">0%</span>
+              </div>
+              <div class="gs-slider-row">
+                <label>面板透明度</label>
+                <input type="range" id="gsPanelAlpha" min="50" max="100" step="5" value="85">
+                <span class="gs-slider-val" id="gsPanelAlphaVal">85%</span>
+              </div>
+              <p class="ptt-hint">缩放度配合模糊使用可避免图片边缘发虚；面板透明度越低，背景透出越明显。滑块改动即时生效，点「保存」永久记住。</p>
+            </div>
+            <!-- 互联与传输 -->
+            <div class="ai-pane" data-pane="link">
+              <div class="pair-code-input">
+                <label>默认下载目录：</label>
+                <input type="text" id="gsDownloadDirInput" placeholder="未设置（默认系统下载文件夹）" readonly>
+                <button class="btn btn-primary" id="gsDownloadDirBtn">选择</button>
+              </div>
+              <div class="pair-code-input">
+                <label>设备扫描频率：</label>
+                <select id="gsScanInterval" class="sort-select">
+                  <option value="5000">节能（5 秒一播，流量最小）</option>
+                  <option value="3000">标准（3 秒一播，默认）</option>
+                  <option value="1000">迅捷（1 秒一播，设备上线发现更快）</option>
+                </select>
+              </div>
+              <div class="pair-code-input">
+                <label>启动页面：</label>
+                <select id="gsStartupMode" class="sort-select">
+                  <option value="last">跟随上次（记住最后使用的模式）</option>
+                  <option value="link">互联（文件传输）</option>
+                  <option value="work">Work（AI 助手）</option>
+                </select>
+              </div>
+              <div class="pair-code-input">
+                <label>开机自启动：</label>
+                <select id="gsAutoStart" class="sort-select">
+                  <option value="off">关闭（默认）</option>
+                  <option value="on">开启（开机自动启动 MSMate）</option>
+                </select>
+              </div>
+              <p class="ptt-hint">默认下载目录决定「下载到」按钮的目标位置；扫描频率是局域网设备广播间隔，日常用标准即可；开机自启动写入系统注册表（HKCU Run），对其他软件无影响。</p>
+            </div>
+            <!-- 设备 -->
+            <div class="ai-pane" data-pane="device">
+              <div class="pair-code-input">
+                <label>本机设备名：</label>
+                <input type="text" id="gsDeviceNameInput" placeholder="输入设备名称" autocomplete="off">
+                <button class="btn btn-primary" id="gsDeviceNameSaveBtn">保存</button>
+              </div>
+              <div class="pair-code-input">
+                <label>本机 IP：</label>
+                <input type="text" id="gsDeviceIPText" readonly>
+              </div>
+              <p class="ptt-hint">设备名会同步展示给所有已连接设备；IP 由系统分配，自动检测。</p>
+            </div>
+            <!-- 关于 -->
+            <div class="ai-pane" data-pane="about">
+              <div class="gs-about-row">
+                <img class="logo-icon" src="../assets/icon.png" alt="MSMate">
+                <div>
+                  <div class="gs-about-name">MSMate <span id="gsAppVersion" class="version-tag"></span></div>
+                  <div class="gs-about-sub">互联 · AI 电脑助手</div>
+                </div>
+              </div>
+              <div class="data-sync-row">
+                <button class="btn btn-secondary" id="gsHelpBtn">操作手册</button>
+                <button class="btn btn-sm" id="checkUpdateBtn">检查更新</button>
+              </div>
+              <div id="updateResultText" class="ai-rules-list" style="margin-top:8px"></div>
+              <p class="ptt-hint">局域网 / 互联网 / IPv6 多通道互传，内置 AI 工作台：让文件在设备间流动，让 AI 把活干完。有问题先看操作手册。</p>
+              <div class="gs-about-foot">© 2026 Mosina · MSMate</div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="gsSettingsCancel">取消</button>
+          <button class="btn btn-primary" id="gsSettingsSave">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 快照缓存槽弹窗 -->
+    <div class="modal-overlay hidden" id="snapshotsModal">
+      <div class="modal modal-lg">
+        <div class="modal-header">
+          <h3><span data-icon="archive"></span>快照缓存槽</h3>
+        </div>
+        <div class="modal-body">
+          <div id="snapshotList" class="snapshot-list">
+            <div class="empty-state">
+              <div class="empty-icon" data-icon="archive"></div>
+              <div>暂无快照</div>
+              <div class="empty-hint">AI 删除/覆盖文件前会自动备份到这里</div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="snapshotsClose">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="toast hidden"></div>
+
+    <!-- 启动更新提示条（v2.4.98：启动后静默检查，仅发现新版本时出现；v2.5.0：下载进度条 + 立即重启安装） -->
+    <div id="updateBanner" class="update-banner hidden">
+      <span class="update-banner-text" id="updateBannerText"></span>
+      <div id="updateBannerBar" class="update-banner-bar hidden"><div id="updateBannerFill" class="update-banner-fill"></div></div>
+      <button type="button" id="updateBannerDownload" class="btn btn-accent btn-sm">去下载</button>
+      <button type="button" id="updateBannerInstall" class="btn btn-accent btn-sm hidden">立即重启更新</button>
+      <button type="button" id="updateBannerClose" class="update-banner-close" title="关闭（退出软件时会自动完成更新）">×</button>
+    </div>
+
+    <!-- 右键菜单 -->
+    <div id="context-menu" class="context-menu hidden">
+      <div class="menu-item" data-action="paste"><span data-icon="clipboard"></span> 粘贴 (Ctrl+V)</div>
+      <div class="menu-separator"></div>
+      <div class="menu-item" data-action="to-workbench"><span data-icon="folder-input"></span> 加入工作台</div>
+      <div class="menu-separator"></div>
+      <div class="menu-item" data-action="new-folder"><span data-icon="folder-plus"></span> 新建文件夹</div>
+      <div class="menu-item" data-action="new-txt"><span data-icon="file-text"></span> 新建文本文档</div>
+      <div class="menu-item" data-action="new-docx"><span data-icon="file-pen"></span> 新建 Word 文档</div>
+      <div class="menu-item" data-action="new-xlsx"><span data-icon="table"></span> 新建 Excel 表格</div>
+      <div class="menu-item" data-action="new-pptx"><span data-icon="presentation"></span> 新建 PPT 演示</div>
+      <div class="menu-separator"></div>
+      <div class="menu-item" data-action="download">下载到本地</div>
+      <div class="menu-item" data-action="edit">远程编辑</div>
+      <div class="menu-item" data-action="upload">上传到远程</div>
+      <div class="menu-separator"></div>
+      <div class="menu-item" data-action="open">打开文件</div>
+      <div class="menu-item" data-action="explorer">在资源管理器中显示</div>
+      <div class="menu-separator"></div>
+      <div class="menu-item" data-action="copy"><span data-icon="clipboard"></span> 复制 (Ctrl+C)</div>
+      <div class="menu-item" data-action="cut"><span data-icon="scissors"></span> 剪切 (Ctrl+X)</div>
+      <div class="menu-item" data-action="rename">重命名 (F2)</div>
+      <div class="menu-item danger" data-action="delete">删除 (Del)</div>
+    </div>
+  </div>
+
+  <script src="js/icons.js"></script>
+  <script src="js/webchat.js"></script>
+  <script src="js/app.js"></script>
+  <script src="js/word-embed.js"></script>
+  <script src="js/word-rich.js"></script>
+  <script src="js/work.js"></script>
+  <script src="js/auth.js"></script>
+</body>
+</html>

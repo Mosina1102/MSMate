@@ -1,0 +1,25 @@
+// 最小复现：threeline 后的文件 scanWordTables 为何为 0
+const fs = require('fs')
+const path = require('path')
+const os = require('os')
+const JSZip = require('jszip')
+const office = require('../ai/office.js')
+
+;(async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'min-'))
+  const doc = path.join(dir, 'doc.docx')
+  await office.createDocx(doc, { title: 'T', noTitle: true, paragraphs: ['| 项目 | 数量 |', '| --- | --- |', '| 导演 | 1 |'], fonts: { heading: '黑体', body: '宋体' } })
+  const z1 = await JSZip.loadAsync(fs.readFileSync(doc))
+  const x1 = await z1.file('word/document.xml').async('string')
+  console.log('套用前 tbl:', (x1.match(/<w:tbl(?:\s[^>]*)?>/g) || []).length)
+  await office.formatWordTable(doc, { index: 1, style: 'threeline', colWidths: [5, 5], eastAsiaFont: '黑体', sizePt: 12, headerBold: true })
+  const z2 = await JSZip.loadAsync(fs.readFileSync(doc))
+  const x2 = await z2.file('word/document.xml').async('string')
+  console.log('套用后 tbl:', (x2.match(/<w:tbl(?:\s[^>]*)?>/g) || []).length)
+  console.log('套用后 tbl 片段:', JSON.stringify(x2.slice(x2.indexOf('<w:tbl'), x2.indexOf('<w:tbl') + 120)))
+  console.log('scanWordTables(套用后):', office.scanWordTables(x2).length)
+  // formatWordTable 内部读的 docXml 与这里 x2 是否一致？
+  const z3 = await JSZip.loadAsync(fs.readFileSync(doc))
+  const x3 = await z3.file('word/document.xml').async('string')
+  console.log('二次读一致:', x2 === x3)
+})().catch((e) => console.error('ERR', e.message))
