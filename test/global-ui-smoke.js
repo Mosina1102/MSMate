@@ -114,9 +114,12 @@ for (const ch of ['auth:get-state', 'auth:register', 'auth:login', 'auth:me', 'a
   ok(preloadjs.includes(`'${ch}'`), `preload.js 桥接 ${ch}`)
 }
 ok(mainjs.includes('101.43.150.46:3210'), '主进程指向 msmate-api 服务地址（IP 直连，备案前域名被拦）')
-ok(mainjs.includes('body: { email, password, nickname, code, agree: \'v1\' }'), 'auth:register 转发邮箱验证码与协议标记（code 不许丢）')
+ok(mainjs.includes('authBodyWithPassword({ email, password, nickname, code, agree: \'v1\' })'), 'auth:register 转发邮箱验证码与协议标记（code 不许丢，v2.7.16 密码走 RSA 加密）')
 ok(preloadjs.includes('authRegister: (email, password, nickname, code)'), 'preload 注册桥把 code 传给主进程（E2E 抓过的丢参 bug）')
-ok(mainjs.includes('body: { email, code, password }'), 'auth:reset 转发验证码与密码')
+ok(mainjs.includes('authBodyWithPassword({ email, code, password })'), 'auth:reset 转发验证码与密码（v2.7.16 密码走 RSA 加密）')
+ok(mainjs.includes("'/v1/auth/pubkey'") && mainjs.includes('RSA_PKCS1_OAEP_PADDING'), 'main.js 应用层加密：拉取服务端 RSA 公钥 + OAEP 加密密码（v2.7.16）')
+ok(mainjs.includes("session.defaultSession.on('will-download'"), 'main.js 接管 will-download（网页下载进度，v2.7.16）')
+ok(mainjs.includes("ipcMain.handle('feedback:submit'") && preloadjs.includes('feedbackSubmit:'), '应用内反馈链路（IPC + preload 桥，v2.7.16）')
 ok(mainjs.includes("getSetting('auth')"), 'token 存 settings.json（auth 键）')
 // 服务端
 const serversrc = fs.readFileSync(path.join(ROOT, 'api-server/server.js'), 'utf8')

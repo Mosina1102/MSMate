@@ -176,7 +176,7 @@ try {
     authAvatar: (dataUrl) => ipcRenderer.invoke('auth:avatar', { dataUrl }),
     // 积分充值（个人收款码 + 凭证批款）
     creditsOrderCreate: (amount) => ipcRenderer.invoke('credits:order-create', { amount }),
-    creditsOrderVoucher: (id, voucher, screenshot) => ipcRenderer.invoke('credits:order-voucher', { id, voucher, screenshot }),
+    creditsOrderVoucher: (id, voucher) => ipcRenderer.invoke('credits:order-voucher', { id, voucher }),
     creditsOrdersMy: () => ipcRenderer.invoke('credits:orders-my'),
     creditsOrderCancel: (id) => ipcRenderer.invoke('credits:order-cancel', { id }),
     creditsBalance: () => ipcRenderer.invoke('credits:balance'),
@@ -190,6 +190,11 @@ try {
     getFriends: () => ipcRenderer.invoke('friends:get'),
     addFriend: (host, name) => ipcRenderer.invoke('friends:add', { host, name }),
     removeFriend: (host) => ipcRenderer.invoke('friends:remove', { host }),
+
+    // v2.7.16：用户反馈（须登录，服务端存档 + ntfy 通知管理员）
+    feedbackSubmit: (type, content, contact) => ipcRenderer.invoke('feedback:submit', { type, content, contact }),
+    // v2.7.16：内置浏览器/网页页签下载进度（will-download 接管，进度浮条）
+    onWbDownloadProgress: (cb) => ipcRenderer.on('wb:download-progress', (_e, meta) => { try { cb(meta) } catch { } }),
 
     // 远程审批被拒/超时（发起方等待框收尾）
     onPairDecision: (callback) => {

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, Notification } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, Notification, session } = require('electron')
 const path = require('path')
 const os = require('os')
 const net = require('net')
@@ -914,7 +914,32 @@ ipcMain.handle('connection:connect', async (event, { deviceId }) => {
 })
 
 ipcMain.handle('connection:connect-by-ip', async (event, { ip }) => {
-  return tcpAgent.connectByIP(ip)
+  const raw = String(ip || '').trim()
+  // v2.7.16：参数三路分发——IPv4/IPv6 走 TCP 直连；设备 ID 走互联网通道：
+  // ① 互联网模式在线 → 中转桥接（relayConnectTo）；② 未在线但已登录 → presence 查对方公网 IP 直连
+  const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(raw) || raw.includes(':')
+  if (isIp) return tcpAgent.connectByIP(raw)
+  if (!raw) return { success: false, error: '请输入 IP 地址或设备 ID' }
+  if (netRelay && netRelay.online) {
+    try {
+      const sock = await netRelay.connectTo(raw)
+      return tcpAgent.adoptSocket(sock, { tempIP: 'via-relay' })
+    } catch (err) {
+      return { success: false, error: `桥接失败: ${err.message}（对方须在线且开启互联网模式）` }
+    }
+  }
+  try {
+    const a = authGetSaved()
+    if (a.token) {
+      const r = await authRequest('/v1/presence', { method: 'GET', token: a.token })
+      if (r.status === 200 && r.data && r.data.ok) {
+        const hit = (r.data.devices || []).find(d => d.deviceId === raw)
+        if (hit && hit.ip) return tcpAgent.connectByIP(hit.ip)
+        return { success: false, error: '对方不在线：需对方登录并打开 MSMate（或改填对方公网 IP）' }
+      }
+    }
+  } catch { }
+  return { success: false, error: '设备 ID 需要互联网模式（设置里开启）或登录后才能解析，也可直接填对方公网 IP' }
 })
 
 // 互联网传输额度查询（渲染层设备列表展示 + 连接前预检）
@@ -2147,10 +2172,47 @@ ipcMain.handle('auth:get-state', () => {
   return { token: a.token || '', user: a.user || null }
 })
 
+// ===== 应用层传输加密（v0.6）：备案前 HTTP 明文链路的过渡防护 =====
+// 首次用到时拉取服务端 RSA 公钥（内存缓存，失败不重试避免每次请求都卡），
+// 密码字段用 RSA-OAEP-SHA256 加密成 passwordEnc；公钥拿不到则回退明文（旧服务端兼容）。
+// 备案过后叠加真 HTTPS，此层保留作纵深防御。
+let AUTH_PUBKEY = ''
+let AUTH_PUBKEY_TRIED = false
+function ensureAuthPubkey() {
+  if (AUTH_PUBKEY || AUTH_PUBKEY_TRIED) return Promise.resolve()
+  AUTH_PUBKEY_TRIED = true
+  return authRequest('/v1/auth/pubkey', { method: 'GET', timeoutMs: 8000 })
+    .then(({ data }) => {
+      if (data && data.ok && data.pubkey) AUTH_PUBKEY = String(data.pubkey)
+    })
+    .catch(() => { })
+}
+function encryptPassword(password) {
+  if (!AUTH_PUBKEY) return null
+  try {
+    return crypto.publicEncrypt(
+      { key: AUTH_PUBKEY, padding: crypto.constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' },
+      Buffer.from(String(password), 'utf8')
+    ).toString('base64')
+  } catch { return null }
+}
+// 组装认证请求体：公钥可用 → passwordEnc（密文）；不可用 → 明文 password（兼容旧服务端）
+async function authBodyWithPassword(base) {
+  await ensureAuthPubkey()
+  const enc = encryptPassword(base.password)
+  if (enc) {
+    const b = Object.assign({}, base, { passwordEnc: enc })
+    delete b.password
+    return b
+  }
+  return base
+}
+
 ipcMain.handle('auth:register', async (event, { email, password, nickname, code }) => {
   try {
     // agree:'v1' = 协议同意记录（渲染层注册表单已强制勾选，服务端存档防扯皮）
-    const r = await authRequest('/v1/auth/register', { method: 'POST', body: { email, password, nickname, code, agree: 'v1' } })
+    const body = await authBodyWithPassword({ email, password, nickname, code, agree: 'v1' })
+    const r = await authRequest('/v1/auth/register', { method: 'POST', body })
     if (r.status === 200 && r.data && r.data.ok) {
       authSave(r.data.token, r.data.user)
       syncKickoff()
@@ -2164,7 +2226,8 @@ ipcMain.handle('auth:register', async (event, { email, password, nickname, code 
 
 ipcMain.handle('auth:login', async (event, { email, password }) => {
   try {
-    const r = await authRequest('/v1/auth/login', { method: 'POST', body: { email, password } })
+    const body = await authBodyWithPassword({ email, password })
+    const r = await authRequest('/v1/auth/login', { method: 'POST', body })
     if (r.status === 200 && r.data && r.data.ok) {
       authSave(r.data.token, r.data.user)
       syncKickoff()
@@ -2239,7 +2302,8 @@ ipcMain.handle('auth:send-code', async (event, { email, scene }) => {
 // 验证码重置密码（服务端会吊销旧 token，返回新 token 直接续登录态）
 ipcMain.handle('auth:reset', async (event, { email, code, password }) => {
   try {
-    const r = await authRequest('/v1/auth/reset', { method: 'POST', body: { email, code, password } })
+    const body = await authBodyWithPassword({ email, code, password })
+    const r = await authRequest('/v1/auth/reset', { method: 'POST', body })
     if (r.status === 200 && r.data && r.data.ok) {
       authSave(r.data.token, r.data.user)
       return { ok: true, user: normalizeUser(r.data.user) }
@@ -2249,6 +2313,47 @@ ipcMain.handle('auth:reset', async (event, { email, code, password }) => {
     return { ok: false, error: `网络错误：${err.message}` }
   }
 })
+
+// v2.7.16：用户反馈提交（须登录；服务端存档 + ntfy 通知管理员，详细问题引导去 GitHub Issues）
+ipcMain.handle('feedback:submit', async (event, { type, content, contact }) => {
+  const a = authGetSaved()
+  if (!a.token) return { ok: false, error: '反馈需要先登录；游客请在 GitHub Issues 反馈' }
+  try {
+    const r = await authRequest('/v1/feedback', {
+      method: 'POST', token: a.token,
+      body: { type, content, contact, appVersion: app.getVersion() }
+    })
+    if (r.status === 200 && r.data && r.data.ok) return { ok: true, seq: r.data.seq }
+    return { ok: false, error: (r.data && r.data.error) || `提交失败（HTTP ${r.status}）` }
+  } catch (err) {
+    return { ok: false, error: `网络错误：${err.message}` }
+  }
+})
+
+// v2.7.16：内置浏览器/网页页签下载进度——接管默认 session 的 will-download，
+// 进度实时推给渲染层浮条（此前下载走 Electron 默认行为，无任何进度提示）
+function setupWebDownload() {
+  session.defaultSession.on('will-download', (event, item, wc) => {
+    const target = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : wc
+    const meta = {
+      id: 'dl' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+      name: item.getFilename(), path: '',
+      received: 0, total: item.getTotalBytes(), state: 'progressing'
+    }
+    item.on('updated', (_e, state) => {
+      meta.state = state
+      meta.received = item.getReceivedBytes()
+      meta.total = item.getTotalBytes()
+      meta.path = item.getSavePath()
+      try { target.send('wb:download-progress', meta) } catch { }
+    })
+    item.once('done', (_e, state) => {
+      meta.state = state // completed | canceled | interrupted
+      meta.path = item.getSavePath()
+      try { target.send('wb:download-progress', meta) } catch { }
+    })
+  })
+}
 
 // 上传头像（渲染层已压成 128x128 base64 dataUrl）
 ipcMain.handle('auth:avatar', async (event, { dataUrl }) => {
@@ -2280,12 +2385,12 @@ ipcMain.handle('credits:order-create', async (event, { amount }) => {
   }
 })
 
-ipcMain.handle('credits:order-voucher', async (event, { id, voucher, screenshot }) => {
+ipcMain.handle('credits:order-voucher', async (event, { id, voucher }) => {
   const a = authGetSaved()
   if (!a.token) return { ok: false, error: '尚未登录' }
   try {
-    const r = await authRequest(`/v1/credits/orders/${encodeURIComponent(id)}/voucher`, { method: 'POST', body: { voucher, screenshot }, token: a.token })
-    if (r.status === 200 && r.data && r.data.ok) return { ok: true, order: r.data.order, auto: !!r.data.auto }
+    const r = await authRequest(`/v1/credits/orders/${encodeURIComponent(id)}/voucher`, { method: 'POST', body: { voucher }, token: a.token })
+    if (r.status === 200 && r.data && r.data.ok) return { ok: true, order: r.data.order }
     return { ok: false, error: (r.data && r.data.error) || `提交失败（HTTP ${r.status}）` }
   } catch (err) {
     return { ok: false, error: `网络错误：${err.message}` }
@@ -3234,6 +3339,9 @@ app.whenReady().then(() => {
     if (as == null) { applyAutoStart(true); setSetting('autoStart', true) }
     else if (as === true) applyAutoStart(true)
   } catch (err) { log(`开机自启同步失败: ${err.message}`) }
+
+  // v2.7.16：内置浏览器/网页页签下载进度——接管 will-download，进度实时推渲染层浮条
+  try { setupWebDownload() } catch (err) { log(`网页下载接管失败: ${err.message}`) }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

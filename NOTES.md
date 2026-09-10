@@ -1,5 +1,16 @@
 # MSMate 任务状态
 
+## 2026-09-10 v2.7.16：传输加密（应用层 RSA）+ 好友设备 ID 修复 + 网页下载进度 + 应用内反馈 + 批款后台 v0.6 大改版
+
+- **应用层传输加密（对应摸底不足清单 #1，备案前过渡方案）**：服务端首启生成 RSA-2048 密钥对（data/rsa-key.json），GET /v1/auth/pubkey 下发公钥；客户端 main.js `authBodyWithPassword()` 把 register/login/reset 的密码字段加密成 passwordEnc（RSA-OAEP-SHA256），服务端 `decryptPassword()` 解密，坏密文 401/400 拒绝；明文 password 兼容旧客户端（过渡期）。备案过后叠加真 HTTPS 此层保留作纵深防御。加密失败不阻断（公钥拿不到回退明文，兼容旧服务端）
+- **服务端写并发加固（#3）**：saveJson 加串行写队列（同文件按序落盘）+ 唯一 tmp 名（原固定 .tmp 有交错撞车风险）；同步读-改-写在单线程内天然原子，队列防未来插 await 的交错写
+- **好友系统收尾（#9）**：实锤修复「填设备 ID 连不上」——connection:connect-by-ip 三路分发：IPv4/IPv6 → TCP 直连；设备 ID + 互联网模式在线 → 中转桥接；设备 ID + 未在线但已登录 → presence 查对方公网 IP 直连；都不可用给明确引导文案。渲染层 word-rich.js 上轮已实现好友列表/添加/删除/连接（本轮核实无需重写）
+- **网页下载进度（#11）**：main.js 接管 `session.defaultSession.on('will-download')`（此前无任何处理 = 静默下载无提示），进度实时推 `wb:download-progress`；渲染层 word-embed.js 右下角进度浮条（多条并列、进度条、完成「打开文件夹」、取消/中断提示、4 秒自动消失、文件名 escAttr 防 XSS）
+- **应用内反馈（#12）**：账号面板加「问题反馈」入口 → 反馈弹窗（类型 bug/idea、内容、可选联系方式）→ POST /v1/feedback（须登录、每用户每小时 5 条限流）→ 服务端存档 feedback.json + ntfy 通知管理员；弹窗内 GitHub Issues 链接引导复杂问题。auth.js 页签遍历限定 #authTabs 作用域（防反馈弹窗 .auth-tab 被误绑）
+- **批款后台 v0.6 大改版**：ADMIN_HTML 重写——侧栏五页签（仪表盘/订单/用户/反馈/在线设备）+ 深色侧栏品牌紫风格（手机横滚页签适配）；仪表盘统计卡（用户/今日新增/今日充值/累计充值/在线设备/未读反馈）；新增接口 /admin/api/stats、/admin/api/users、/admin/api/devices、/admin/api/feedback(+resolve)；新单提醒系统（beep/poll/keepAlive）保留并升级为 stats 轮询
+- **测试**：新增 test/api-v06-test.js 22/22（pubkey/加密注册登录/坏密文拒绝/明文兼容/反馈提交/限流/后台五接口/鉴权）；workbench 1067、global-ui 263（+3 v2.7.16 断言）、anticrawl 25、pptx 22 全绿；admin-html-check 防回归门通过（295 行内嵌 JS）；真机启动零脚本错误
+- **发版**：v2.7.16；服务端 v0.6.0（msmate-api 容器需重建）
+
 ## 2026-09-10 v2.7.15：PPT 三件套（学 MiniMax skills）+ CF 过盾增强 + docx 校验关卡
 
 - **PPT 三件套（create_pptx/read_pptx/edit_pptx）**：office.js 新增 `createPptx/readPptx/editPptx`，新依赖 pptxgenjs@4.0.1（纯 CJS，Electron 22 探针过：test/electron-probe-pptx）。设计系统照搬 MiniMax-AI/skills pptx-generator（MIT）：18 调色板 × 4 风格配方（sharp/soft/rounded/pill）× 5 页型（cover/toc/section/content/summary），页码徽标/fit:shrink 防溢出/正文左对齐/防同布局连用全自动。AI 侧大纲协议：theme/style 头两行 + `---` 分页 + 页型标记；手册 ai/manuals/ppt文档.md。MiniMax 的 .NET/Python 栈（docx/xlsx/pdf skills）依赖带不进 Electron 包，只借鉴思路不引依赖

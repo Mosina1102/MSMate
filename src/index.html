@@ -683,6 +683,11 @@
               <span class="auth-credit-val" id="authCreditVal">0</span>
               <button class="btn btn-primary btn-xs" id="authRechargeBtn">充值</button>
             </div>
+            <div class="auth-credit-row" id="authFeedbackRow">
+              <span class="auth-credit-icon" data-icon="message-square"></span>
+              <span>遇到问题或有建议？</span>
+              <button class="btn btn-secondary btn-xs" id="authFeedbackBtn">问题反馈</button>
+            </div>
           </div>
         </div>
         <div class="modal-footer">
@@ -749,14 +754,6 @@
                 <input type="text" id="creditsVoucher" placeholder="转账单号，10 位数字" maxlength="32" autocomplete="off">
               </div>
             </div>
-            <div class="auth-field">
-              <label>付款截图（可选，附图可 AI 秒批；不传则人工审核）</label>
-              <div class="auth-input-wrap">
-                <span class="auth-input-icon" data-icon="image"></span>
-                <input type="file" id="creditsShot" accept="image/png,image/jpeg,image/webp" style="padding:7px 10px;font-size:12px">
-              </div>
-              <img id="creditsShotPreview" class="hidden" alt="" style="display:none;max-width:100%;max-height:180px;border-radius:8px;margin-top:6px;border:1px solid var(--border)">
-            </div>
             <p class="credits-error hidden" id="creditsPayError"></p>
             <button class="btn btn-primary btn-block" id="creditsSubmitVoucher">我已付款，提交审核</button>
             <button class="btn btn-ghost btn-block" id="creditsBackBtn">返回重选金额</button>
@@ -769,6 +766,46 @@
         </div>
         <div class="modal-footer">
           <button class="btn btn-ghost btn-xs" id="creditsCloseBtn">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 问题反馈弹窗（v2.7.16）：须登录；提交到服务端存档（后台可查）+ GitHub Issues 详细反馈引导 -->
+    <div class="modal-overlay hidden" id="feedbackModal">
+      <div class="modal modal-auth">
+        <button class="modal-x" id="feedbackCloseX" title="关闭">
+          <svg viewBox="0 0 24 24" width="14" height="14"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
+        </button>
+        <div class="auth-brand">
+          <img class="auth-brand-logo" src="../assets/icon.png" alt="MSMate">
+          <h2 class="auth-brand-title">问题反馈</h2>
+          <p class="auth-brand-sub">一句话说清问题或建议，开发者会尽快处理</p>
+        </div>
+        <div class="modal-body">
+          <div class="auth-field">
+            <label>类型</label>
+            <div class="auth-tabs" id="feedbackTypeTabs">
+              <button class="auth-tab active" data-ftype="bug" type="button">遇到问题</button>
+              <button class="auth-tab" data-ftype="idea" type="button">功能建议</button>
+            </div>
+          </div>
+          <div class="auth-field">
+            <label>描述（至少 5 个字）</label>
+            <textarea id="feedbackContent" rows="4" maxlength="2000" placeholder="做了什么操作、期望什么、实际发生了什么…" style="resize:vertical;width:100%;font:inherit;padding:9px 12px;border:1px solid var(--border,#d9d8e6);border-radius:10px;background:transparent;color:inherit"></textarea>
+          </div>
+          <div class="auth-field">
+            <label>联系方式（可选）</label>
+            <div class="auth-input-wrap">
+              <span class="auth-input-icon" data-icon="mail"></span>
+              <input type="text" id="feedbackContact" placeholder="邮箱 / QQ / 微信，方便回访" maxlength="120" autocomplete="off">
+            </div>
+          </div>
+          <p class="auth-error hidden" id="feedbackError"></p>
+          <p class="ptt-hint">复杂问题（带截图/日志）建议到 <a href="#" id="feedbackGithubLink">GitHub Issues</a> 提交，处理更快。</p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost btn-xs" id="feedbackCancel">关闭</button>
+          <button class="btn btn-primary" id="feedbackSubmitBtn">提交反馈</button>
         </div>
       </div>
     </div>

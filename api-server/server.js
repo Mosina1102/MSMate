@@ -1,27 +1,34 @@
-// MSMate API 服务 v0.3 —— 零依赖（Node 内置模块），PM2/Docker 均可跑
+// MSMate API 服务 v0.6 —— 零依赖（Node 内置模块），PM2/Docker 均可跑
 // 接口：
 //   GET  /ping                     健康检查
 //   GET  /v1/latest                客户端检查更新
 //   GET  /v1/myip                  调用者公网 IP（真远程辅助）
+//   GET  /v1/auth/pubkey           RSA 公钥（客户端加密密码用，v0.6）
 //   POST /v1/auth/send-code        发邮箱验证码 {email, scene: register|reset}
-//   POST /v1/auth/register         邮箱注册 {email, password, nickname?, code, agree:'v1'} → {token, user}
-//   POST /v1/auth/login            邮箱登录 {email, password}              → {token, user}
-//   POST /v1/auth/reset            验证码重置密码 {email, code, password}
+//   POST /v1/auth/register         邮箱注册 {email, passwordEnc|password, nickname?, code, agree:'v1'} → {token, user}
+//   POST /v1/auth/login            邮箱登录 {email, passwordEnc|password}              → {token, user}
+//   POST /v1/auth/reset            验证码重置密码 {email, passwordEnc|password, code}
 //   GET  /v1/auth/me               Bearer token 查当前用户                 → {user}
 //   PATCH /v1/auth/profile         改昵称 {nickname}
 //   POST /v1/auth/avatar           上传头像 {dataUrl}（≤200KB base64）
 //   GET  /avatars/<uid>.<ext>      头像静态服务
 //   GET/PUT /v1/sync               云同步 blob（≤5MB，服务端不管结构）
+//   POST /v1/feedback              用户反馈 {type:bug|idea, content, contact?}（须登录，v0.6）
 //   POST /v1/credits/orders        创建充值订单 {amount}（元，1-500，¥1=100积分）
 //   POST /v1/credits/orders/:id/voucher  提交付款凭证 {voucher}
 //   GET  /v1/credits/orders/my     我的订单
 //   GET  /v1/credits/balance       积分余额
 //   POST /admin/api/login          批款后台登录 {key}（密钥在 data/admin.key）
+//   GET  /admin/api/stats          仪表盘统计（v0.6）
 //   GET  /admin/api/orders         订单列表 ?status=
+//   GET  /admin/api/users          用户列表（v0.6）
+//   GET  /admin/api/devices        设备在线记录（v0.6）
+//   GET  /admin/api/feedback       反馈列表 ?filter=open|all（v0.6）
+//   POST /admin/api/feedback/:id/resolve  标记反馈已处理（v0.6）
 //   POST /admin/api/orders/:id/approve | /reject  批款
 //   GET  /admin                    批款后台网页（手机可用）
-// 数据：data/users.json、data/orders.json、data/sync/<uid>.json、
-//       data/avatars/<uid>.<ext>、data/admin.key、data/secret.key
+// 数据：data/users.json、data/orders.json、data/feedback.json、data/presence.json、data/sync/<uid>.json、
+//       data/avatars/<uid>.<ext>、data/admin.key、data/secret.key、data/rsa-key.json
 // 邮件：MSMATE_MAIL=on 且配置 SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS 后发真邮件；
 //       未配置时为 dev 模式——验证码打印到日志并随接口返回 devCode（仅供联调）
 
@@ -99,11 +106,22 @@ function loadJson(file, fallback) {
   return fallback
 }
 
+// v0.6：写串行队列——同文件的写操作按序落盘，唯一 tmp 名防交错撞车。
+// Node 单线程内同步读-改-写天然原子；队列防的是「未来有人在 load→save 之间插 await」的交错写
+const writeQueues = new Map()
 function saveJson(file, obj) {
   ensureDataDir()
-  const tmp = file + '.tmp'
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2))
-  fs.renameSync(tmp, file)
+  const prev = writeQueues.get(file) || Promise.resolve()
+  const run = prev.catch(() => { }).then(() => new Promise((resolve, reject) => {
+    try {
+      const tmp = file + '.tmp-' + process.pid + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6)
+      fs.writeFileSync(tmp, JSON.stringify(obj, null, 2))
+      fs.renameSync(tmp, file)
+      resolve()
+    } catch (e) { reject(e) }
+  }))
+  writeQueues.set(file, run)
+  return run
 }
 
 function loadUsers() {
@@ -434,9 +452,10 @@ function authUser(req) {
 async function handleAuthRegister(req, res, body, ip) {
   if (rateLimited(ip)) return json(res, 429, { ok: false, error: '操作过于频繁，请一分钟后再试' })
   const email = String(body.email || '').trim().toLowerCase()
-  const password = body.password
+  const password = decryptPassword(body)
   const nickname = String(body.nickname || '').trim().slice(0, 32)
   if (!isValidEmail(email)) return json(res, 400, { ok: false, error: '邮箱格式不正确' })
+  if (password == null) return json(res, 400, { ok: false, error: '密码加密数据无效，请更新客户端后重试' })
   if (!isValidPassword(password)) return json(res, 400, { ok: false, error: '密码需要 8-72 位' })
   // 协议同意必须先于验证码校验：未同意直接拒绝，不消耗验证码（防扯皮：注册记录即协议存档）
   if (body.agree !== 'v1') return json(res, 400, { ok: false, error: '请先阅读并勾选同意《MSMate 用户协议》' })
@@ -465,7 +484,8 @@ async function handleAuthRegister(req, res, body, ip) {
 async function handleAuthLogin(req, res, body, ip) {
   if (rateLimited(ip)) return json(res, 429, { ok: false, error: '操作过于频繁，请一分钟后再试' })
   const email = String(body.email || '').trim().toLowerCase()
-  const password = String(body.password || '')
+  const password = decryptPassword(body)
+  if (password == null) return json(res, 401, { ok: false, error: '邮箱或密码错误' })
 
   const db = loadUsers()
   const user = db.users.find(u => u.email === email)
@@ -480,8 +500,9 @@ async function handleAuthLogin(req, res, body, ip) {
 async function handleAuthReset(req, res, body, ip) {
   if (rateLimited(ip)) return json(res, 429, { ok: false, error: '操作过于频繁，请一分钟后再试' })
   const email = String(body.email || '').trim().toLowerCase()
-  const password = body.password
+  const password = decryptPassword(body)
   if (!isValidEmail(email)) return json(res, 400, { ok: false, error: '邮箱格式不正确' })
+  if (password == null) return json(res, 400, { ok: false, error: '密码加密数据无效，请更新客户端后重试' })
   if (!isValidPassword(password)) return json(res, 400, { ok: false, error: '密码需要 8-72 位' })
   if (!checkCode(email, 'reset', body.code)) return json(res, 400, { ok: false, error: '验证码错误或已过期' })
 
@@ -566,105 +587,12 @@ async function handleSyncPut(req, res, body, user) {
 // ─────────────────── 积分充值 ───────────────────
 
 const CREDITS_PER_YUAN = 100
-const SHOT_DIR = path.join(DATA_DIR, 'screenshots')
-const AUTOREVIEW_FILE = path.join(DATA_DIR, 'auto-review.json')
-const FIXED_TIERS = [1, 3, 6, 30, 68, 128]
-const AUTOREVIEW_MODEL = 'PaddlePaddle/PaddleOCR-VL-1.5' // 上游免费 OCR：提取截图文字做规则核验，成本为零
-
-function loadAutoReview() {
-  try {
-    const c = JSON.parse(fs.readFileSync(AUTOREVIEW_FILE, 'utf8'))
-    return { enabled: !!c.enabled, payee: String(c.payee || '').slice(0, 32), maxAuto: Math.min(128, Math.max(1, Math.round(+c.maxAuto || 68))) }
-  } catch { return { enabled: false, payee: '', maxAuto: 68 } }
-}
-function saveAutoReview(cfg) {
-  fs.writeFileSync(AUTOREVIEW_FILE, JSON.stringify({ enabled: !!cfg.enabled, payee: String(cfg.payee || '').trim().slice(0, 32), maxAuto: Math.min(128, Math.max(1, Math.round(+cfg.maxAuto || 68))) }, null, 2))
-}
-
-// 视觉 OCR：PaddleOCR-VL-1.5 走 OpenAI 兼容 chat/completions（image_url base64），返回识别出的全部文字
-// （SF_BASE 支持 http:// ——测试用本地 mock 上游）
-function sfOcrText(imgPath) {
-  return new Promise((resolve, reject) => {
-    const mod = require(SF_BASE.startsWith('https') ? 'https' : 'http')
-    const b64 = fs.readFileSync(imgPath).toString('base64')
-    const payload = JSON.stringify({
-      model: AUTOREVIEW_MODEL,
-      messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,' + b64 } }, { type: 'text', text: '识别并原样输出图片中的全部文字（含金额、收款方、时间等），不要添加任何解释' }] }],
-      max_tokens: 1000, stream: false
-    })
-    const u = new URL(SF_BASE + '/chat/completions')
-    const req = mod.request({ hostname: u.hostname, port: u.port || (SF_BASE.startsWith('https') ? 443 : 80), path: u.pathname + (u.search || ''), method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + SF_API_KEY, 'Content-Length': Buffer.byteLength(payload) }, timeout: 25000 }, (res) => {
-      let raw = ''
-      res.on('data', (c) => { raw += c })
-      res.on('end', () => {
-        try {
-          const j = JSON.parse(raw)
-          const txt = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content
-          if (!txt) throw new Error('OCR 返回为空')
-          resolve(String(txt))
-        } catch (e) { reject(new Error('OCR 解析失败: ' + e.message)) }
-      })
-    })
-    req.on('timeout', () => { req.destroy(new Error('OCR 请求超时')) })
-    req.on('error', reject)
-    req.write(payload)
-    req.end()
-  })
-}
-
-// 自动审核（v0.6）：AI 只当录入员——OCR 提取截图文字，规则核验（金额=订单额/档位内、收款方昵称命中、
-// 未超自动批上限）；全过 → 自动批款 + ntfy 提醒抽查；任一存疑 → 留在人工队列并附疑点。
-// 已知边界：PS 伪造截图防不住（无流水可比对），靠"自动批后 ntfy 抽查 + 大额强制人工"兜底
-async function autoReviewOrder(o) {
-  const cfg = loadAutoReview()
-  const reasons = []
-  if (!cfg.enabled) return
-  if (!o.screenshot) reasons.push('未上传付款截图')
-  if (!cfg.payee) reasons.push('后台未配置收款方昵称')
-  if (!FIXED_TIERS.includes(o.amount)) reasons.push('订单金额不是固定档位')
-  if (o.amount > cfg.maxAuto) reasons.push(`金额超过自动批上限 ¥${cfg.maxAuto}`)
-  if (!reasons.length) {
-    try {
-      const text = (await sfOcrText(path.join(SHOT_DIR, o.screenshot))).replace(/\s+/g, '')
-      const amounts = new Set()
-      for (const m of text.matchAll(/[¥￥]\s*([0-9]+(?:\.[0-9]+)?)/g)) amounts.add(parseFloat(m[1]))
-      const amountOk = amounts.has(o.amount) || amounts.has(Number(o.amount.toFixed(1)))
-      const payeeOk = text.includes(String(cfg.payee).replace(/\s+/g, ''))
-      if (!amountOk) reasons.push('截图中未找到与订单一致的付款金额')
-      if (!payeeOk) reasons.push('截图中未找到收款方昵称')
-    } catch (e) {
-      reasons.push('截图识别失败（' + e.message + '）')
-    }
-  }
-  o.aiReview = { verdict: reasons.length ? 'manual' : 'auto', reasons, at: new Date().toISOString() }
-  o.updatedAt = new Date().toISOString()
-  const udb = loadUsers()
-  const u = udb.users.find(x => x.id === o.uid)
-  if (!reasons.length) {
-    // 自动批款：与 handleAdminApprove 同逻辑
-    o.status = 'done'
-    if (u) u.credits = (u.credits || 0) + o.credits
-    saveOrders(loadOrdersBump(o))
-    saveUsers(udb)
-    notifyAdmin('MSMate 自动批款（请抽查）', `${(u && (u.nickname || u.email)) || '用户'} 的 ¥${o.amount} 订单经截图核验自动到账，请抽空核对收款记录`)
-  } else {
-    saveOrders(loadOrdersBump(o))
-    notifyAdmin('MSMate 待审核充值', `${(u && (u.nickname || u.email)) || '用户'} 提交了 ¥${o.amount} 凭证（AI 存疑：${reasons[0]}），请打开批款后台处理`)
-  }
-}
-// 自动审核结束后把 o 的最新态合并回重载的订单表（防审核期间其他写操作覆盖丢失）
-function loadOrdersBump(o) {
-  const db = loadOrders()
-  const cur = db.orders.find(x => x.id === o.id)
-  if (cur) { cur.status = o.status; cur.aiReview = o.aiReview; cur.updatedAt = o.updatedAt }
-  return db
-}
 
 function orderPublic(o, u) {
   return {
     id: o.id, amount: o.amount, credits: o.credits, status: o.status,
     voucher: o.voucher || '', createdAt: o.createdAt, updatedAt: o.updatedAt,
-    rejectReason: o.rejectReason || '', screenshot: o.screenshot || '', aiReview: o.aiReview || null,
+    rejectReason: o.rejectReason || '',
     nickname: u ? (u.nickname || '') : '', email: u ? u.email : ''
   }
 }
@@ -698,17 +626,6 @@ async function handleOrderCreate(req, res, body, user) {
 async function handleOrderVoucher(req, res, body, user, orderId) {
   const voucher = String(body.voucher || '').trim().slice(0, 32)
   if (voucher.length < 4) return json(res, 400, { ok: false, error: '请填写付款凭证号（微信账单里的转账单号）' })
-  // 付款截图（可选但推荐：附图走 AI 自动审核可秒批）：dataUrl ≤400KB，png/jpeg/webp
-  let shotFile = ''
-  const shotDataUrl = String(body.screenshot || '')
-  const shotM = shotDataUrl.match(/^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$/)
-  if (shotM) {
-    const b64 = shotM[2]
-    if (b64.length > 560000) return json(res, 400, { ok: false, error: '截图过大（超 400KB），请裁剪后重试' })
-    shotFile = orderId + '.' + (shotM[1] === 'jpeg' ? 'jpg' : shotM[1])
-    fs.mkdirSync(SHOT_DIR, { recursive: true })
-    fs.writeFileSync(path.join(SHOT_DIR, shotFile), Buffer.from(b64, 'base64'))
-  }
   const db = loadOrders()
   const o = db.orders.find(x => x.id === orderId && x.uid === user.id)
   if (!o) return json(res, 404, { ok: false, error: '订单不存在' })
@@ -718,22 +635,13 @@ async function handleOrderVoucher(req, res, body, user, orderId) {
   const dup = db.orders.find(x => x.id !== o.id && x.voucher === voucher)
   if (dup) return json(res, 409, { ok: false, error: '该凭证号已被使用，请核对微信账单里的真实转账单号' })
   o.voucher = voucher
-  if (shotFile) o.screenshot = shotFile
   o.status = 'reviewing'
   o.updatedAt = new Date().toISOString()
   saveOrders(db)
-  // AI 自动审核（v0.6）：同步跑（OCR 十秒级），结果写订单并决定自动批/转人工；开关关/无截图直接落人工
-  try { await autoReviewOrder(o) } catch (e) { try { console.error('[auto-review]', e.message) } catch {} }
-  // 手机息屏提醒：推送 ntfy（自动批/转人工两种文案都在 autoReviewOrder 里发过；此处兜底异常情况）
-  if (!o.aiReview) {
-    const ou = loadUsers().users.find(x => x.id === o.uid)
-    notifyAdmin('MSMate 待审核充值', `${(ou && (ou.nickname || ou.email)) || '用户'} 提交了 ¥${o.amount} 凭证，单号 ${o.id}，请打开批款后台处理`)
-  }
-  const fresh = (loadOrders().orders.find(x => x.id === o.id)) || o
-  const msg = fresh.aiReview && fresh.aiReview.verdict === 'auto'
-    ? { ok: true, order: orderPublic(fresh), auto: true }
-    : { ok: true, order: orderPublic(fresh) }
-  json(res, 200, msg)
+  // 手机息屏提醒：有人提交凭证 → 推送到 ntfy 主题（装 ntfy app 订阅同主题即可收系统通知）
+  const ou = loadUsers().users.find(x => x.id === o.uid)
+  notifyAdmin('MSMate 待审核充值', `${(ou && (ou.nickname || ou.email)) || '用户'} 提交了 ¥${o.amount} 凭证，单号 ${o.id}，请打开批款后台处理`)
+  json(res, 200, { ok: true, order: orderPublic(o) })
 }
 
 function handleOrdersMy(req, res, user) {
@@ -858,6 +766,180 @@ function handlePresenceList(req, res, user) {
   json(res, 200, { ok: true, devices })
 }
 
+// ─────────────────── 应用层传输加密（v0.6：备案前 HTTP 过渡方案）───────────────────
+// 客户端用内置公钥把密码字段加密成 passwordEnc（RSA-OAEP-SHA256 Base64），服务端私钥解密——
+// HTTP 明文链路上中间人只能看到密文，密码不泄露。备案过后叠加真 HTTPS，此层保留作纵深防御。
+// 密钥对首次启动生成存 data/rsa-key.json；公钥经 GET /v1/auth/pubkey 下发，客户端缓存。
+const RSA_KEY_FILE = path.join(DATA_DIR, 'rsa-key.json')
+let RSA_PUBLIC_PEM = ''
+let RSA_PRIVATE_PEM = ''
+try {
+  const j = JSON.parse(fs.readFileSync(RSA_KEY_FILE, 'utf8'))
+  RSA_PUBLIC_PEM = String(j.public || '')
+  RSA_PRIVATE_PEM = String(j.private || '')
+} catch { }
+if (!RSA_PUBLIC_PEM || !RSA_PRIVATE_PEM) {
+  const kp = crypto.generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' }
+  })
+  RSA_PUBLIC_PEM = kp.publicKey
+  RSA_PRIVATE_PEM = kp.privateKey
+  try { fs.writeFileSync(RSA_KEY_FILE, JSON.stringify({ public: RSA_PUBLIC_PEM, private: RSA_PRIVATE_PEM })) } catch (e) { console.error('[crypto] 密钥落盘失败: ' + e.message) }
+  console.log('[crypto] RSA 密钥对已生成（data/rsa-key.json）')
+}
+
+function rsaDecryptB64(b64) {
+  try {
+    return crypto.privateDecrypt(
+      { key: RSA_PRIVATE_PEM, padding: crypto.constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' },
+      Buffer.from(String(b64 || ''), 'base64')
+    ).toString('utf8')
+  } catch { return null }
+}
+
+// 密码字段解密：passwordEnc（密文）优先；明文 password 兼容旧客户端（过渡期）。
+// 传了 passwordEnc 但解密失败 = 数据可疑，返回 null 由调用方拒绝
+function decryptPassword(body) {
+  if (body && body.passwordEnc != null) {
+    const p = rsaDecryptB64(body.passwordEnc)
+    if (p == null || p === '') return null
+    return p
+  }
+  return String((body && body.password) || '')
+}
+
+// ─────────────────── 用户反馈（v0.6：应用内反馈 → 服务端存档 → 后台查看）───────────────────
+// 客户端反馈弹窗提交 {type: bug|idea, content, contact?}（须登录）；存 feedback.json + ntfy 通知管理员。
+// 详细问题引导用户去 GitHub Issues（客户端弹窗带链接）；后台可标记已处理。
+const FEEDBACK_FILE = path.join(DATA_DIR, 'feedback.json')
+const feedbackSeen = new Map() // uid → [时间戳] 限流用（每用户每小时 5 条）
+function loadFeedback() {
+  const j = loadJson(FEEDBACK_FILE, { seq: 0, items: [] })
+  return j && Array.isArray(j.items) ? j : { seq: 0, items: [] }
+}
+
+function handleFeedbackSubmit(req, res, body, user) {
+  const type = String(body.type || 'bug') === 'idea' ? 'idea' : 'bug'
+  const content = String(body.content || '').trim().slice(0, 2000)
+  const contact = String(body.contact || '').trim().slice(0, 120)
+  const appVersion = String(body.appVersion || '').trim().slice(0, 32)
+  if (content.length < 5) return json(res, 400, { ok: false, error: '反馈内容太短了（至少 5 个字）' })
+  // 限流：每用户每小时 5 条（内存计数，重启清零可接受——刷子重启也就多 5 条）
+  const now = Date.now()
+  const arr = (feedbackSeen.get(user.id) || []).filter(t => now - t < 3600 * 1000)
+  if (arr.length >= 5) return json(res, 429, { ok: false, error: '反馈太频繁了，一小时后再试' })
+  arr.push(now)
+  feedbackSeen.set(user.id, arr)
+  const db = loadFeedback()
+  db.seq = (db.seq || 0) + 1
+  const item = {
+    id: 'fb' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+    seq: db.seq,
+    type,
+    content,
+    contact,
+    appVersion,
+    uid: user.id,
+    email: user.email || '',
+    ip: (req.socket.remoteAddress || '').replace(/^::ffff:/, ''),
+    at: new Date().toISOString(),
+    resolved: false
+  }
+  db.items.unshift(item)
+  db.items = db.items.slice(0, 500) // 上限 500 条，防膨胀
+  saveJson(FEEDBACK_FILE, db)
+  notifyAdmin('收到用户反馈（' + (type === 'bug' ? '问题' : '建议') + '）', 'seq#' + db.seq + ' ' + (user.email || user.id) + '：' + content.slice(0, 120))
+  json(res, 200, { ok: true, seq: db.seq })
+}
+
+// ─────────────────── 后台数据聚合（v0.6：仪表盘）───────────────────
+function adminStatsPayload() {
+  const users = loadUsers().users
+  const orders = loadOrders().orders
+  const today = new Date().toISOString().slice(0, 10)
+  let todayPaid = 0, totalPaid = 0
+  for (const o of orders) {
+    if (o.status === 'done') {
+      totalPaid += Number(o.amount) || 0
+      if (String(o.createdAt || '').slice(0, 10) === today) todayPaid += Number(o.amount) || 0
+    }
+  }
+  const fb = loadFeedback().items
+  const pres = loadPresence()
+  const now = Date.now()
+  const onlineDevices = Object.values(pres).filter(d => now - new Date(d.lastAt).getTime() <= 90 * 1000).length
+  return {
+    users: users.length,
+    orders: {
+      total: orders.length,
+      pending: orders.filter(o => o.status === 'pending').length,
+      reviewing: orders.filter(o => o.status === 'reviewing').length,
+      done: orders.filter(o => o.status === 'done').length,
+      rejected: orders.filter(o => o.status === 'rejected').length
+    },
+    todayPaid,
+    totalPaid,
+    onlineDevices,
+    feedback: { total: fb.length, open: fb.filter(x => !x.resolved).length },
+    newUsersToday: users.filter(u => String(u.createdAt || '').slice(0, 10) === today).length
+  }
+}
+
+function handleAdminStats(req, res) {
+  json(res, 200, { ok: true, stats: adminStatsPayload() })
+}
+
+function handleAdminDevices(req, res) {
+  const db = loadPresence()
+  const now = Date.now()
+  const users = loadUsers().users
+  const uMap = new Map(users.map(u => [u.id, u]))
+  const devices = Object.values(db)
+    .sort((a, b) => String(b.lastAt).localeCompare(String(a.lastAt)))
+    .slice(0, 200)
+    .map(d => {
+      const online = now - new Date(d.lastAt).getTime() <= 90 * 1000
+      const u = uMap.get(d.uid)
+      return { deviceId: d.deviceId, name: d.name, platform: d.platform, ip: d.ip, lastAt: d.lastAt, online, email: u ? u.email : '' }
+    })
+  json(res, 200, { ok: true, devices, onlineCount: devices.filter(d => d.online).length })
+}
+
+function handleAdminFeedback(req, res, query) {
+  const db = loadFeedback()
+  const filter = (query && query.filter) || 'open'
+  const items = db.items
+    .filter(x => filter === 'all' ? true : !x.resolved)
+    .slice(0, 200)
+  json(res, 200, { ok: true, items, openCount: db.items.filter(x => !x.resolved).length })
+}
+
+function handleAdminFeedbackResolve(req, res, body, fbId) {
+  const db = loadFeedback()
+  const it = db.items.find(x => x.id === fbId)
+  if (!it) return json(res, 404, { ok: false, error: '反馈不存在' })
+  it.resolved = true
+  it.resolvedAt = new Date().toISOString()
+  saveJson(FEEDBACK_FILE, db)
+  json(res, 200, { ok: true })
+}
+
+function handleAdminUsers(req, res) {
+  const users = loadUsers().users
+  const orders = loadOrders().orders
+  const paidMap = new Map()
+  for (const o of orders) {
+    if (o.status === 'done') paidMap.set(o.uid, (paidMap.get(o.uid) || 0) + (Number(o.amount) || 0))
+  }
+  const list = users
+    .slice().sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+    .slice(0, 300)
+    .map(u => ({ id: u.id, email: u.email, nickname: u.nickname || '', credits: u.credits || 0, createdAt: u.createdAt || '', paid: paidMap.get(u.id) || 0 }))
+  json(res, 200, { ok: true, users: list })
+}
+
 // ─────────────────── 批款后台 ───────────────────
 
 async function handleAdminLogin(req, res, body) {
@@ -914,25 +996,6 @@ async function handleAdminReject(req, res, body, orderId) {
   o.updatedAt = new Date().toISOString()
   saveOrders(odb)
   json(res, 200, { ok: true, order: orderPublic(o) })
-}
-
-function handleAdminAutoReviewGet(res) {
-  json(res, 200, { ok: true, config: loadAutoReview() })
-}
-function handleAdminAutoReviewPost(req, res, body) {
-  saveAutoReview(body || {})
-  json(res, 200, { ok: true, config: loadAutoReview() })
-}
-// 截图查看（admin <img> 无法带 header，token 走 query ?t=）：文件名白名单防路径穿越
-function handleScreenshot(req, res, file, query) {
-  const token = String((query && query.t) || '')
-  if (!verifyAdminToken(token)) return json(res, 401, { ok: false, error: '后台登录已过期' })
-  if (!/^[A-Za-z0-9]+\.(png|jpg|webp)$/.test(file)) return json(res, 404, { ok: false, error: '不存在' })
-  const p = path.join(SHOT_DIR, file)
-  if (!fs.existsSync(p)) return json(res, 404, { ok: false, error: '不存在' })
-  const ext = file.endsWith('.png') ? 'image/png' : file.endsWith('.webp') ? 'image/webp' : 'image/jpeg'
-  res.writeHead(200, { 'Content-Type': ext, 'Cache-Control': 'private, max-age=600' })
-  res.end(fs.readFileSync(p))
 }
 
 // ─────────────────── AI 代理（v0.4）：内置模型 OpenAI 兼容透传 + 积分扣费 ───────────────────
@@ -1246,48 +1309,109 @@ const ADMIN_HTML = `<!doctype html>
 <title>MSMate 批款后台</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:#f3f4f8;color:#24263a;padding:16px;max-width:720px;margin:0 auto}
-h1{font-size:18px;margin-bottom:12px;color:#3a2d6b}
-.card{background:#fff;border-radius:14px;padding:14px;margin-bottom:12px;box-shadow:0 1px 4px rgba(30,20,70,.08)}
-input,select{font:inherit;padding:9px 12px;border:1px solid #d9d8e6;border-radius:10px;width:100%;margin-bottom:10px}
-button{font:inherit;border:0;border-radius:10px;padding:9px 16px;background:#6c4ce0;color:#fff;cursor:pointer}
+body{font:14px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:#eef0f6;color:#26283c}
+a{color:#6d5ae0}
+/* 布局：桌面侧栏 + 内容区；手机顶部横滚页签 */
+#wrap{display:flex;min-height:100vh}
+#side{width:172px;background:#1e1b33;color:#b9b4d6;padding:14px 10px;flex-shrink:0;display:flex;flex-direction:column;gap:4px}
+#side .logo{color:#fff;font-size:16px;font-weight:700;padding:6px 10px 14px;display:flex;align-items:center;gap:8px}
+#side .logo i{width:10px;height:10px;border-radius:3px;background:#8b74f0;display:inline-block}
+#side button{display:block;width:100%;text-align:left;background:transparent;color:#b9b4d6;border:0;border-radius:10px;padding:10px 12px;cursor:pointer;font:inherit}
+#side button:hover{background:#2c2849;color:#fff}
+#side button.on{background:#6d5ae0;color:#fff}
+#side button .n{float:right;font-size:12px;background:#e0524c;color:#fff;border-radius:99px;padding:0 7px}
+#side .foot{margin-top:auto;font-size:11px;color:#6d6a8c;padding:10px}
+#main{flex:1;padding:18px;max-width:980px}
+#topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:10px;flex-wrap:wrap}
+#topbar h1{font-size:19px;color:#2b2350}
+.card{background:#fff;border-radius:14px;padding:16px;margin-bottom:12px;box-shadow:0 1px 4px rgba(30,20,70,.08)}
+input,select,textarea{font:inherit;padding:9px 12px;border:1px solid #d9d8e6;border-radius:10px;width:100%;margin-bottom:10px}
+button{font:inherit;border:0;border-radius:10px;padding:9px 16px;background:#6d5ae0;color:#fff;cursor:pointer}
 button.sec{background:#ece9f8;color:#4a3a8a}
 button.ok{background:#18a058}
 button.no{background:#e0524c}
+button:disabled{opacity:.55;cursor:default}
 .row{display:flex;gap:8px;flex-wrap:wrap}
 .meta{color:#6b6a80;font-size:12px}
 .badge{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px}
 .b-rv{background:#fdf1e0;color:#a05a00}.b-pd{background:#e8e8f2;color:#555}.b-done{background:#e2f6ea;color:#0d7a43}.b-rj{background:#fde8e7;color:#b03028}
+.b-on{background:#e2f6ea;color:#0d7a43}.b-off{background:#e8e8f2;color:#777}.b-bug{background:#fde8e7;color:#b03028}.b-idea{background:#e8f0fd;color:#2563b0}
 .amount{font-size:20px;font-weight:700;color:#3a2d6b}
-.tabs{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
-.tabs button{background:#fff;color:#4a3a8a;box-shadow:0 1px 3px rgba(30,20,70,.1)}
-.tabs button.on{background:#6c4ce0;color:#fff}
+.subtabs{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
+.subtabs button{background:#fff;color:#4a3a8a;box-shadow:0 1px 3px rgba(30,20,70,.1)}
+.subtabs button.on{background:#6d5ae0;color:#fff}
 .hide{display:none}
 .err{color:#b03028;font-size:13px;margin-bottom:8px}
 .empty{color:#8a89a0;text-align:center;padding:30px 0}
+/* 仪表盘统计卡 */
+#stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-bottom:12px}
+#stats .st{background:#fff;border-radius:14px;padding:14px;box-shadow:0 1px 4px rgba(30,20,70,.08)}
+#stats .st b{display:block;font-size:24px;color:#2b2350}
+#stats .st span{font-size:12px;color:#6b6a80}
+#stats .st.hl b{color:#6d5ae0}
+/* 表格 */
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{color:#6b6a80;font-weight:600;text-align:left;padding:7px 8px;border-bottom:1px solid #e4e3ef;white-space:nowrap}
+td{padding:8px;border-bottom:1px solid #f0eff6;vertical-align:top}
+tr:last-child td{border-bottom:0}
+@media (max-width:719px){
+  #wrap{flex-direction:column}
+  #side{width:100%;flex-direction:row;overflow-x:auto;padding:8px;align-items:center}
+  #side .logo{padding:4px 8px;white-space:nowrap}
+  #side .foot{display:none}
+  #side button{width:auto;white-space:nowrap;padding:8px 12px}
+  #main{padding:12px}
+}
 </style></head><body>
-<h1>MSMate 批款后台</h1>
-<div id="login" class="card">
-  <div class="err" id="lerr"></div>
-  <input id="key" type="password" placeholder="管理密钥（ADMIN_PASS 或 data/admin.key）">
-  <button id="lbtn" onclick="login()">登录</button>
-</div>
-<div id="panel" class="hide">
-  <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px">
-    <span class="meta" id="lastcheck"></span>
-    <button class="sec" id="sndbtn" type="button"></button>
-  </div>
-  <details style="margin-bottom:8px"><summary style="cursor:pointer;font-size:13px">AI 自动审核设置（附截图的订单自动核验，可秒批）</summary>
-    <div style="margin-top:6px">
-      <label style="display:block;margin-bottom:4px;font-size:13px"><input type="checkbox" id="ar_on"> 开启自动审核（OCR 核验：金额=档位 + 收款方昵称命中 + 未超上限 → 自动到账并通知抽查；存疑转人工）</label>
-      <input id="ar_payee" placeholder="你的微信收款昵称（截图上显示的收款人名字）" style="width:100%;margin-bottom:4px">
-      <input id="ar_max" type="number" min="1" max="128" placeholder="自动批上限（元，默认 68）" style="width:100%;margin-bottom:6px">
-      <button class="sec" id="ar_save" type="button">保存设置</button>
-      <span class="meta" id="ar_msg"></span>
+<div id="wrap">
+  <div id="login" class="hide" style="padding:24px;max-width:420px;margin:10vh auto 0">
+    <div class="card">
+      <h1 style="font-size:18px;margin-bottom:12px;color:#2b2350">MSMate 批款后台</h1>
+      <div class="err" id="lerr"></div>
+      <input id="key" type="password" placeholder="管理密钥（ADMIN_PASS 或 data/admin.key）">
+      <button id="lbtn" type="button">登录</button>
     </div>
-  </details>
-  <div class="tabs" id="tabs"></div>
-  <div id="list"></div>
+  </div>
+  <div id="panel" class="hide" style="display:flex;width:100%">
+    <div id="side">
+      <div class="logo"><i></i>MSMate 后台</div>
+      <button type="button" data-view="dashboard" class="on">仪表盘</button>
+      <button type="button" data-view="orders">订单<span class="n hide" id="nOrders"></span></button>
+      <button type="button" data-view="users">用户</button>
+      <button type="button" data-view="feedback">反馈<span class="n hide" id="nFeedback"></span></button>
+      <button type="button" data-view="devices">在线设备</button>
+      <div class="foot">
+        <div id="lastcheck"></div>
+        <button class="sec" id="sndbtn" type="button" style="margin-top:8px"></button>
+        <button class="sec" id="logout" type="button" style="margin-top:6px">退出登录</button>
+      </div>
+    </div>
+    <div id="main">
+      <div id="v-dashboard" class="view">
+        <div id="topbar"><h1>仪表盘</h1><span class="meta" id="dashTime"></span></div>
+        <div id="stats"></div>
+        <div class="card"><b>待处理</b><div id="dashTodo" class="meta" style="margin-top:6px"></div></div>
+      </div>
+      <div id="v-orders" class="view hide">
+        <div id="topbar"><h1>充值订单</h1></div>
+        <div class="subtabs" id="otabs"></div>
+        <div id="olist"></div>
+      </div>
+      <div id="v-users" class="view hide">
+        <div id="topbar"><h1>用户</h1><span class="meta" id="uCount"></span></div>
+        <div class="card" style="padding:6px 10px"><div id="ulist"></div></div>
+      </div>
+      <div id="v-feedback" class="view hide">
+        <div id="topbar"><h1>用户反馈</h1></div>
+        <div class="subtabs" id="ftabs"></div>
+        <div id="flist"></div>
+      </div>
+      <div id="v-devices" class="view hide">
+        <div id="topbar"><h1>在线设备</h1><span class="meta" id="dCount"></span></div>
+        <div class="card" style="padding:6px 10px"><div id="dlist"></div></div>
+      </div>
+    </div>
+  </div>
 </div>
 <script>
 // 全兼容写法：XHR 替代 fetch（老内核手机浏览器无 fetch/Object.assign），localStorage 防御（隐私模式会抛异常）
@@ -1295,9 +1419,8 @@ function storageGet(k) { try { return localStorage.getItem(k) } catch (e) { retu
 function storageSet(k, v) { try { localStorage.setItem(k, v) } catch (e) { } }
 function storageDel(k) { try { localStorage.removeItem(k) } catch (e) { } }
 var token = storageGet('adm_token') || ''
-var cur = 'reviewing'
 var counts = {}
-var tabNames = { reviewing: '待审核', pending: '未提交凭证', done: '已到账', rejected: '已拒绝', all: '全部' }
+var orderNames = { reviewing: '待审核', pending: '未提交凭证', done: '已到账', rejected: '已拒绝', all: '全部' }
 function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML }
 function xhr(method, path, body, cb) {
   var x = new XMLHttpRequest()
@@ -1325,52 +1448,83 @@ function login() {
     else document.getElementById('lerr').textContent = j.error || '登录失败'
   })
 }
+var view = 'dashboard'
+var orderStatus = 'reviewing'
+var fbFilter = 'open'
 function showPanel() {
   document.getElementById('login').classList.add('hide')
   document.getElementById('panel').classList.remove('hide')
-  loadAutoReviewPanel()
-  load()
-}
-function loadAutoReviewPanel() {
-  xhr('GET', '/admin/api/autoreview', null, function (j) {
-    if (!j.ok || !j.config) return
-    document.getElementById('ar_on').checked = !!j.config.enabled
-    document.getElementById('ar_payee').value = j.config.payee || ''
-    document.getElementById('ar_max').value = j.config.maxAuto || 68
-  })
-}
-function saveAutoReviewPanel() {
-  var btn = document.getElementById('ar_save')
-  btn.disabled = true
-  var body = {
-    enabled: document.getElementById('ar_on').checked,
-    payee: document.getElementById('ar_payee').value.trim(),
-    maxAuto: document.getElementById('ar_max').value
+  renderSndBtn()
+  document.getElementById('sndbtn').onclick = function () {
+    soundOn = !soundOn
+    storageSet('adm_sound', soundOn ? 'on' : 'off')
+    renderSndBtn()
   }
-  xhr('POST', '/admin/api/autoreview', body, function (j) {
-    btn.disabled = false
-    document.getElementById('ar_msg').textContent = j.ok ? '已保存 ✓' : (j.error || '保存失败')
-    if (j.ok) setTimeout(function () { document.getElementById('ar_msg').textContent = '' }, 2500)
+  document.getElementById('logout').onclick = function () { storageDel('adm_token'); location.reload() }
+  try { if (window.Notification && Notification.permission === 'default') Notification.requestPermission() } catch (e) { }
+  keepAlive()
+  showView('dashboard')
+  poll()
+  setInterval(poll, 15000)
+}
+function showView(v) {
+  view = v
+  var btns = document.querySelectorAll('#side button[data-view]')
+  for (var i = 0; i < btns.length; i++) btns[i].className = btns[i].getAttribute('data-view') === v ? 'on' : ''
+  var views = document.querySelectorAll('.view')
+  for (var j = 0; j < views.length; j++) views[j].className = 'view' + (views[j].id === 'v-' + v ? '' : ' hide')
+  if (v === 'dashboard') loadDash()
+  else if (v === 'orders') loadOrders()
+  else if (v === 'users') loadUsersView()
+  else if (v === 'feedback') loadFeedbackView()
+  else if (v === 'devices') loadDevices()
+}
+function updateBadges(s) {
+  var n1 = document.getElementById('nOrders')
+  var n2 = document.getElementById('nFeedback')
+  var r = (s.orders.reviewing || 0) + (s.orders.pending || 0)
+  if (n1) { n1.textContent = r; n1.className = r ? 'n' : 'n hide' }
+  if (n2) { n2.textContent = s.feedback.open; n2.className = s.feedback.open ? 'n' : 'n hide' }
+}
+function loadDash() {
+  xhr('GET', '/admin/api/stats', null, function (j) {
+    if (!j.ok) return
+    var s = j.stats
+    var cards = [
+      ['用户总数', s.users, ''], ['今日新增用户', s.newUsersToday, ''], ['今日充值', '¥' + s.todayPaid, ''],
+      ['累计充值', '¥' + s.totalPaid, ''], ['在线设备', s.onlineDevices, 'hl'], ['未读反馈', s.feedback.open, 'hl']
+    ]
+    var html = ''
+    for (var i = 0; i < cards.length; i++) {
+      html += '<div class="st' + cards[i][2] + '"><b>' + esc(cards[i][1]) + '</b><span>' + cards[i][0] + '</span></div>'
+    }
+    document.getElementById('stats').innerHTML = html
+    document.getElementById('dashTime').textContent = '更新于 ' + new Date().toLocaleTimeString()
+    var todo = []
+    if (s.orders.reviewing) todo.push(s.orders.reviewing + ' 笔订单待审核')
+    if (s.orders.pending) todo.push(s.orders.pending + ' 笔未提交凭证')
+    if (s.feedback.open) todo.push(s.feedback.open + ' 条反馈未读')
+    document.getElementById('dashTodo').textContent = todo.length ? todo.join('；') : '暂无待处理事项，喝口茶喵'
+    updateBadges(s)
   })
 }
-document.getElementById('ar_save').addEventListener('click', saveAutoReviewPanel)
-function load() {
-  var tabs = document.getElementById('tabs')
+function loadOrders() {
+  var tabs = document.getElementById('otabs')
   tabs.innerHTML = ''
-  var names = Object.keys(tabNames)
+  var names = Object.keys(orderNames)
   for (var i = 0; i < names.length; i++) {
     (function (s) {
       var b = document.createElement('button')
-      if (s === cur) b.className = 'on'
-      b.textContent = tabNames[s] + (counts[s] ? ' ' + counts[s] : '')
-      b.onclick = function () { cur = s; load() }
+      if (s === orderStatus) b.className = 'on'
+      b.textContent = orderNames[s] + (counts[s] ? ' ' + counts[s] : '')
+      b.onclick = function () { orderStatus = s; loadOrders() }
       tabs.appendChild(b)
     })(names[i])
   }
-  xhr('GET', '/admin/api/orders?status=' + cur, null, function (j) {
+  xhr('GET', '/admin/api/orders?status=' + orderStatus, null, function (j) {
     if (!j.ok) { storageDel('adm_token'); token = ''; location.reload(); return }
     counts = j.counts
-    var el = document.getElementById('list')
+    var el = document.getElementById('olist')
     // 按钮用 data-* + 事件委托，避免内联 onclick 引号嵌套出错（模板字符串转义曾致整页 JS 挂掉）
     el.onclick = function (e) {
       var t = e.target
@@ -1379,7 +1533,7 @@ function load() {
       var what = t.getAttribute('data-what')
       if (id && what) act(id, what)
     }
-    if (!j.orders.length) { el.innerHTML = '<div class="empty">暂无订单</div>'; return }
+    if (!j.orders.length) { el.innerHTML = '<div class="card"><div class="empty">暂无订单</div></div>'; return }
     var html = ''
     for (var i = 0; i < j.orders.length; i++) {
       var o = j.orders[i]
@@ -1392,10 +1546,6 @@ function load() {
         + '<div class="meta">订单 ' + esc(o.id) + ' · 充值 ' + esc(o.credits) + ' 积分</div>'
         + '<div class="meta">提交 ' + esc(o.createdAt) + '</div>'
         + (o.voucher ? '<div>凭证号：<b>' + esc(o.voucher) + '</b></div>' : '')
-        + (o.aiReview ? (o.aiReview.verdict === 'auto'
-          ? '<div style="margin:6px 0;padding:6px 8px;border-radius:8px;background:#e7f6ec;color:#1c6b34;font-size:12px">AI 核验通过 · 已自动到账（' + esc((o.aiReview.at || '').replace('T', ' ').slice(0, 16)) + '）— 请抽查收款记录</div>'
-          : '<div style="margin:6px 0;padding:6px 8px;border-radius:8px;background:#fdf3e0;color:#8a5a13;font-size:12px">AI 存疑：' + esc((o.aiReview.reasons || []).join('；')) + '</div>') : '')
-        + (o.screenshot ? '<div style="margin:6px 0"><img src="/screenshots/' + esc(o.screenshot) + '?t=' + esc(token) + '" alt="付款截图" style="max-width:100%;max-height:300px;border-radius:8px;border:1px solid #e5e7eb"></div>' : '')
         + (o.rejectReason ? '<div class="meta">拒绝原因：' + esc(o.rejectReason) + '</div>' : '')
         + (o.status === 'reviewing' || o.status === 'pending'
           ? '<div class="row" style="margin-top:8px"><button class="ok" data-oid="' + esc(o.id) + '" data-what="approve">通过 · 加 ' + esc(o.credits) + ' 积分</button>'
@@ -1406,10 +1556,85 @@ function load() {
     el.innerHTML = html
   })
 }
+function loadUsersView() {
+  xhr('GET', '/admin/api/users', null, function (j) {
+    if (!j.ok) return
+    document.getElementById('uCount').textContent = '共 ' + j.users.length + ' 人'
+    var el = document.getElementById('ulist')
+    if (!j.users.length) { el.innerHTML = '<div class="empty">暂无用户</div>'; return }
+    var html = '<table><tr><th>邮箱</th><th>昵称</th><th>积分</th><th>累计充值</th><th>注册时间</th></tr>'
+    for (var i = 0; i < j.users.length; i++) {
+      var u = j.users[i]
+      html += '<tr><td>' + esc(u.email) + '</td><td>' + esc(u.nickname || '—') + '</td><td>' + esc(u.credits) + '</td><td>¥' + esc(u.paid) + '</td><td class="meta">' + esc(String(u.createdAt).slice(0, 10)) + '</td></tr>'
+    }
+    el.innerHTML = html + '</table>'
+  })
+}
+function loadFeedbackView() {
+  var tabs = document.getElementById('ftabs')
+  tabs.innerHTML = ''
+  var names = { open: '未读', all: '全部' }
+  var kn = Object.keys(names)
+  for (var i = 0; i < kn.length; i++) {
+    (function (s) {
+      var b = document.createElement('button')
+      if (s === fbFilter) b.className = 'on'
+      b.textContent = names[s]
+      b.onclick = function () { fbFilter = s; loadFeedbackView() }
+      tabs.appendChild(b)
+    })(kn[i])
+  }
+  xhr('GET', '/admin/api/feedback?filter=' + fbFilter, null, function (j) {
+    if (!j.ok) return
+    var el = document.getElementById('flist')
+    el.onclick = function (e) {
+      var t = e.target
+      if (!t || !t.getAttribute) return
+      var fid = t.getAttribute('data-fid')
+      if (fid && t.getAttribute('data-act') === 'resolve') resolveFeedback(fid)
+    }
+    if (!j.items.length) { el.innerHTML = '<div class="card"><div class="empty">没有反馈，岁月静好</div></div>'; return }
+    var html = ''
+    for (var i = 0; i < j.items.length; i++) {
+      var f = j.items[i]
+      html += '<div class="card">'
+        + '<div class="row" style="justify-content:space-between;align-items:center"><span class="badge ' + (f.type === 'bug' ? 'b-bug' : 'b-idea') + '">' + (f.type === 'bug' ? '问题' : '建议') + '</span>'
+        + '<span class="meta">#' + esc(f.seq) + ' · ' + esc(String(f.at).replace('T', ' ').slice(0, 16)) + '</span></div>'
+        + '<div style="margin:6px 0;white-space:pre-wrap">' + esc(f.content) + '</div>'
+        + '<div class="meta">' + esc(f.email) + (f.contact ? ' · 联系方式 ' + esc(f.contact) : '') + (f.appVersion ? ' · v' + esc(f.appVersion) : '') + '</div>'
+        + (!f.resolved ? '<div class="row" style="margin-top:8px"><button class="sec" data-fid="' + esc(f.id) + '" data-act="resolve">标记已处理</button></div>' : '<div class="meta">已处理 ' + esc(String(f.resolvedAt).slice(0, 16)) + '</div>')
+        + '</div>'
+    }
+    el.innerHTML = html
+  })
+}
+function resolveFeedback(fid) {
+  xhr('POST', '/admin/api/feedback/' + fid + '/resolve', {}, function (j) {
+    if (j.ok) loadFeedbackView()
+    else alert(j.error || '操作失败')
+  })
+}
+function loadDevices() {
+  xhr('GET', '/admin/api/devices', null, function (j) {
+    if (!j.ok) return
+    document.getElementById('dCount').textContent = '在线 ' + j.onlineCount + ' 台 / 记录 ' + j.devices.length + ' 台'
+    var el = document.getElementById('dlist')
+    if (!j.devices.length) { el.innerHTML = '<div class="empty">还没有设备心跳</div>'; return }
+    var html = '<table><tr><th>设备</th><th>平台</th><th>状态</th><th>IP</th><th>所属账号</th><th>最后心跳</th></tr>'
+    for (var i = 0; i < j.devices.length; i++) {
+      var d = j.devices[i]
+      html += '<tr><td>' + esc(d.name) + '</td><td class="meta">' + esc(d.platform || '—') + '</td>'
+        + '<td><span class="badge ' + (d.online ? 'b-on' : 'b-off') + '">' + (d.online ? '在线' : '离线') + '</span></td>'
+        + '<td class="meta">' + esc(d.ip) + '</td><td class="meta">' + esc(d.email || '—') + '</td>'
+        + '<td class="meta">' + esc(String(d.lastAt).replace('T', ' ').slice(0, 19)) + '</td></tr>'
+    }
+    el.innerHTML = html + '</table>'
+  })
+}
 function act(id, what) {
   if (what === 'reject' && !confirm('确认拒绝该订单？')) return
   xhr('POST', '/admin/api/orders/' + id + '/' + what, {}, function (j) {
-    if (j.ok) load()
+    if (j.ok) loadOrders()
     else alert(j.error || '操作失败')
   })
 }
@@ -1458,39 +1683,27 @@ function renderSndBtn() {
   if (b) b.textContent = soundOn ? '声音：开' : '声音：关'
 }
 function poll() {
-  xhr('GET', '/admin/api/orders?status=reviewing', null, function (j) {
+  xhr('GET', '/admin/api/stats', null, function (j) {
     if (!j.ok) return
-    var n = j.orders ? j.orders.length : 0
+    var s = j.stats
+    var n = s.orders.reviewing
     var el = document.getElementById('lastcheck')
-    if (el) el.textContent = '上次检查 ' + new Date().toLocaleTimeString() + ' · 待审核 ' + n + ' 单'
+    if (el) el.textContent = '上次检查 ' + new Date().toLocaleTimeString() + ' · 待审 ' + n + ' · 在线 ' + s.onlineDevices + ' · 反馈 ' + s.feedback.open
     if (lastReviewing >= 0 && n > lastReviewing) {
       if (soundOn) beep()
       try { if (window.Notification && Notification.permission === 'granted') new Notification('MSMate 批款后台', { body: n + ' 单待审核，点击打开此页面处理' }) } catch (e) { }
-      document.title = '（' + n + ' 单待审核）' + BASE_TITLE
-      load()
+      if (view === 'orders') loadOrders()
     }
     if (n === 0) document.title = BASE_TITLE
+    else document.title = '（' + n + ' 单待审核）' + BASE_TITLE
     lastReviewing = n
+    updateBadges(s)
+    if (view === 'dashboard') loadDash()
   })
 }
-function showPanel() {
-  document.getElementById('login').classList.add('hide')
-  document.getElementById('panel').classList.remove('hide')
-  renderSndBtn()
-  document.getElementById('sndbtn').onclick = function () {
-    soundOn = !soundOn
-    storageSet('adm_sound', soundOn ? 'on' : 'off')
-    renderSndBtn()
-  }
-  // 通知授权要在用户手势里申请（登录点击链路内），失败静默（http 源可能被浏览器禁）
-  try { if (window.Notification && Notification.permission === 'default') Notification.requestPermission() } catch (e) { }
-  keepAlive()
-  load()
-  poll()
-  setInterval(poll, 15000)
-}
 document.getElementById('key').onkeydown = function (e) { if (e.key === 'Enter' || e.keyCode === 13) login() }
-if (token) xhr('GET', '/admin/api/orders?status=reviewing', null, function (j) {
+document.getElementById('lbtn').onclick = login
+if (token) xhr('GET', '/admin/api/stats', null, function (j) {
   if (j.ok) showPanel()
   else { storageDel('adm_token'); token = '' }
 })
@@ -1549,16 +1762,25 @@ const server = http.createServer(async (req, res) => {
   try {
     // 健康检查与版本
     if (req.method === 'GET' && pathname === '/ping') {
-      return json(res, 200, { ok: true, service: 'msmate-api', version: '0.5.0', time: new Date().toISOString() })
+      return json(res, 200, { ok: true, service: 'msmate-api', version: '0.6.0', time: new Date().toISOString() })
     }
     if (req.method === 'GET' && pathname === '/v1/latest') return json(res, 200, { ok: true, data: LATEST })
     if (req.method === 'GET' && pathname === '/v1/myip') return json(res, 200, { ok: true, ip: ip.replace(/^::ffff:/, '') })
 
     // 认证
+    if (req.method === 'GET' && pathname === '/v1/auth/pubkey') return json(res, 200, { ok: true, pubkey: RSA_PUBLIC_PEM })
     if (req.method === 'POST' && pathname === '/v1/auth/send-code') return await handleSendCode(req, res, await readBody(req), ip)
     if (req.method === 'POST' && pathname === '/v1/auth/register') return await handleAuthRegister(req, res, await readBody(req), ip)
     if (req.method === 'POST' && pathname === '/v1/auth/login') return await handleAuthLogin(req, res, await readBody(req), ip)
     if (req.method === 'POST' && pathname === '/v1/auth/reset') return await handleAuthReset(req, res, await readBody(req), ip)
+
+    // 用户反馈（须登录；限流在 handler 内）
+    if (req.method === 'POST' && pathname === '/v1/feedback') {
+      const user = authUser(req)
+      if (!user) return json(res, 401, { ok: false, error: '登录已过期，请重新登录' })
+      return handleFeedbackSubmit(req, res, await readBody(req), user)
+    }
+
     if (req.method === 'GET' && pathname === '/v1/auth/me') return handleAuthMe(req, res)
     if (req.method === 'PATCH' && pathname === '/v1/auth/profile') {
       const user = authUser(req)
@@ -1652,19 +1874,6 @@ const server = http.createServer(async (req, res) => {
       res.statusCode = 200
       return res.end(ADMIN_HTML)
     }
-    // 付款截图查看（admin token 走 query ?t=，<img> 无法带 header）
-    if (req.method === 'GET' && pathname.startsWith('/screenshots/')) {
-      return handleScreenshot(req, res, pathname.slice('/screenshots/'.length), query)
-    }
-    // 自动审核配置（v0.6）
-    if (req.method === 'GET' && pathname === '/admin/api/autoreview') {
-      if (!adminAuth(req)) return json(res, 401, { ok: false, error: '后台登录已过期' })
-      return handleAdminAutoReviewGet(res)
-    }
-    if (req.method === 'POST' && pathname === '/admin/api/autoreview') {
-      if (!adminAuth(req)) return json(res, 401, { ok: false, error: '后台登录已过期' })
-      return handleAdminAutoReviewPost(req, res, await readBody(req))
-    }
     if (req.method === 'POST' && pathname === '/admin/api/login') return await handleAdminLogin(req, res, await readBody(req))
     if (pathname.startsWith('/admin/api/orders/')) {
       if (!adminAuth(req)) return json(res, 401, { ok: false, error: '后台登录已过期' })
@@ -1676,6 +1885,27 @@ const server = http.createServer(async (req, res) => {
       if (!adminAuth(req)) return json(res, 401, { ok: false, error: '后台登录已过期' })
       return handleAdminOrders(req, res, query)
     }
+    // v0.6 后台扩展：仪表盘 / 在线设备 / 用户反馈
+    if (req.method === 'GET' && pathname === '/admin/api/stats') {
+      if (!adminAuth(req)) return json(res, 401, { ok: false, error: '后台登录已过期' })
+      return handleAdminStats(req, res)
+    }
+    if (req.method === 'GET' && pathname === '/admin/api/devices') {
+      if (!adminAuth(req)) return json(res, 401, { ok: false, error: '后台登录已过期' })
+      return handleAdminDevices(req, res)
+    }
+    if (req.method === 'GET' && pathname === '/admin/api/feedback') {
+      if (!adminAuth(req)) return json(res, 401, { ok: false, error: '后台登录已过期' })
+      return handleAdminFeedback(req, res, query)
+    }
+    if (req.method === 'POST' && /^\/admin\/api\/feedback\/[^/]+\/resolve$/.test(pathname)) {
+      if (!adminAuth(req)) return json(res, 401, { ok: false, error: '后台登录已过期' })
+      return handleAdminFeedbackResolve(req, res, await readBody(req), pathname.split('/')[4])
+    }
+    if (req.method === 'GET' && pathname === '/admin/api/users') {
+      if (!adminAuth(req)) return json(res, 401, { ok: false, error: '后台登录已过期' })
+      return handleAdminUsers(req, res)
+    }
 
     json(res, 404, { ok: false, error: 'not found' })
   } catch (e) {
@@ -1686,5 +1916,5 @@ const server = http.createServer(async (req, res) => {
 })
 
 server.listen(PORT, () => {
-  console.log(`msmate-api v0.5.0 listening on 0.0.0.0:${PORT} (mail: ${MAIL_ON ? 'SMTP' : 'dev 模式，验证码走日志/接口'})`)
+  console.log(`msmate-api v0.6.0 listening on 0.0.0.0:${PORT} (mail: ${MAIL_ON ? 'SMTP' : 'dev 模式，验证码走日志/接口'})`)
 })

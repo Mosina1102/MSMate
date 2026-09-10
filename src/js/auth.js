@@ -391,15 +391,34 @@ function initAuthUI() {
     if (e.key === 'Escape') authNickExitEdit()
   })
 
-  // 登录 / 注册页签切换
-  document.querySelectorAll('.auth-tab').forEach((tab) => {
+  // 登录 / 注册页签切换（限定 #authTabs 作用域：反馈弹窗的 .auth-tab 页签不得被误绑）
+  document.querySelectorAll('#authTabs .auth-tab').forEach((tab) => {
     tab.addEventListener('click', () => {
       authState.mode = tab.getAttribute('data-authtab') === 'register' ? 'register' : 'login'
-      document.querySelectorAll('.auth-tab').forEach((t) => t.classList.toggle('active', t === tab))
+      document.querySelectorAll('#authTabs .auth-tab').forEach((t) => t.classList.toggle('active', t === tab))
       authShowError('')
       authRenderFormMode()
       $('authEmail').focus()
     })
+  })
+
+  // ===== 问题反馈（v2.7.16）：须登录；服务端存档 + ntfy 通知；复杂问题引导 GitHub Issues =====
+  $('authFeedbackBtn').addEventListener('click', feedbackOpen)
+  $('feedbackCloseX').addEventListener('click', feedbackClose)
+  $('feedbackCancel').addEventListener('click', feedbackClose)
+  $('feedbackSubmitBtn').addEventListener('click', feedbackSubmit)
+  document.querySelectorAll('#feedbackTypeTabs .auth-tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      feedbackState.type = tab.getAttribute('data-ftype') === 'idea' ? 'idea' : 'bug'
+      document.querySelectorAll('#feedbackTypeTabs .auth-tab').forEach((t) => t.classList.toggle('active', t === tab))
+    })
+  })
+  $('feedbackGithubLink').addEventListener('click', (e) => {
+    e.preventDefault()
+    try { window.api.openExternalFallback({ url: 'https://github.com/Mosina1102/MSMate/issues' }) } catch { }
+  })
+  $('feedbackContent').addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') feedbackSubmit()
   })
 
   // 回车流转：邮箱 → 验证码/密码 → 提交
@@ -431,6 +450,53 @@ function initAuthUI() {
       }
     } catch { }
   })()
+}
+
+// ===== 问题反馈弹窗（v2.7.16）=====
+const feedbackState = { type: 'bug', busy: false }
+function feedbackOpen() {
+  const m = $('feedbackModal')
+  if (!m) return
+  feedbackShowError('')
+  m.classList.remove('hidden')
+  setTimeout(() => { const t = $('feedbackContent'); if (t) t.focus() }, 100)
+}
+function feedbackClose() {
+  const m = $('feedbackModal')
+  if (m) m.classList.add('hidden')
+}
+function feedbackShowError(msg) {
+  const el = $('feedbackError')
+  if (!el) return
+  if (msg) { el.textContent = msg; el.classList.remove('hidden') }
+  else el.classList.add('hidden')
+}
+async function feedbackSubmit() {
+  if (feedbackState.busy) return
+  const content = ($('feedbackContent') || {}).value || ''
+  if (content.trim().length < 5) { feedbackShowError('反馈内容太短了（至少 5 个字）'); return }
+  feedbackState.busy = true
+  const btn = $('feedbackSubmitBtn')
+  const oldText = btn.textContent
+  btn.disabled = true
+  btn.textContent = '提交中...'
+  try {
+    const r = await window.api.feedbackSubmit(feedbackState.type, content.trim(), (($('feedbackContact') || {}).value || '').trim())
+    if (r && r.ok) {
+      feedbackClose()
+      $('feedbackContent').value = ''
+      $('feedbackContact').value = ''
+      showToast('反馈已提交，感谢支持（seq #' + r.seq + '）', 'success')
+    } else {
+      feedbackShowError((r && r.error) || '提交失败，请稍后再试')
+    }
+  } catch (err) {
+    feedbackShowError(`提交失败: ${err.message}`)
+  } finally {
+    feedbackState.busy = false
+    btn.disabled = false
+    btn.textContent = oldText
+  }
 }
 
 document.addEventListener('DOMContentLoaded', initAuthUI)

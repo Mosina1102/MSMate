@@ -549,4 +549,71 @@ function wbMediaHTML(kind, url) {
   if (kind === 'audio') return `<audio class="pv-media" controls autoplay src="${url}"></audio>`
   return `<iframe class="pv-frame" src="${url}"></iframe>` // pdf / html
 }
+
+// === 网页下载进度浮条（v2.7.16）：内置浏览器/网页页签点下载 → will-download 接管 → 这里显示进度 ===
+// 单例浮条挂在 body 右下角，多条下载并列；完成项停留 4 秒自动消失，可点「打开文件夹」定位
+const wbDownloads = new Map() // id → {name, received, total, state, path}
+let wbDownloadBox = null
+function wbEnsureDownloadBox() {
+  if (wbDownloadBox && document.body.contains(wbDownloadBox)) return wbDownloadBox
+  wbDownloadBox = document.createElement('div')
+  wbDownloadBox.id = 'wbDownloadBox'
+  wbDownloadBox.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:99990;display:flex;flex-direction:column;gap:8px;max-width:320px'
+  document.body.appendChild(wbDownloadBox)
+  return wbDownloadBox
+}
+function wbFormatBytes(n) {
+  if (!Number.isFinite(n) || n <= 0) return '0B'
+  if (n >= 1073741824) return (n / 1073741824).toFixed(2) + 'GB'
+  if (n >= 1048576) return (n / 1048576).toFixed(1) + 'MB'
+  return Math.max(1, Math.round(n / 1024)) + 'KB'
+}
+function wbRenderDownloads() {
+  const box = wbEnsureDownloadBox()
+  const rows = []
+  for (const [id, d] of wbDownloads) {
+    const pct = d.total > 0 ? Math.min(100, Math.round((d.received / d.total) * 100)) : (d.state === 'completed' ? 100 : 0)
+    let statusHtml = ''
+    if (d.state === 'progressing') {
+      statusHtml = `<div style="height:4px;border-radius:99px;background:rgba(109,90,224,.18);overflow:hidden"><div style="height:100%;width:${pct}%;background:#6d5ae0;border-radius:99px;transition:width .2s"></div></div>`
+    } else if (d.state === 'completed') {
+      statusHtml = `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span style="color:#0d7a43;font-size:12px">已完成 · ${wbFormatBytes(d.total)}</span><button data-dl-open="${escAttr(d.path)}" style="font:12px/1.4 inherit;padding:2px 8px;border:0;border-radius:8px;background:#ece9f8;color:#4a3a8a;cursor:pointer">打开文件夹</button></div>`
+    } else if (d.state === 'canceled') {
+      statusHtml = '<div style="color:#8a89a0;font-size:12px">已取消</div>'
+    } else {
+      statusHtml = '<div style="color:#b03028;font-size:12px">下载中断</div>'
+    }
+    rows.push(`<div style="background:#fff;border-radius:12px;padding:10px 12px;box-shadow:0 4px 14px rgba(30,20,70,.16);font-size:12px;color:#26283c">
+      <div style="font-weight:600;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escAttr(d.name)}">${escHtml(d.name)}</div>
+      ${d.state === 'progressing' ? `<div class="meta" style="margin-bottom:4px">${wbFormatBytes(d.received)} / ${wbFormatBytes(d.total)} · ${pct}%</div>` : ''}
+      ${statusHtml}
+    </div>`)
+  }
+  box.innerHTML = rows.join('')
+  box.style.display = rows.length ? 'flex' : 'none'
+  // 完成项 4 秒后清除
+  for (const [id, d] of wbDownloads) {
+    if ((d.state === 'completed' || d.state === 'canceled') && !d._timer) {
+      d._timer = setTimeout(() => { wbDownloads.delete(id); wbRenderDownloads() }, 4000)
+    }
+  }
+  box.querySelectorAll('[data-dl-open]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const p = btn.getAttribute('data-dl-open')
+      if (p) window.api.openInExplorer(p).catch(() => { })
+    })
+  })
+}
+// 防 XSS：下载文件名来自网页，必须转义（进度浮条用 innerHTML 渲染）
+function escHtml(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML }
+function escAttr(s) { return escHtml(s).replace(/"/g, '&quot;') }
+if (window.api && window.api.onWbDownloadProgress) {
+  window.api.onWbDownloadProgress((meta) => {
+    if (!meta || !meta.id) return
+    const prev = wbDownloads.get(meta.id) || {}
+    wbDownloads.set(meta.id, Object.assign(prev, meta))
+    wbRenderDownloads()
+  })
+}
+
 
