@@ -2280,12 +2280,12 @@ ipcMain.handle('credits:order-create', async (event, { amount }) => {
   }
 })
 
-ipcMain.handle('credits:order-voucher', async (event, { id, voucher }) => {
+ipcMain.handle('credits:order-voucher', async (event, { id, voucher, screenshot }) => {
   const a = authGetSaved()
   if (!a.token) return { ok: false, error: '尚未登录' }
   try {
-    const r = await authRequest(`/v1/credits/orders/${encodeURIComponent(id)}/voucher`, { method: 'POST', body: { voucher }, token: a.token })
-    if (r.status === 200 && r.data && r.data.ok) return { ok: true, order: r.data.order }
+    const r = await authRequest(`/v1/credits/orders/${encodeURIComponent(id)}/voucher`, { method: 'POST', body: { voucher, screenshot }, token: a.token })
+    if (r.status === 200 && r.data && r.data.ok) return { ok: true, order: r.data.order, auto: !!r.data.auto }
     return { ok: false, error: (r.data && r.data.error) || `提交失败（HTTP ${r.status}）` }
   } catch (err) {
     return { ok: false, error: `网络错误：${err.message}` }

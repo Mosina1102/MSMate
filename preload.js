@@ -176,7 +176,7 @@ try {
     authAvatar: (dataUrl) => ipcRenderer.invoke('auth:avatar', { dataUrl }),
     // 积分充值（个人收款码 + 凭证批款）
     creditsOrderCreate: (amount) => ipcRenderer.invoke('credits:order-create', { amount }),
-    creditsOrderVoucher: (id, voucher) => ipcRenderer.invoke('credits:order-voucher', { id, voucher }),
+    creditsOrderVoucher: (id, voucher, screenshot) => ipcRenderer.invoke('credits:order-voucher', { id, voucher, screenshot }),
     creditsOrdersMy: () => ipcRenderer.invoke('credits:orders-my'),
     creditsOrderCancel: (id) => ipcRenderer.invoke('credits:order-cancel', { id }),
     creditsBalance: () => ipcRenderer.invoke('credits:balance'),
