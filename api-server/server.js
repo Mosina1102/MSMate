@@ -580,6 +580,12 @@ async function handleOrderCreate(req, res, body, user) {
   const amount = Math.round(+(body.amount))
   if (!Number.isFinite(amount) || amount < 1 || amount > 500) return json(res, 400, { ok: false, error: '金额需在 1-500 元之间' })
   const db = loadOrders()
+  // 防刷单三层（v0.5）：
+  // ① 一人最多 1 个 pending（未提交凭证）占位单——你只要还有一个未付款的单，就不能再开新单，
+  //    必须先取消/提交。堵死"挂一排 ¥1 空单占位"的刷法。
+  const myPending = db.orders.some(o => o.uid === user.id && o.status === 'pending')
+  if (myPending) return json(res, 429, { ok: false, error: '你有一笔订单尚未提交凭证，请先付款/提交或取消后再下单' })
+  // ② 待完成（pending+reviewing）总数上限 5，防止一个账号囤积多单干扰人工
   const mine = db.orders.filter(o => o.uid === user.id && (o.status === 'pending' || o.status === 'reviewing'))
   if (mine.length >= 5) return json(res, 429, { ok: false, error: '有太多待完成订单，请先等待审核' })
   const order = {
@@ -603,6 +609,10 @@ async function handleOrderVoucher(req, res, body, user, orderId) {
   const o = db.orders.find(x => x.id === orderId && x.uid === user.id)
   if (!o) return json(res, 404, { ok: false, error: '订单不存在' })
   if (o.status !== 'pending' && o.status !== 'reviewing') return json(res, 400, { ok: false, error: '该订单状态不可提交凭证' })
+  // 防刷单③：凭证号严格全局唯一（含已取消订单）——放行已取消会留下"提交假凭证→取消→重复提交"的刷单循环；
+  // 微信转账单号天然全局唯一，一人一单。误取消已付款订单的极端情况走人工（后台拒绝并备注）。
+  const dup = db.orders.find(x => x.id !== o.id && x.voucher === voucher)
+  if (dup) return json(res, 409, { ok: false, error: '该凭证号已被使用，请核对微信账单里的真实转账单号' })
   o.voucher = voucher
   o.status = 'reviewing'
   o.updatedAt = new Date().toISOString()
@@ -679,12 +689,20 @@ function notifyAdmin(title, body) {
     const req = require('https').request({
       method: 'POST', hostname: u.hostname, port: u.port || 443, path: u.pathname + u.search,
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
-    }, (res) => { res.resume() })
-    req.on('error', () => { })
-    req.setTimeout(8000, () => { try { req.destroy() } catch { } })
+    }, (res) => {
+      // 结果落日志：docker logs 可见（此前静默吞错，推送断了无从排查）
+      let buf = ''
+      res.on('data', c => { if (buf.length < 200) buf += c })
+      res.on('end', () => console.log(`[ntfy] ${res.statusCode} ${title}`))
+      if (res.statusCode !== 200) console.error(`[ntfy] 推送异常 ${res.statusCode}: ${buf}`)
+    })
+    req.on('error', (e) => console.error(`[ntfy] 推送失败: ${e.message}（服务器到 ${NTFY_SERVER} 不通？）`))
+    req.setTimeout(8000, () => { try { req.destroy(new Error('timeout')) } catch { } })
     req.write(payload)
     req.end()
-  } catch { }
+  } catch (e) {
+    console.error(`[ntfy] 推送构造失败: ${e.message}`)
+  }
 }
 
 // ─────────────────── 设备在线登记（互联网 P2P 发现，v0.4）───────────────────
@@ -1344,9 +1362,9 @@ function readBody(req, maxBytes) {
 // ─────────────────── 服务器 ───────────────────
 
 const LATEST = {
-  version: '2.7.12',
+  version: '2.7.13',
   url: 'https://github.com/Mosina1102/MSMate/releases/latest',
-  notes: '内置模型积分结算与签到、用户协议、互联网模式官方化（在线设备发现 + 2GB/天额度）、开屏动画',
+  notes: '修复网页模型对话崩溃（roundCreditsUsed）；防刷单收紧（占位单唯一+凭证号全局唯一）；ntfy 推送日志',
   publishedAt: '2026-09-10'
 }
 
@@ -1486,5 +1504,5 @@ const server = http.createServer(async (req, res) => {
 })
 
 server.listen(PORT, () => {
-  console.log(`msmate-api v0.3.0 listening on 0.0.0.0:${PORT} (mail: ${MAIL_ON ? 'SMTP' : 'dev 模式，验证码走日志/接口'})`)
+  console.log(`msmate-api v0.5.0 listening on 0.0.0.0:${PORT} (mail: ${MAIL_ON ? 'SMTP' : 'dev 模式，验证码走日志/接口'})`)
 })

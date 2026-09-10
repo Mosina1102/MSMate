@@ -145,7 +145,25 @@ async function main() {
     check('重复取消被拒 400', c2.code === 400, c2.code)
   }
 
-  // 12. 每日签到（+50/天，累计封顶 200）
+  // 12. 防刷单：pending 占位唯一 + 凭证号全局唯一
+  const o3 = await jreq('/v1/credits/orders', { method: 'POST', token, body: { amount: 1 } })
+  check('防刷-创建订单', o3.code === 200 && o3.j.order && o3.j.order.id, o3.j)
+  const o4 = await jreq('/v1/credits/orders', { method: 'POST', token, body: { amount: 1 } })
+  check('防刷-pending 占位唯一（第二单被拒 429）', o4.code === 429, o4.j)
+  if (o3.j.order && o3.j.order.id) {
+    const v1 = await jreq(`/v1/credits/orders/${o3.j.order.id}/voucher`, { method: 'POST', token, body: { voucher: 'TESTVOUCH123' } })
+    check('防刷-提交凭证', v1.code === 200, v1.j)
+    const c3 = await jreq(`/v1/credits/orders/${o3.j.order.id}/cancel`, { method: 'POST', token })
+    check('防刷-取消审核中订单', c3.code === 200, c3.j)
+    const o5 = await jreq('/v1/credits/orders', { method: 'POST', token, body: { amount: 1 } })
+    check('防刷-取消后可再下单', o5.code === 200 && o5.j.order && o5.j.order.id, o5.j)
+    if (o5.j.order && o5.j.order.id) {
+      const v2 = await jreq(`/v1/credits/orders/${o5.j.order.id}/voucher`, { method: 'POST', token, body: { voucher: 'TESTVOUCH123' } })
+      check('防刷-凭证号全局唯一（重复被拒 409）', v2.code === 409, v2.j)
+    }
+  }
+
+  // 13. 每日签到（+50/天，累计封顶 200）
   const s1 = await jreq('/v1/credits/signin', { method: 'POST', token })
   check('签到成功 +50', s1.code === 200 && s1.j.ok && s1.j.awarded === 50 && s1.j.total === 50, s1.j)
   const balAfterSign = await jreq('/v1/credits/balance', { token })

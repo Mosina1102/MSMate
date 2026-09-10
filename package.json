@@ -1,6 +1,6 @@
 {
   "name": "ms-interconnect",
-  "version": "2.7.12",
+  "version": "2.7.13",
   "description": "MSMate - 局域网互联 + 内置 AI 电脑助手",
   "main": "main.js",
   "scripts": {

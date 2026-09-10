@@ -897,6 +897,7 @@ class WorkAgent {
       // 1. 获取模型回复。网页模式：把增量（用户消息/工具结果）发进网页会话抓回复；
       //    API 模式：全量 messages 流式（网络瞬断/空闲超时自动重试一次，失败才上报）
       let content = ''
+      let roundCreditsUsed = 0 // 本轮 LLM 调用扣费（内置模型回执，随回复入史；网页模型免费恒为 0——声明必须在双分支公共作用域，否则网页路径入史时 ReferenceError）
       this.send({ type: 'assistant_start' })
       if (this._webMode) {
         try {
@@ -924,7 +925,6 @@ class WorkAgent {
       const MAX_STREAM_TRIES = 2 // 普通网络错误重试上限；429 限流无限重试（60 秒一轮跨分钟窗口），只受手动停止约束
       let fastFails = 0 // 连续非限流失败数
       let wait429 = 0 // 限流等待轮数（提示文案用）
-      let roundCreditsUsed = 0 // 本轮 LLM 调用扣费（内置模型回执，随回复入史，重载后恢复积分标注）
       while (true) {
         content = ''
         let usageMeta = null // 内置模型扣费回执（每轮调用一帧）
