@@ -2207,7 +2207,7 @@ console.log('— v2.4.82：钩子半残中毒修复（第二句话起永久瞎�
     } catch (e) {
       ok(false, `套模板测试失败: ${(e.stdout || e.message).toString().slice(-150)}`)
     }
-    ok(pkg.version === '2.7.16', `package.json 版本 2.7.16（实际 ${pkg.version}）`)
+    ok(pkg.version === '2.7.17', `package.json 版本 2.7.17（实际 ${pkg.version}）`)
   }
 
   // ===== v2.6.0：工具手册化（渐进式披露：主规则瘦身，深度说明迁 ai/manuals 六册）=====

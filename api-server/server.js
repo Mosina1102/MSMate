@@ -1957,10 +1957,10 @@ function readBody(req, maxBytes) {
 // ─────────────────── 服务器 ───────────────────
 
 const LATEST = {
-  version: '2.7.16',
+  version: '2.7.17',
   url: 'https://github.com/Mosina1102/MSMate/releases/latest',
-  notes: '传输加密（密码全程 RSA 加密）；好友桥接支持设备 ID 直连；网页下载显示进度条；新增应用内问题反馈；批款后台 v0.6 大改版（仪表盘/用户/反馈/在线设备）',
-  publishedAt: '2026-09-10'
+  notes: 'AI 新增工具组合手册：复合任务按真人助理节奏工作（开工报目标→清单挂账→逐步播报→交付交代），内置 11 条工具链配方与实战示例（如一句话做城市介绍 PPT）',
+  publishedAt: '2026-09-11'
 }
 
 const server = http.createServer(async (req, res) => {
