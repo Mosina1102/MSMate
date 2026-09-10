@@ -540,15 +540,19 @@ class TCPAgent extends EventEmitter {
         // 2.0 设备：配对码验证通过前不激活连接（业务消息全部拦截）
         socket._unverified = true
         this.pendingSockets.set(data.deviceId, socket)
-        // 被动方（接收方）：生成配对码并通知 UI；发起方等 hello-ack 后弹输码框
+        // 被动方（接收方）：局域网生成配对码并通知 UI（发起方看得到本机屏幕）；
+        // 远程（公网/桥接，_viaNet/_viaRelay）看不到彼此屏幕 → 不发码，等 onPairRequest 弹「同意/拒绝」审批
         if (socket._role !== 'outbound') {
-          const pairCode = this.authManager.generatePairCode()
-          this.emit('incoming-pair-request', {
-            deviceId: data.deviceId,
-            deviceInfo: data,
-            pairCode,
-            isV2: true
-          })
+          const remote = !!(socket._viaNet || socket._viaRelay)
+          const pairCode = remote ? '' : this.authManager.generatePairCode()
+          if (!remote) {
+            this.emit('incoming-pair-request', {
+              deviceId: data.deviceId,
+              deviceInfo: data,
+              pairCode,
+              isV2: true
+            })
+          }
         }
         // 5 分钟未完成配对 → 断开
         clearTimeout(socket._pairTimeout)
@@ -593,7 +597,8 @@ class TCPAgent extends EventEmitter {
     // 记录对端真实设备信息（ack 描述的是对方自己）——后续配对/激活一律以此为准
     if (data.deviceId) socket._deviceInfo = { ...data }
 
-    // 对方是 2.0 且尚未信任本机、且本机是发起方 → 弹出配对码输入框（需输入对方屏幕上的码）
+    // 对方是 2.0 且尚未信任本机、且本机是发起方 → 弹配对 UI：
+    // 局域网 = 输对方屏幕上的配对码；远程（_viaNet/_viaRelay）= 发 pair-request 触发对方屏幕「同意/拒绝」
     if (data.trusted === false && isV2 && socket._role === 'outbound') {
       socket._unverified = true
       if (data.deviceId) this.pendingSockets.set(data.deviceId, socket)
@@ -603,11 +608,31 @@ class TCPAgent extends EventEmitter {
           try { socket.destroy() } catch {}
         }
       }, 5 * 60 * 1000)
+      const remote = !!(socket._viaNet || socket._viaRelay)
       this.emit('pair:required', {
         deviceId: data.deviceId,
         deviceInfo: data,
-        isV2: true
+        isV2: true,
+        remote
       })
+      if (remote) {
+        // 远程审批：等待对方在自己屏幕点「同意」→ 对方回 pair-verify-result(success) 激活本端
+        this.sendWithResponse(socket, 'pair-request', { deviceId: this.deviceId }, 5 * 60 * 1000).then((res) => {
+          if (res && res.success) {
+            const peerInfo = socket._deviceInfo
+              ? { ...socket._deviceInfo, deviceId: data.deviceId }
+              : { deviceId: data.deviceId, hostname: '远程设备' }
+            this.authManager.addTrustedDevice(data.deviceId, peerInfo)
+            this.activateConnection(socket, peerInfo)
+          } else {
+            this.emit('log', `远程配对未通过: ${(res && res.error) || '对方拒绝或超时'}`)
+            this.emit('pair:decision', { deviceId: data.deviceId, accepted: false, reason: (res && res.error) || 'rejected' })
+            try { socket.destroy() } catch {}
+          }
+        }).catch(() => {
+          this.emit('pair:decision', { deviceId: data.deviceId, accepted: false, reason: 'timeout' })
+        })
+      }
     }
 
     // 更新信任列表中的设备信息（改名等）
@@ -1311,10 +1336,21 @@ class TCPAgent extends EventEmitter {
       this.sendMsg(socket, 'pair-response', {
         accepted: true, alreadyTrusted: true
       })
+      // v2.7.14 远程审批：已信任也直接激活 + 回执成功（发起方 pair-request 的 requestId 等的就是它）
+      if (message.requestId) {
+        this.activateConnection(socket, deviceInfo)
+        this.sendMsg(socket, 'pair-verify-result', { success: true, alreadyTrusted: true, deviceInfo }, message.requestId)
+      }
       return
     }
 
-    this.emit('incoming-pair-request', { deviceId, deviceInfo })
+    // 带上 requestId（发起方 pair-request 的应答通道）+ remote 标记（渲染层据此弹「同意/拒绝」而非显示配对码）
+    this.emit('incoming-pair-request', {
+      deviceId,
+      deviceInfo,
+      requestId: message.requestId || '',
+      remote: !!(socket._viaNet || socket._viaRelay)
+    })
   }
 
   async onPairVerifyCode(socket, message) {
@@ -1363,15 +1399,34 @@ class TCPAgent extends EventEmitter {
     }
   }
 
-  // 取消/拒绝配对 = 直接断开连接（2.0 设备只能通过配对码建立信任，无人工接受通道）
-  respondPair(deviceId, accepted) {
-    const socket = this.connections.get(deviceId) || this.pendingSockets.get(deviceId)
-    if (!socket) return { success: false, error: '设备未连接' }
-
+  // 取消/拒绝配对；v2.7.14 远程审批：accepted=true = 被连方点「同意」→ 建立信任 + 激活 + 按 requestId 回执发起方
+  respondPair(deviceId, accepted, requestId) {
+    const socket = this.pendingSockets.get(deviceId) || this.connections.get(deviceId)
+    if (accepted) {
+      if (!socket) return { success: false, error: '设备未连接或配对已超时' }
+      return this.approvePair(deviceId, socket, requestId)
+    }
+    if (socket && requestId) {
+      this.sendMsg(socket, 'pair-verify-result', { success: false, error: '对方拒绝了本次连接' }, requestId)
+    }
     try { socket.destroy() } catch {}
     this.connections.delete(deviceId)
     this.pendingSockets.delete(deviceId)
     this.emit('pair:decision', { deviceId, accepted: false })
+    return { success: true }
+  }
+
+  // 远程审批通过：被连方点「同意」→ 信任 + 激活本端 + 按 requestId 回执发起方（其 pair-request 应答）
+  approvePair(deviceId, socket, requestId) {
+    const deviceInfo = socket._deviceInfo || { deviceId, hostname: '远程设备' }
+    this.authManager.addTrustedDevice(deviceId, deviceInfo)
+    this.activateConnection(socket, deviceInfo)
+    clearTimeout(socket._pairTimeout)
+    if (requestId) {
+      this.sendMsg(socket, 'pair-verify-result', { success: true, deviceInfo, approved: true }, requestId)
+    }
+    this.emit('log', `远程配对已同意: ${deviceInfo.hostname || deviceId}`)
+    this.emit('pair:auto-accepted', { deviceId, deviceInfo })
     return { success: true }
   }
 

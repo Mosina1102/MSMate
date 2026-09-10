@@ -90,10 +90,13 @@
             <span class="sidebar-title">设备</span>
             <span id="deviceCount" class="count-tag">0</span>
           </div>
-          <div class="manual-connect">
-            <input type="text" id="manualIPInput" class="ip-input" placeholder="输入对方 IP 直连..." />
-            <button class="btn btn-accent btn-xs" id="manualConnectBtn" title="通过 IP 直接连接">
-              <span>连接</span>
+          <div class="device-tabs">
+            <div class="tab-group">
+              <button class="tab-btn active" data-dtab="discover" id="dtabDiscover">发现</button>
+              <button class="tab-btn" data-dtab="friends" id="dtabFriends">桥接</button>
+            </div>
+            <button class="btn btn-ghost btn-xs" id="friendAddBtn" title="添加桥接：对方 IP 或设备 ID，加了即可一键直连">
+              <span data-icon="user-plus"></span>
             </button>
           </div>
           <div class="relay-row" id="relayRow" title="互联网模式：登录后自动连接官方服务，异地设备自动出现在列表">
@@ -560,6 +563,31 @@
         </div>
         <div class="modal-footer">
           <button class="btn btn-secondary" id="relayCancel">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 添加桥接弹窗 -->
+    <div class="modal-overlay hidden" id="friendModal">
+      <div class="modal">
+        <div class="modal-header">
+          <h3><span data-icon="user-plus"></span>添加桥接</h3>
+        </div>
+        <div class="modal-body">
+          <div class="pair-code-input">
+            <label>对方 IP 或设备 ID：</label>
+            <input type="text" id="friendHost" placeholder="192.168.1.23 / 公网 IP / 设备 ID" autocomplete="off">
+          </div>
+          <div class="pair-code-input">
+            <label>备注名（可选）：</label>
+            <input type="text" id="friendName" placeholder="怎么称呼这台设备" maxlength="32" autocomplete="off">
+          </div>
+          <p class="ptt-hint">加了桥接一键直连；首次连接仍需对方在其屏幕上点「同意」。设备 ID 在对方「互联网模式」面板查看；对方不在线时填 IP。</p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="friendCancel">取消</button>
+          <button class="btn btn-ghost" id="friendConnectOnce">仅连接</button>
+          <button class="btn btn-primary" id="friendSave">添加桥接</button>
         </div>
       </div>
     </div>

@@ -61,6 +61,9 @@ const state = {
   ipv6Peers: new Map(),
   // 互联网在线设备（msmate-api presence 登记的设备，P2P 直连公网 IP）
   netDevices: new Map(),
+  // 设备区页签（discover=自动发现分组 / friends=好友通讯录）+ 好友列表
+  deviceTab: 'discover',
+  friends: [],
 }
 
 // === DOM ===
@@ -200,15 +203,20 @@ function showErrorScreen() {
 
 function bindEvents() {
   const bind = (id, evt, fn) => { const el = $(id); if (el) el.addEventListener(evt, fn) }
-  
+
   bind('refreshBtn', 'click', refreshDevices)
-  bind('manualConnectBtn', 'click', manualConnect)
-  const manualIPInput = $('manualIPInput')
-  if (manualIPInput) {
-    manualIPInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') manualConnect()
+  // 设备区页签（发现/桥接）+ 添加桥接弹窗（逻辑在 word-rich.js 设备域）
+  document.querySelectorAll('[data-dtab]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.deviceTab = btn.dataset.dtab
+      document.querySelectorAll('[data-dtab]').forEach((b) => b.classList.toggle('active', b === btn))
+      if (typeof renderDeviceList === 'function') renderDeviceList()
     })
-  }
+  })
+  bind('friendAddBtn', 'click', () => { if (typeof openFriendModal === 'function') openFriendModal() })
+  bind('friendCancel', 'click', () => { const m = $('friendModal'); if (m) m.classList.add('hidden') })
+  bind('friendConnectOnce', 'click', () => { if (typeof handleFriendConnectOnce === 'function') handleFriendConnectOnce() })
+  bind('friendSave', 'click', () => { if (typeof handleFriendSave === 'function') handleFriendSave() })
   bind('selectLocalFolder', 'click', selectLocalFolder)
   bind('selectFiles', 'click', selectFiles)
   bind('localUp', 'click', () => navigateUp('local'))
@@ -347,6 +355,7 @@ function setupIPCLListeners() {
   // 2.0：配对流程（被连方弹码 / 发起方输码 / 自动接受）
   _api.onIncomingPairRequest(handlePairRequest)
   _api.onPairRequired(handlePairRequired)
+  if (_api.onPairDecision) _api.onPairDecision(handlePairDecision)
   _api.onPairAutoAccepted(handlePairAutoAccepted)
   _api.onDeviceLost((deviceId) => {
     state.devices.delete(deviceId)
@@ -904,4 +913,4 @@ document.addEventListener('DOMContentLoaded', () => {
     console.error('init failed:', err)
     showToast('初始化失败', 'error')
   })
-})
+})

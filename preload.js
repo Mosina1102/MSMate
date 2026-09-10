@@ -186,6 +186,16 @@ try {
     netQuota: () => ipcRenderer.invoke('net:quota'),
     onNetQuotaExceeded: (cb) => ipcRenderer.on('net-quota-exceeded', () => { try { cb() } catch { } }),
 
+    // 好友（远程设备通讯录）
+    getFriends: () => ipcRenderer.invoke('friends:get'),
+    addFriend: (host, name) => ipcRenderer.invoke('friends:add', { host, name }),
+    removeFriend: (host) => ipcRenderer.invoke('friends:remove', { host }),
+
+    // 远程审批被拒/超时（发起方等待框收尾）
+    onPairDecision: (callback) => {
+      ipcRenderer.on('pair:decision', (_e, data) => { try { callback(data) } catch { } })
+    },
+
     // 应用更新检查（GitHub Releases）+ 语音合成试听（v2.4.97）
     checkUpdate: () => ipcRenderer.invoke('app:check-update'),
     ttsSpeak: (payload) => ipcRenderer.invoke('ai:tts', payload || {}),

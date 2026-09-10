@@ -1970,35 +1970,12 @@ async function refreshDevices() {
   }
 }
 
-async function manualConnect() {
-  const input = $('manualIPInput')
-  if (!input) return
-  const ip = input.value.trim()
-  if (!ip) {
-    showToast('请输入对方 IP 地址', 'error')
-    input.focus()
-    return
-  }
-  state.lastConnectedIP = ip
-  state.manualDisconnect = false
-  state.reconnectAttempts = 0
-  try {
-    updateStatus(`正在连接 ${ip}...`, 'connecting')
-    const result = await _api.connectByIP(ip)
-    if (result.success) {
-      showToast(`正在连接 ${ip}，请稍候...`, 'info')
-    } else {
-      showToast(`连接失败: ${result.error}（请确认对方 MSMate 已打开）`, 'error')
-      updateStatus('就绪', 'ready')
-    }
-  } catch (err) {
-    showToast(`连接失败: ${err.message}（请确认对方 MSMate 已打开）`, 'error')
-    updateStatus('就绪', 'ready')
-  }
-}
+// v2.7.14：手动 IP 直连已并入「桥接」弹窗（仅连接不保存），manualConnect 退役
 
 function renderDeviceList() {
   if (!deviceItems || !deviceCount) return
+  // 桥接页签：好友通讯录单独渲染
+  if (state.deviceTab === 'friends') return renderFriendsList()
   // 合并四类设备：局域网 > 中转 > IPv6 历史 > 互联网 presence（同 ID 以高优先级为准）
   const devices = Array.from(state.devices.values())
   for (const d of state.relayDevices.values()) {
@@ -2012,12 +1989,15 @@ function renderDeviceList() {
   }
 
   if (devices.length === 0) {
-    deviceItems.innerHTML = `<div class="empty-state"><div class="empty-icon">${iconSvg('search')}</div><div>正在扫描局域网...</div><div class="empty-hint">确保对方已启动本程序</div></div>`
+    deviceItems.innerHTML = `<div class="empty-state"><div class="empty-icon">${iconSvg('search')}</div><div>正在扫描局域网...</div><div class="empty-hint">异地设备？点右上角 + 添加桥接</div></div>`
     deviceCount.textContent = '0'
     return
   }
 
-  deviceItems.innerHTML = devices.map(device => {
+  // 按类型分组：局域网 / 远程在线（互联网 presence、桥接、IPv6）
+  const lan = devices.filter(d => !d.viaNet && !d.viaRelay && !d.viaIPv6)
+  const remote = devices.filter(d => d.viaNet || d.viaRelay || d.viaIPv6)
+  const deviceHtml = (device) => {
     const isActive = state.connectedDeviceId === device.deviceId
     const isConnected = state.connectedDevices.has(device.deviceId)
     const displayName = device.name || device.hostname
@@ -2042,7 +2022,13 @@ function renderDeviceList() {
       </div>
       <span class="device-status ${isActive || isConnected ? 'online' : 'offline'}">${statusText}</span>
     </div>`
-  }).join('') + netQuotaHintHtml(devices)
+  }
+  const groupHtml = (title, list, icon) => list.length
+    ? `<div class="device-group-title">${iconSvg(icon)} ${title} · ${list.length}</div>` + list.map(deviceHtml).join('')
+    : ''
+  deviceItems.innerHTML = groupHtml('局域网', lan, 'laptop')
+    + groupHtml('远程在线', remote, 'globe')
+    + netQuotaHintHtml(devices)
 
   deviceCount.textContent = devices.length
 
@@ -2119,6 +2105,127 @@ if (window.api && window.api.onNetQuotaExceeded) {
   })
 }
 
+// === 桥接（v2.7.14）：远程设备通讯录，加好友式一键直连，存 settings.json ===
+function findDiscoveredByFriend(f) {
+  const all = [...state.devices.values(), ...state.netDevices.values(), ...state.ipv6Peers.values(), ...state.relayDevices.values()]
+  return all.find(d => d.deviceId === f.host || d.ip === f.host)
+}
+
+function renderFriendsList() {
+  const friends = state.friends || []
+  deviceCount.textContent = friends.length
+  if (!friends.length) {
+    deviceItems.innerHTML = `<div class="empty-state"><div class="empty-icon">${iconSvg('user-plus')}</div><div>还没有桥接设备</div><div class="empty-hint">点右上角 +，填对方 IP 或设备 ID</div></div>`
+    return
+  }
+  deviceItems.innerHTML = friends.map((f) => {
+    const disc = findDiscoveredByFriend(f)
+    const name = f.name || f.host
+    return `<div class="device-item friend-item" data-host="${escapeHtml(f.host)}">
+      <span class="device-icon">${iconSvg('globe')}</span>
+      <div class="device-info">
+        <div class="device-name">${escapeHtml(name)}${disc ? ' <span class="relay-badge">在线</span>' : ''}</div>
+        <div class="device-meta"><span>${escapeHtml(f.host)}</span></div>
+      </div>
+      <span class="device-status ${disc ? 'online' : 'offline'}">${disc ? '连接' : '离线'}</span>
+      <button type="button" class="friend-del" data-host="${escapeHtml(f.host)}" title="删除桥接">${iconSvg('x')}</button>
+    </div>`
+  }).join('')
+  deviceItems.querySelectorAll('.friend-item').forEach((item) => {
+    item.addEventListener('click', (e) => {
+      if (e.target.closest('.friend-del')) return
+      const f = (state.friends || []).find(x => x.host === item.dataset.host)
+      if (f) connectFriend(f)
+    })
+  })
+  deviceItems.querySelectorAll('.friend-del').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation()
+      const host = btn.dataset.host
+      if (!confirm('删除这个桥接？\n（只从列表移除；已建立的信任要在设备右键里移除）')) return
+      try {
+        const r = await _api.removeFriend(host)
+        state.friends = (r && r.friends) || (state.friends || []).filter(x => x.host !== host)
+        renderFriendsList()
+        showToast('已删除桥接', 'success')
+      } catch (err) {
+        showToast(`删除失败: ${err.message}`, 'error')
+      }
+    })
+  })
+}
+
+// 好友连接：优先对上发现列表（设备 ID/在线 IP），否则按 IP 直连；设备 ID 且离线 → 提示
+async function connectFriend(f) {
+  const disc = findDiscoveredByFriend(f)
+  if (disc) { connectToDevice(disc.deviceId); return }
+  const isPrivate = /^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|0\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(f.host)
+  if (!isPrivate && !f.host.includes(':')) {
+    // 公网 IPv4：走额度预检
+    const q = await _api.netQuota().catch(() => null)
+    if (q && q.left <= 0) { showToast('今日互联网传输额度已用完（2GB/天），明日自动恢复', 'error'); return }
+  }
+  state.lastConnectedIP = f.host
+  state.manualDisconnect = false
+  state.reconnectAttempts = 0
+  showToast(`正在连接 ${f.name || f.host}...`, 'info')
+  try {
+    const result = await _api.connectByIP(f.host)
+    if (!result.success) {
+      showToast(`连接失败: ${result.error}（对方需在线且 MSMate 已打开；填设备 ID 时对方须在线）`, 'error')
+    }
+  } catch (err) {
+    showToast(`连接失败: ${err.message}`, 'error')
+  }
+}
+
+function openFriendModal() {
+  const m = $('friendModal')
+  if (!m) return
+  $('friendHost').value = ''
+  $('friendName').value = ''
+  m.classList.remove('hidden')
+  setTimeout(() => { const h = $('friendHost'); if (h) h.focus() }, 100)
+}
+
+function friendHostValue() {
+  const el = $('friendHost')
+  return el ? el.value.trim() : ''
+}
+
+function switchDeviceTab(tab) {
+  state.deviceTab = tab
+  document.querySelectorAll('[data-dtab]').forEach((b) => b.classList.toggle('active', b.dataset.dtab === tab))
+  renderDeviceList()
+}
+
+async function handleFriendSave() {
+  const host = friendHostValue()
+  if (!host) { showToast('请填写对方 IP 或设备 ID', 'error'); return }
+  try {
+    const r = await _api.addFriend(host, ($('friendName') || {}).value || '')
+    if (r && r.ok) {
+      state.friends = r.friends || []
+      const m = $('friendModal')
+      if (m) m.classList.add('hidden')
+      switchDeviceTab('friends')
+      showToast('桥接已添加，对方在线时一键直连', 'success')
+    } else {
+      showToast((r && r.error) || '添加失败', 'error')
+    }
+  } catch (err) {
+    showToast(`添加失败: ${err.message}`, 'error')
+  }
+}
+
+function handleFriendConnectOnce() {
+  const host = friendHostValue()
+  if (!host) { showToast('请填写对方 IP 或设备 ID', 'error'); return }
+  const m = $('friendModal')
+  if (m) m.classList.add('hidden')
+  connectFriend({ host, name: ($('friendName') || {}).value || '' })
+}
+
 // === 互联网在线设备（v0.4）：msmate-api presence 登记，30s 轮询；连接走 P2P 公网 IP 直连 ===
 async function refreshNetDevices() {
   let changed = false
@@ -2143,6 +2250,13 @@ async function refreshNetDevices() {
 }
 setInterval(refreshNetDevices, 30000)
 setTimeout(refreshNetDevices, 6000)
+// 桥接列表启动加载
+if (window.api && window.api.getFriends) {
+  window.api.getFriends().then((list) => {
+    state.friends = Array.isArray(list) ? list : []
+    renderDeviceList()
+  }).catch(() => { })
+}
 
 // === 互联网模式（v0.5：官方服务自动连接，无需用户配置） ===
 // 侧栏状态徽标 = 登录态（presence 心跳随登录自动运行）；弹窗展示官方连接状态 + 本机 ID + 额度
@@ -2844,17 +2958,42 @@ async function showPairCode() {
   }
 }
 
-// 发起方取消配对 = 断开连接（2.0 设备只能通过配对码建立信任，无人工接受通道）
+// 发起方取消配对 / 被连方拒绝（审批模式带 requestId 回执对方）
 function handlePairReject() {
   if (!pairRequestModal) return
-  _api.acceptPair({ deviceId: pairRequestModal.dataset.deviceId, accepted: false })
+  _api.acceptPair({
+    deviceId: pairRequestModal.dataset.deviceId,
+    accepted: false,
+    requestId: pairRequestModal.dataset.mode === 'approve' ? (pairRequestModal.dataset.requestId || '') : undefined
+  })
   pairRequestModal.classList.add('hidden')
+  pairRequestModal.dataset.mode = ''
 }
 
-// 2.0：发起方提交配对码
+// 2.0：发起方提交配对码（局域网）；桥接审批模式 = 直接回同意
 async function handlePairSubmitCode() {
   if (!pairRequestModal) return
   const deviceId = pairRequestModal.dataset.deviceId
+  // 桥接审批模式：被连方点「同意连接」→ 带 requestId 回执发起方，双方建立信任
+  if (pairRequestModal.dataset.mode === 'approve') {
+    const btn = $('pairSubmitCode')
+    if (btn) { btn.disabled = true; btn.textContent = '处理中...' }
+    try {
+      const r = await _api.acceptPair({ deviceId, accepted: true, requestId: pairRequestModal.dataset.requestId || '' })
+      if (r && r.success) {
+        pairRequestModal.classList.add('hidden')
+        pairRequestModal.dataset.mode = ''
+        showToast('已同意，桥接建立', 'success')
+      } else {
+        showToast((r && r.error) || '操作失败', 'error')
+      }
+    } catch (err) {
+      showToast(`操作失败: ${err.message}`, 'error')
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '同意连接' }
+    }
+    return
+  }
   const code = (pairCodeInput ? pairCodeInput.value : '').trim()
   if (!/^\d{6}$/.test(code)) { showToast('请输入 6 位数字配对码', 'error'); return }
   const btn = $('pairSubmitCode')
@@ -2876,7 +3015,8 @@ async function handlePairSubmitCode() {
   }
 }
 
-// 2.0：发起方——对方尚未信任本机，弹出配对码输入框
+// 2.0：发起方——对方尚未信任本机，弹出配对 UI。
+// 局域网 = 输对方屏幕上的 6 位码；远程桥接（remote）= 无码可输，显示"等待对方点同意"等待态
 // （1.0 设备的 hello-ack 不带 trusted 字段，不会触发本函数，走自动信任直连）
 function handlePairRequired(data) {
   if (!pairRequestModal) return
@@ -2889,9 +3029,21 @@ function handlePairRequired(data) {
   const submitBtn = $('pairSubmitCode')
   const rejectBtn = $('pairReject')
   const hint = $('pairRequesterHint')
+  if (data.remote) {
+    // 远程审批等待态：对方屏幕会弹「同意/拒绝」
+    pairRequestModal.dataset.mode = 'wait'
+    if (title) title.textContent = '桥接连接'
+    if (requesterView) requesterView.classList.add('hidden')
+    if (submitBtn) submitBtn.classList.add('hidden')
+    if (rejectBtn) { rejectBtn.classList.remove('hidden'); rejectBtn.textContent = '取消' }
+    if (hint) hint.textContent = '桥接请求已送达，请在对方设备的屏幕上点「同意」…（双方同意后即建立信任并直连，5 分钟内有效）'
+    pairRequestModal.classList.remove('hidden')
+    return
+  }
+  pairRequestModal.dataset.mode = 'code'
   if (title) title.textContent = '配对验证'
   if (requesterView) requesterView.classList.remove('hidden')
-  if (submitBtn) submitBtn.classList.remove('hidden')
+  if (submitBtn) { submitBtn.classList.remove('hidden'); submitBtn.textContent = '确认配对' }
   if (rejectBtn) { rejectBtn.classList.remove('hidden'); rejectBtn.textContent = '取消' }
   if (hint) hint.textContent = '对方屏幕右下角会收到连接通知并显示 6 位配对码（顶栏同步显示），输入后即可自动完成配对'
   if (pairCodeInput) { pairCodeInput.value = ''; setTimeout(() => pairCodeInput.focus(), 100) }
@@ -2906,10 +3058,39 @@ function handlePairRequired(data) {
   }, 300000)
 }
 
-// 2.0：被连方——右下角通知 + 顶栏显示配对码（不弹挡屏弹窗，不打断工作）
-// 配对码是接收方告诉发起方的，无需接收方做任何确认，码对即自动完成配对
+// 发起方等待态收尾：对方拒绝/超时（pair:decision）
+function handlePairDecision(data) {
+  if (!pairRequestModal || pairRequestModal.classList.contains('hidden')) return
+  if (data.deviceId && pairRequestModal.dataset.deviceId && pairRequestModal.dataset.deviceId !== data.deviceId) return
+  pairRequestModal.classList.add('hidden')
+  pairRequestModal.dataset.mode = ''
+  showToast(data.accepted ? '桥接成功' : '对方拒绝了本次连接或已超时', data.accepted ? 'success' : 'error')
+}
+
+// 2.0：被连方——局域网：右下角通知 + 顶栏显示配对码（码对即自动完成配对）；
+// 远程桥接：对方看不到本机屏幕 → 弹「同意/拒绝」审批卡（同意 = 建立双向信任）
 function handlePairRequest(data) {
   const name = (data.deviceInfo && (data.deviceInfo.name || data.deviceInfo.hostname)) || '未知设备'
+  if (data.remote) {
+    if (!pairRequestModal || !data.requestId) return
+    pairRequestModal.dataset.deviceId = data.deviceId
+    pairRequestModal.dataset.requestId = data.requestId
+    pairRequestModal.dataset.mode = 'approve'
+    const targetEl = $('pairTargetName')
+    if (targetEl) targetEl.textContent = name
+    const requesterView = $('pairRequesterView')
+    if (requesterView) requesterView.classList.add('hidden')
+    const title = $('pairModalTitle')
+    if (title) title.textContent = '桥接连接请求'
+    const submitBtn = $('pairSubmitCode')
+    if (submitBtn) { submitBtn.classList.remove('hidden'); submitBtn.textContent = '同意连接' }
+    const rejectBtn = $('pairReject')
+    if (rejectBtn) { rejectBtn.classList.remove('hidden'); rejectBtn.textContent = '拒绝' }
+    const hint = $('pairRequesterHint')
+    if (hint) hint.textContent = '对方通过互联网发起桥接连线，同意后双方建立信任并直连（不想连就点拒绝）'
+    pairRequestModal.classList.remove('hidden')
+    return
+  }
   // 顶栏显示配对码（5 分钟有效）
   if (data.pairCode) {
     state.pairCode = data.pairCode
@@ -4378,4 +4559,4 @@ function escapeHtml(str) {
   div.textContent = str
   return div.innerHTML
 }
-
+

@@ -5277,6 +5277,49 @@ body.work-mode .account-row {
   height: 13px;
   flex-shrink: 0;
 }
+/* 设备区页签（发现/桥接）+ 分组标题 + 桥接删除按钮 */
+.device-tabs {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px 6px;
+}
+.device-group-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 8px 10px 4px;
+  letter-spacing: 0.02em;
+}
+.device-group-title .ic-svg {
+  width: 12px;
+  height: 12px;
+}
+.friend-del {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+.friend-item:hover .friend-del {
+  opacity: 1;
+}
+.friend-del:hover {
+  color: var(--status-err, #d64541);
+}
+.friend-del .ic-svg {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
 .credits-balance-row {
   display: flex;
   align-items: center;

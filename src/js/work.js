@@ -2306,6 +2306,25 @@ async function restoreHistory(sid) {
   if (!Array.isArray(history)) return
   // 从历史消息重建过程折叠块：assistant 消息里的 tool 块 → ⚙️ 折叠块，最后的纯文本回复展开
   let groupCalls = [] // 当前一轮累积的工具调用摘要 [{name, args}]
+  // 段内积分总和（v2.7.14）：多步任务最后一条总结显示整段累计（每步积分仍在各自中间消息上）。段 = 两条真实用户消息之间
+  const segTotals = new Map()
+  {
+    let acc = 0
+    let lastAssistantIdx = -1
+    for (let i = 0; i < history.length; i++) {
+      const m = history[i]
+      const isRealUser = m.role === 'user' && m.content && !m.content.startsWith('<tool_result') && !m.content.startsWith('（系统提示')
+      if (isRealUser) {
+        if (lastAssistantIdx >= 0) segTotals.set(lastAssistantIdx, acc)
+        acc = 0
+        lastAssistantIdx = -1
+      } else if (m.role === 'assistant') {
+        acc += m._credits || 0
+        lastAssistantIdx = i
+      }
+    }
+    if (lastAssistantIdx >= 0) segTotals.set(lastAssistantIdx, acc)
+  }
   const flushGroup = (finalMsg, reasoning, credits) => {
     if (groupCalls.length) {
       clearChatEmpty()
@@ -2347,7 +2366,7 @@ async function restoreHistory(sid) {
         groupCalls.push(...calls)
         if (clean) flushGroup(null) // 有说明文字但后面还有工具/回复，说明文字并入历史（可忽略）
       } else if (clean) {
-        flushGroup(clean, msg._reasoning, msg._credits)
+        flushGroup(clean, msg._reasoning, segTotals.has(i) ? segTotals.get(i) : (msg._credits || 0))
       }
     }
   }

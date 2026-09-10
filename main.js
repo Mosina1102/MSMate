@@ -545,6 +545,10 @@ function initServices() {
   tcpAgent.on('paired', (data) => {
     if (mainWindow) mainWindow.webContents.send('paired', data)
   })
+  // 远程审批被拒/超时：通知发起方 UI 关掉等待框
+  tcpAgent.on('pair:decision', (data) => {
+    if (mainWindow) mainWindow.webContents.send('pair:decision', data)
+  })
 
   // 对讲机：对方喊话事件转发到渲染进程
   tcpAgent.on('ptt-start', ({ deviceId, sampleRate }) => {
@@ -848,8 +852,8 @@ ipcMain.handle('app:get-pair-code', () => {
   return authManager.generatePairCode()
 })
 
-ipcMain.handle('app:accept-pair', async (event, { deviceId, accepted }) => {
-  return tcpAgent.respondPair(deviceId, accepted)
+ipcMain.handle('app:accept-pair', async (event, { deviceId, accepted, requestId }) => {
+  return tcpAgent.respondPair(deviceId, accepted, requestId)
 })
 // 2.0：发起方提交配对码校验
 ipcMain.handle('app:verify-pair-code', async (event, { deviceId, code }) => {
@@ -916,6 +920,38 @@ ipcMain.handle('connection:connect-by-ip', async (event, { ip }) => {
 // 互联网传输额度查询（渲染层设备列表展示 + 连接前预检）
 ipcMain.handle('net:quota', async () => {
   return { limit: NET_DAILY_LIMIT, used: netUsageToday().bytes, left: netQuotaLeft() }
+})
+
+// ===== 好友（远程设备通讯录，v2.7.14）：存 settings.json，加好友一键直连 =====
+function friendsNormalize(list) {
+  return (Array.isArray(list) ? list : [])
+    .filter(f => f && String(f.host || '').trim())
+    .slice(0, 50)
+}
+
+ipcMain.handle('friends:get', async () => {
+  return friendsNormalize(getSetting('friends'))
+})
+
+ipcMain.handle('friends:add', async (event, f) => {
+  const host = String((f && f.host) || '').trim().slice(0, 120)
+  const name = String((f && f.name) || '').trim().slice(0, 32)
+  if (!host) return { ok: false, error: '请填写对方 IP 或设备 ID' }
+  const list = friendsNormalize(getSetting('friends'))
+  const existing = list.findIndex(x => x.host === host)
+  // 重复添加 = 更新备注并置顶；新加不带备注且旧有条目时沿用旧备注
+  const entry = { host, name: name || (existing >= 0 ? (list[existing].name || '') : ''), addedAt: new Date().toISOString() }
+  if (existing >= 0) list.splice(existing, 1)
+  list.unshift(entry)
+  setSetting('friends', list.slice(0, 50))
+  return { ok: true, friends: list.slice(0, 50) }
+})
+
+ipcMain.handle('friends:remove', async (event, { host }) => {
+  const key = String((host || '')).trim()
+  const list = friendsNormalize(getSetting('friends')).filter(x => x.host !== key)
+  setSetting('friends', list)
+  return { ok: true, friends: list }
 })
 
 ipcMain.handle('connection:disconnect', async (event, { deviceId }) => {
