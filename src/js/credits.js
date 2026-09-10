@@ -162,66 +162,13 @@ async function creditsNext() {
 
 function creditsEnterPayStep(order) {
   creditsState.order = order
-  creditsState.shot = ''
   creditsSetStep('pay')
   $('creditsPayAmount').textContent = `¥${order.amount}`
   $('creditsOrderId').textContent = `单号 ${order.id}`
   $('creditsOrderShort').textContent = creditsShortId(order)
   $('creditsVoucher').value = order.voucher || ''
-  $('creditsShot').value = ''
-  $('creditsShotPreview').style.display = 'none'
-  $('creditsShotPreview').removeAttribute('src')
   creditsShowPayError('')
   setTimeout(() => $('creditsVoucher').focus(), 60)
-}
-
-// 选付款截图：canvas 压缩（最长边 1100px / JPEG 0.85），≤400KB 直接可提交（服务端 AI 秒批的前提）
-function creditsPickShot(file) {
-  const preview = $('creditsShotPreview')
-  creditsState.shot = ''
-  preview.style.display = 'none'
-  preview.removeAttribute('src')
-  if (!file) return
-  if (!/^image\/(png|jpeg|webp)$/.test(file.type)) {
-    creditsShowPayError('截图只支持 PNG / JPG / WebP')
-    return
-  }
-  const reader = new FileReader()
-  reader.onload = () => {
-    const img = new Image()
-    img.onload = () => {
-      try {
-        const MAX = 1100
-        const scale = Math.min(1, MAX / Math.max(img.width, img.height))
-        const w = Math.max(1, Math.round(img.width * scale))
-        const h = Math.max(1, Math.round(img.height * scale))
-        const cv = document.createElement('canvas')
-        cv.width = w
-        cv.height = h
-        cv.getContext('2d').drawImage(img, 0, 0, w, h)
-        let dataUrl = cv.toDataURL('image/jpeg', 0.85)
-        while (dataUrl.length > 560000 && scale > 0.4) {
-          scale *= 0.8
-          const w2 = Math.max(1, Math.round(img.width * scale))
-          const h2 = Math.max(1, Math.round(img.height * scale))
-          cv.width = w2
-          cv.height = h2
-          cv.getContext('2d').drawImage(img, 0, 0, w2, h2)
-          dataUrl = cv.toDataURL('image/jpeg', 0.8)
-        }
-        creditsState.shot = dataUrl
-        preview.src = dataUrl
-        preview.style.display = 'block'
-        creditsShowPayError('')
-      } catch (err) {
-        creditsShowPayError(`截图处理失败：${err.message}`)
-      }
-    }
-    img.onerror = () => creditsShowPayError('截图读取失败，请换一张')
-    img.src = reader.result
-  }
-  reader.onerror = () => creditsShowPayError('截图读取失败，请换一张')
-  reader.readAsDataURL(file)
 }
 
 function creditsShowPayError(msg) {
@@ -247,9 +194,9 @@ async function creditsSubmitVoucher() {
   $('creditsSubmitVoucher').disabled = true
   $('creditsSubmitVoucher').textContent = '提交中…'
   try {
-    const r = await window.api.creditsOrderVoucher(creditsState.order.id, voucher, creditsState.shot || '')
+    const r = await window.api.creditsOrderVoucher(creditsState.order.id, voucher)
     if (r && r.ok) {
-      showToast(r.auto ? 'AI 核验通过，积分已自动到账' : '凭证已提交，人工核对后自动到账', 'success')
+      showToast('凭证已提交，人工核对后自动到账', 'success')
       creditsState.order = null
       creditsSetStep('amount')
       $('creditsNextBtn').disabled = !creditsState.amount
@@ -348,10 +295,6 @@ async function creditsCancelOrder(id) {
   $('creditsSubmitVoucher').addEventListener('click', creditsSubmitVoucher)
   $('creditsVoucher').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') creditsSubmitVoucher()
-  })
-  // 付款截图：选图压缩后随凭证提交（附图可走 AI 自动审核秒批）
-  $('creditsShot').addEventListener('change', (e) => {
-    creditsPickShot(e.target.files && e.target.files[0])
   })
   // 我的订单：取消待支付/审核中订单（事件委托）
   $('creditsOrdersList').addEventListener('click', (e) => {

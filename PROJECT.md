@@ -1,14 +1,15 @@
 # MSMate 项目说明（全面摸底文档）
 
-> 生成时间：2026-09-10 ｜ 基于源码实读 + 项目记忆整理
-> 包名 `ms-interconnect`，当前版本 **v2.7.14**，Electron 22（Chromium 108 / Node 16 运行时），Windows 桌面应用
+> 更新时间：2026-09-10（v2.7.16 发布后）｜ 基于源码实读 + 项目记忆整理
+> 包名 `ms-interconnect`，当前版本 **v2.7.16**（已发 GitHub Release），Electron 22（Chromium 108 / Node 16 运行时），Windows 桌面应用
+> 行数均为 node `split('\n')` 口径（PowerShell Measure-Object 忽略空行会虚低）
 
 ## 一、项目定位
 
 MSMate = **局域网/互联网文件互传 + 内置 AI 电脑助手** 一体的桌面应用。
 
 - **互联**：局域网设备发现与文件互传（双面板文件管理器）、配对/好友体系、互联网模式（中转桥接）、IPv6 直连、对讲机（PTT）
-- **Work**：AI 助手（多会话、工具调用、深度思考、生图/看图）、工作台（文件/网页页签）、Word/Excel 所见即所得编辑、Office 生成引擎
+- **Work**：AI 助手（多会话、工具调用、深度思考、生图/看图、**PPT 生成/读取/修改（v2.7.15）**、Word/Excel 读写）、工作台（文件/网页页签）、Word/Excel 所见即所得编辑、Office 生成引擎
 - **账号体系**：邮箱注册登录、积分/充值/签到、云同步、自动更新
 
 ## 二、目录结构总览
@@ -30,7 +31,7 @@ f:\局域网互传2.6\
 └── PROJECT.md         本文档
 ```
 
-## 三、主进程（main.js，3032 行）
+## 三、主进程（main.js，3276 行）
 
 | 区块 | 大致位置 | 职责 |
 |---|---|---|
@@ -52,7 +53,7 @@ f:\局域网互传2.6\
 - 账号/积分：`auth:*`（register/login/me/logout/profile/send-code/reset/avatar）、`credits:*`（order-create/order-voucher/orders-my/order-cancel/balance/signin）
 - 同步/其他：`sync:run-now`、`settings:get/set`、`history:get/clear`、`ptt:*`（对讲机）、`ai:send`、`ai:export/import-data`、`dialog:*`、`shell:*`
 
-**preload.js**：把上述 IPC 封装成 `window._api.*` 桥暴露给渲染层（配对、连接、文件传输、目录列表、远程文件操作、AI、积分等）。
+**preload.js**（369 行）：把上述 IPC 封装成 `window._api.*` 桥暴露给渲染层（配对、连接、文件传输、目录列表、远程文件操作、AI、积分等）。
 
 ## 四、server/ 目录（主进程网络模块）
 
@@ -76,14 +77,14 @@ icons.js → webchat.js → app.js → word-embed.js → word-rich.js → work.j
 
 | 文件 | 行数 | 职责 |
 |---|---|---|
-| icons.js | 95 | Lucide 内联 SVG 图标库（`iconSvg()`），所有图标赋值必须 `innerHTML` |
-| webchat.js | 725 | 网页聊天/浏览器页签相关 |
-| app.js | 838 | 互传核心：全局状态（本地/远程目录、设备、传输、互联网模式、IPv6、好友）、启动流程、事件绑定 |
-| word-embed.js | 525 | WPS/Word 内嵌 + 工作台通用网页页签、页签管理 |
-| word-rich.js | 4330 | Word 所见即所得引擎（contentEditable，与 office.js 配合读写 docx/xlsx） |
-| work.js | 3133 | Work AI 助手：多会话、AI 设置、消息渲染、markdown、生成模式、工具调用 UI、积分展示 |
-| auth.js | 399 | 邮箱注册/登录/重置/头像（走 preload 的 auth:* 桥） |
-| credits.js | 275 | 积分、充值订单（固定档位）、签到、余额展示 |
+| icons.js | 98 | Lucide 内联 SVG 图标库（`iconSvg()`），所有图标赋值必须 `innerHTML` |
+| webchat.js | 749 | 网页聊天/浏览器页签相关 |
+| app.js | 917 | 互传核心：全局状态（本地/远程目录、设备、传输、互联网模式、IPv6、好友）、启动流程、事件绑定 |
+| word-embed.js | 552 | WPS/Word 内嵌 + 工作台通用网页页签、页签管理 |
+| word-rich.js | 4563 | Word 所见即所得引擎（contentEditable，与 office.js 配合读写 docx/xlsx） |
+| work.js | 3256 | Work AI 助手：多会话、AI 设置、消息渲染、markdown、生成模式、工具调用 UI、积分展示 |
+| auth.js | 437 | 邮箱注册/登录/重置/头像（走 preload 的 auth:* 桥） |
+| credits.js | 307 | 积分、充值订单（固定档位）、签到、余额展示 |
 
 **布局骨架**（index.html）：左侧栏（互联/Work 模式切换、设备发现、桥接、互联网模式、IPv6、传输中心）→ 中部双面板（我的电脑 / 远程设备文件列表）→ Work 模式下右侧工作台（页签、预览/编辑、资源面板）。
 
@@ -93,22 +94,24 @@ icons.js → webchat.js → app.js → word-embed.js → word-rich.js → work.j
 
 | 文件 | 行数 | 职责 |
 |---|---|---|
-| tools.js | 3059 | AI 工具层：本地/远程文件操作封装为工具，文本协议 ` ```tool {...}``` `；改动型操作返回 undo 记录；生图/看图模型路由（内置主模型→内置代理扣积分，自定义配置→用户服务商） |
-| agent.js | 1676 | 会话循环 + 工具调用调度 + 审批控制 + 检查点回滚；积分信息随回复入史 |
-| office.js | 2923 | Office 引擎 v2：docx（标题/图片/页眉页脚/目录）+ exceljs（多 sheet/公式/样式） |
-| prompt.js | 301 | 系统提示词唯一维护入口（P0 铁律 / P1 操作规范 分区），默认人设 v0.4 |
+| tools.js | 3337 | AI 工具层：本地/远程文件操作封装为工具，文本协议 ` ```tool {...}``` `；改动型操作返回 undo 记录；生图/看图模型路由；**v2.7.15 新增 PPT 三件套**（create_pptx/read_pptx/edit_pptx，含 classify 审批分类与远程设备支持） |
+| agent.js | 1748 | 会话循环 + 工具调用调度 + 审批控制 + 检查点回滚；积分信息随回复入史 |
+| office.js | 3483 | Office 引擎 v2：docx（标题/图片/页眉页脚/目录）+ exceljs（多 sheet/公式/样式）；**v2.7.15 新增**：PPT 三件套（createPptx/readPptx/editPptx，pptxgenjs 引擎 + MiniMax 设计系统：18 调色板×4 风格×5 页型）+ validateDocx 校验关卡（硬错误 throw 自愈/软告警返回 issues，挂在 create/edit/append 三个写盘点） |
+| prompt.js | 310 | 系统提示词唯一维护入口（P0 铁律 / P1 操作规范 分区），默认人设 v0.4；手册索引段含 ppt文档.md（七册） |
 | siliconflow.js | 87 | 硅基流动 API 客户端（OpenAI 兼容 SSE 流式，http/https 模块实现）；注意 `[DONE]` 后扣费帧不能丢 |
 | sessions.js | 98 | 会话存储：`sessions/<id>/mswork_chat.json` + 索引 |
 | snapshots.js | 168 | 快照缓存槽：删除/覆盖/移动前自动备份，一键还原 |
 | data-sync.js | 81 | 跨设备数据迁移（settings + 会话 + 工作台），导入前自动备份 |
-| anticrawl.js | 172 | 反反爬：UA 池轮换 + 特征识别 + 无头渲染兜底 |
+| anticrawl.js | 224 | 反反爬：UA 池轮换 + 特征识别 + 无头渲染兜底；**v2.7.15 过盾增强（学 Scrapling solve_cloudflare）**：engineUA() 引擎版本对齐（去 Electron 尾巴）、渲染窗开 WebGL、CF 挑战等待循环（≤12s 轮询等 cf_clearance 自动过盾再抓 DOM） |
 | winembed.js | 297 | Win32 文档窗口嵌入（SetParent 进工作台，PowerShell 常驻帮手，stdin 行协议） |
+
+**AI 工具手册**（ai/manuals/，七册，启动时释放到工作区 ai_manuals/）：word文档 / 论文排版 / 表格 / **ppt文档（v2.7.15 新增）** / 图片视频 / 网络下载 / 跨设备协作。注册三处：MANUAL_FILES + manualsIndexSection 索引行 + 手册文件本体。
 
 ## 七、服务端
 
-### api-server/server.js（1394 行，v0.5.0，零依赖 Node http）
+### api-server/server.js（1509 行，v0.5.0 代码基线，零依赖 Node http）
 
-部署：腾讯云 `101.43.150.46:3210`，Docker（node:20-alpine，`--restart=always`），数据目录 `/www/wwwroot/msmate-api/data`，代码目录 `/www/msmate-api`。域名 `api.mosina.top` 备案中被腾讯云 DPI 拦截，客户端 `AUTH_API_BASE` 暂用纯 IP。
+部署：腾讯云 `101.43.150.46:3210`，Docker（node:20-alpine，`--restart=always`），数据目录 `/www/wwwroot/msmate-api/data`，代码目录 `/www/msmate-api`。域名 `api.mosina.top` 备案中被腾讯云 DPI 拦截，客户端 `AUTH_API_BASE` 暂用纯 IP。`LATEST` 常量已同步 v2.7.15（2026-09-10，容器待重建生效）。
 
 **路由表**：
 
@@ -148,18 +151,20 @@ icons.js → webchat.js → app.js → word-embed.js → word-rich.js → work.j
 - 邮件：QQ 家族 `smtp.qq.com:465` + 授权码，验证码邮件为 multipart/alternative 品牌 HTML 模板
 - 错误体兼容 OpenAI/代理/简单三种格式，不向客户端透出原始 JSON 错误
 
-### relay/server.js（204 行，互联网中转）
+### relay/server.js（228 行，互联网中转）
 
 TLS 桥接撮合服务器，默认端口 `9769`（RELAY_PORT）。只搬字节不解析业务。协议（JSON+\n 分帧）：`reg-host` 注册在线 → `bridge` 请求桥接 → `bridge-id`/`bridge-offer` 撮合 → `pipe` 管道首行后变纯字节转发。控制连接心跳 35 秒超时，证书由 openssl 自签生成于 `relay/certs/`。
 
 ## 八、测试与发布
 
 - **test/**（60+ 脚本）分类：
-  - 冒烟类：workbench-smoke（1066 断言，读渲染层用四文件拼接 `app.js+word-embed.js+word-rich.js+work.js`）、global-ui-smoke、md-render、transfer、pair、data-sync、history-persist 等
+  - 冒烟类：workbench-smoke（1067 断言，读渲染层用四文件拼接 `app.js+word-embed.js+word-rich.js+work.js`）、global-ui-smoke（260）、**pptx-smoke（22，v2.7.15：生成/读取/编辑/关卡/工具层/classify 全链路）**、anticrawl-smoke（25）、md-render、transfer、pair、data-sync、history-persist 等
   - API 测试：api-v03-test、api-v04-ai-test、api-v05-sse-order-test（SSE 扣费帧顺序）
   - E2E：auth-e2e-cdp 等 CDP 真机测试（启动须加 `--dev` 参数避免走打包分支）
-  - 探针类：probe-asar-v*.js（Electron 22 兼容性探针，新 npm 包必过）、office/docx 系列探针
+  - 探针类：probe-asar-v271.js（发版后 asar 抽查，断言对象四文件拼接 + PPT 进包断言，参数：产物目录名 + 期望版本）、electron-probe（office 链路）、electron-probe-pptx（pptxgenjs + PPT 三件套 + validateDocx + engineUA，新 npm 包必过）、office/docx 系列探针
 - **tools/release.ps1**：一键发版——读 package.json 版本 → 自动对齐产物目录 release_build_vX → `npm run build`（electron-builder NSIS）→ GitHub Release（Mosina1102/MSMate，同 tag 幂等，UTF-8 中文说明）。token 读 `%APPDATA%\MSMate\release-token.txt`；发布后提醒 revoke token
+  - ⚠ 发版闭环必做两步：`api-server/server.js` 的 `LATEST` 常量同步新版本号并重建腾讯云容器（否则老用户收不到更新提示）
+  - ⚠ agent 子进程环境下 release.ps1 参数绑定有坑（双 BOM 解析 + electron-builder 检测 CI 要 GH_TOKEN），备选 = 独立自包含上传脚本（建 Release/复用 + PATCH 说明 + 上传 exe）
 - 真机测试纪律：`MSC_USER_DATA` 环境变量隔离 userData，避免与在用实例抢锁
 - 服务端发版纪律：改 server.js 必须 `docker build` 重建镜像（run 只是重建容器），容器重建 = stop+rm+run，环境变量变更必须重建
 
@@ -176,7 +181,7 @@ TLS 桥接撮合服务器，默认端口 `9769`（RELAY_PORT）。只搬字节�
 
 1. SVG 图标一律 `innerHTML` 赋值，`textContent` 会显示乱码源码（事故×2）
 2. server.js 内嵌 HTML 的 JS：避免内联 onclick 引号嵌套（用 data-* + 事件委托），交付前 `node --check` 验证
-3. PowerShell 行数统计忽略空行，行号切割以 node `split('\n')` 为准
+3. PowerShell 行数统计忽略空行，行号切割以 node `split('\n')` 为准；Write 工具产出的 .ps1 无 BOM，powershell.exe 5.1 按 GBK 读会把中文路径咬坏——落盘 .ps1 一律带 BOM
 4. 客户端 SSE 遇 `[DONE]` 直接 return 会丢扣费帧
 5. 复制粘贴终端命令易混入不可见脏字符，多行命令给单行版
 6. Electron 22 = Chromium 108：无 `color-mix`、无全局 fetch（Node 16）
@@ -184,3 +189,6 @@ TLS 桥接撮合服务器，默认端口 `9769`（RELAY_PORT）。只搬字节�
 8. 生图/改图 45 积分/张，PaddleOCR-VL 1 积分/次仅视觉、语音识别免费
 9. 模型分区显示：内置（扣积分）/ 我的模型（免费）
 10. 服务端 SSE 逐行转发，扣费帧必须在 `[DONE]` 之前
+11. PptxGenJS：hex 颜色不带 `#`（带 `#` 文件损坏）、透明度用 `transparency` 属性不编进 hex、标题 `fit:'shrink'`、正文禁加粗禁居中、禁标题下划装饰线、禁复用 option 对象（原地变更）
+12. AI 工具注册四处：TOOL_DEFS + 实现 + classify 审批分类 + describe 显示 case；手册注册三处：MANUAL_FILES + manualsIndexSection + 手册文件本体
+13. 发版闭环：版本号 → NOTES.md → commit → release.ps1 → asar 抽查 → **LATEST 同步 + 腾讯云容器重建** → 提醒 revoke token
