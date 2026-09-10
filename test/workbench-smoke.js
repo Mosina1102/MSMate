@@ -15,7 +15,7 @@ function ok(cond, name) {
 
 const html = fs.readFileSync(path.join(ROOT, 'src/index.html'), 'utf8')
 const appjs = ['src/js/app.js', 'src/js/word-embed.js', 'src/js/word-rich.js', 'src/js/work.js'].map(p => fs.readFileSync(path.join(ROOT, p), 'utf8')).join('\n')
-const css = fs.readFileSync(path.join(ROOT, 'src/styles/main.css'), 'utf8')
+const css = fs.readFileSync(path.join(ROOT, 'src/styles/main.css'), 'utf8').replace(/\r\n/g, '\n')
 const mainjs = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8')
 const preload = fs.readFileSync(path.join(ROOT, 'preload.js'), 'utf8')
 const { progIdToKind, exeFromCommand } = require(path.join(ROOT, 'ai/winembed.js')) // 纯函数真跑
@@ -400,7 +400,7 @@ console.log('— v2.4.39：生成模式（生图/生视频）+ 网页版规则�
   const agent = fs.readFileSync(path.join(ROOT, 'ai/agent.js'), 'utf8')
   const appjs = ['src/js/app.js', 'src/js/word-embed.js', 'src/js/word-rich.js', 'src/js/work.js'].map(p => fs.readFileSync(path.join(ROOT, p), 'utf8')).join('\n')
   const html = fs.readFileSync(path.join(ROOT, 'src/index.html'), 'utf8')
-  const css = fs.readFileSync(path.join(ROOT, 'src/styles/main.css'), 'utf8')
+  const css = fs.readFileSync(path.join(ROOT, 'src/styles/main.css'), 'utf8').replace(/\r\n/g, '\n')
   // ① WPS 内嵌中文路径：StreamReader UTF-8（[Console]::InputEncoding 在重定向 stdin 下不生效）
   ok(winembed.includes('StreamReader([Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8)'), 'winembed 帮手按 UTF-8 读 stdin（中文路径不乱码）')
   ok(winembed.includes('StreamWriter([Console]::OpenStandardOutput()'), 'winembed 帮手按 UTF-8 写 stdout')
@@ -707,7 +707,7 @@ console.log('— v2.4.73：图片查看翻页 + 视频直链抓取（老大：�
   ok(app.includes("e.key === 'ArrowLeft'") && app.includes("e.key === 'ArrowRight'"), '键盘 ←/→ 翻页')
   ok(app.includes('wbActiveKey = wbKey(cur)'), '翻页同步激活 key（防激活项落最后）')
   ok(app.includes('mountWbImgNav(item, body)'), '图片预览挂翻页导航')
-  const css = fs.readFileSync(path.join(ROOT, 'src/styles/main.css'), 'utf8')
+  const css = fs.readFileSync(path.join(ROOT, 'src/styles/main.css'), 'utf8').replace(/\r\n/g, '\n')
   ok(css.includes('.wb-img-nav-prev') && css.includes('.wb-img-count'), '翻页箭头/计数样式')
   ok(css.includes('position: relative; /* 图片翻页箭头/计数的定位锚点'), 'wb-view-body 定位锚点')
   const ac = fs.readFileSync(path.join(ROOT, 'ai/anticrawl.js'), 'utf8')
@@ -803,7 +803,7 @@ console.log('— v2.4.65：工作台目录实时刷新 + 视频/GIF 背景 + 本
   const preload = fs.readFileSync(path.join(ROOT, 'preload.js'), 'utf8')
   const app = ['src/js/app.js', 'src/js/word-embed.js', 'src/js/word-rich.js', 'src/js/work.js'].map(p => fs.readFileSync(path.join(ROOT, p), 'utf8')).join('\n')
   const tools = fs.readFileSync(path.join(ROOT, 'ai/tools.js'), 'utf8')
-  const css = fs.readFileSync(path.join(ROOT, 'src/styles/main.css'), 'utf8')
+  const css = fs.readFileSync(path.join(ROOT, 'src/styles/main.css'), 'utf8').replace(/\r\n/g, '\n')
   // ① 目录实时刷新：fs.watch（递归）→ 防抖推渲染层 → 列表/文件夹页签/打开中内容三路刷新
   ok(mainJs.includes("fs.watch(dir, { recursive: true }"), '主进程递归监听当前目录')
   ok(mainJs.includes("setTimeout(() => {\n        if (dirWatch.dir !== dir) return") || mainJs.includes('400) // AI 批量写/解压会爆发大量事件'), '主进程 400ms 防抖合并爆发事件')
@@ -1170,7 +1170,7 @@ console.log('— v2.4.82：钩子半残中毒修复（第二句话起永久瞎�
 {
   console.log('— v2.4.90 菜单防挤压 + 参考图模式多张（逐张补齐循环） —')
   const html = fs.readFileSync(path.join(ROOT, 'src/index.html'), 'utf8')
-  const css = fs.readFileSync(path.join(ROOT, 'src/styles/main.css'), 'utf8')
+  const css = fs.readFileSync(path.join(ROOT, 'src/styles/main.css'), 'utf8').replace(/\r\n/g, '\n')
   const agent = fs.readFileSync(path.join(ROOT, 'ai/agent.js'), 'utf8')
   const tools = fs.readFileSync(path.join(ROOT, 'ai/tools.js'), 'utf8')
   // ① UI 舒展化：润色移到质量行 + 菜单加宽 + 按钮防竖排字
@@ -1646,7 +1646,7 @@ console.log('— v2.4.82：钩子半残中毒修复（第二句话起永久瞎�
     const preJs = fs.readFileSync(path.join(ROOT, 'preload.js'), 'utf8')
     const appJs = ['src/js/app.js', 'src/js/word-embed.js', 'src/js/word-rich.js', 'src/js/work.js'].map(p => fs.readFileSync(path.join(ROOT, p), 'utf8')).join('\n')
     const idxHtml = fs.readFileSync(path.join(ROOT, 'src/index.html'), 'utf8')
-    const css = fs.readFileSync(path.join(ROOT, 'src/styles/main.css'), 'utf8')
+    const css = fs.readFileSync(path.join(ROOT, 'src/styles/main.css'), 'utf8').replace(/\r\n/g, '\n')
     // 主进程：三件套 IPC + 下载流 + 自动安装
     ok(mainJs.includes("ipcMain.handle('update:download'") && mainJs.includes("ipcMain.handle('update:install'") && mainJs.includes("ipcMain.handle('update:get-state'"), '主进程：update download/install/get-state 三件套 IPC')
     ok(mainJs.includes('hooks.onProgress') === false && mainJs.includes('onProgress: (received, total)'), '主进程：下载进度回调（httpDownload onProgress → 节流推送）')
