@@ -59,6 +59,8 @@ const state = {
   relayDevices: new Map(),
   // IPv6 直连历史设备 { deviceId: { name, addrs: [] } }
   ipv6Peers: new Map(),
+  // 互联网在线设备（msmate-api presence 登记的设备，P2P 直连公网 IP）
+  netDevices: new Map(),
 }
 
 // === DOM ===
@@ -224,11 +226,9 @@ function bindEvents() {
   }
   bind('localPath', 'click', selectLocalFolder)
 
-  // 互联网模式
+  // 互联网模式（v0.5：官方服务自动连接，无自定义配置项）
   bind('relaySettingsBtn', 'click', openRelayModal)
   bind('relayCancel', 'click', () => { const m = $('relayModal'); if (m) m.classList.add('hidden') })
-  bind('relaySave', 'click', handleRelaySave)
-  bind('relayResetPin', 'click', handleRelayResetPin)
 
   // IPv6 直连
   bind('ipv6OpenBtn', 'click', openIpv6Modal)

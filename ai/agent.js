@@ -106,9 +106,10 @@ function formatAskAnswers(args, res) {
 
 // ===== 模型来源路由：模型名可带 [平台] 前缀，避免不同平台同名模型混淆 =====
 // "[官方]deepseek-chat" → DeepSeek 官方档案；"[硅基流动]deepseek-ai/DeepSeek-V3" → 硅基流动档案；
+// "[内置]deepseek-ai/DeepSeek-V4-Flash" → MSMate 内置（走服务端代理扣积分）；
 // "[网页]DeepSeek" → 工作台内嵌网页版引擎；无前缀 → 沿用当前全局服务商（兼容旧配置）
-const MODEL_ROUTE_RE = /^\[(官方|硅基流动|智谱|自定义|网页)\]\s*/
-const TAG_TO_PROVIDER = { '官方': 'deepseek', '硅基流动': 'siliconflow', '智谱': 'zhipu', '自定义': 'custom', '网页': 'web' }
+const MODEL_ROUTE_RE = /^\[(官方|硅基流动|智谱|自定义|内置|网页)\]\s*/
+const TAG_TO_PROVIDER = { '官方': 'deepseek', '硅基流动': 'siliconflow', '智谱': 'zhipu', '自定义': 'custom', '内置': 'msmate', '网页': 'web' }
 function parseModelRoute(model) {
   const raw = String(model || '').trim()
   const m = MODEL_ROUTE_RE.exec(raw)
@@ -512,6 +513,8 @@ class WorkAgent {
     const msgIndex = this.history.length - 1
     this.send({ type: 'user_msg', text: String(text).trim(), msgIndex })
 
+    this.roundCredits = 0 // 本轮任务累计积分消耗（内置模型每轮回执累加，run_done 下发）
+    this.roundBalance = null
     let result = { success: true, error: null }
     try {
       this._webMode = route.isWeb // 网页模式：模型回复来自工作台内嵌网页，工具循环/审批/护栏与 API 模式完全一致
@@ -525,7 +528,7 @@ class WorkAgent {
       this.abortController = null
       this.rejectAllApprovals('任务已结束')
     }
-    this.send({ type: 'run_done', error: result.error })
+    this.send({ type: 'run_done', error: result.error, credits: this.roundCredits || 0, balance: this.roundBalance })
     return result
   }
 
@@ -612,7 +615,13 @@ class WorkAgent {
   }
 
   // 多平台 Key 档案读取：provider=null → 全局（兼容旧配置）；否则读 aiProfiles 档案，缺失时回落全局
+  // provider='msmate'（内置模型）→ 走服务端代理：baseUrl 指向 /v1/ai/openai，apiKey 用登录 token（不落自定义档案）
   providerProfile(provider) {
+    if (provider === 'msmate') {
+      const a = this.getSetting('auth') || {}
+      const base = (process.env.MSMATE_API_BASE || 'http://101.43.150.46:3210').replace(/\/+$/, '')
+      return { baseUrl: base + '/v1/ai/openai', apiKey: a.token || '' }
+    }
     const gBase = this.getSetting('aiBaseUrl') || ''
     const gKey = this.getSetting('aiApiKey') || ''
     if (!provider) return { baseUrl: gBase, apiKey: gKey }
@@ -915,8 +924,11 @@ class WorkAgent {
       const MAX_STREAM_TRIES = 2 // 普通网络错误重试上限；429 限流无限重试（60 秒一轮跨分钟窗口），只受手动停止约束
       let fastFails = 0 // 连续非限流失败数
       let wait429 = 0 // 限流等待轮数（提示文案用）
+      let roundCreditsUsed = 0 // 本轮 LLM 调用扣费（内置模型回执，随回复入史，重载后恢复积分标注）
       while (true) {
         content = ''
+        let usageMeta = null // 内置模型扣费回执（每轮调用一帧）
+        this._roundReasoning = '' // 每轮思考重置（入史用，Ctrl+R 重载后可恢复展示）
         try {
           for await (const ev of this.client.chatStream({
             model: cfg.model,
@@ -925,11 +937,20 @@ class WorkAgent {
           })) {
             if (this.aborted) break
             if (ev.type === 'reasoning') {
+              this._roundReasoning += ev.delta
               this.send({ type: 'reasoning_delta', delta: ev.delta })
+            } else if (ev.type === 'msmate') {
+              usageMeta = ev.meta
+              this.roundCredits = (this.roundCredits || 0) + (ev.meta.credits || 0)
+              this.roundBalance = ev.meta.balance
             } else {
               content += ev.delta
               this.send({ type: 'content_delta', delta: ev.delta })
             }
+          }
+          if (usageMeta) {
+            this.send({ type: 'ai_credits', credits: usageMeta.credits, balance: usageMeta.balance })
+            roundCreditsUsed = usageMeta.credits || 0
           }
           break // 正常结束
         } catch (err) {
@@ -977,7 +998,7 @@ class WorkAgent {
 
       // 2. 解析工具调用（支持一次输出多个 ```tool``` 块并行执行）
       const calls = this.parseToolCalls(content)
-      this.history.push({ role: 'assistant', content, time: Date.now() })
+      this.history.push({ role: 'assistant', content, _reasoning: this._roundReasoning || '', _credits: roundCreditsUsed || 0, time: Date.now() })
       // 正文清单自愈：模型没按协议调 task_plan、也没在 calls 里 → 直接解析正文清单帮它建板
       const repaired = !(calls || []).some((c) => c.name === 'task_plan') ? this.tryRepairBarePlan(content) : false
       if (!calls) {

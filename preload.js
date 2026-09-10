@@ -165,10 +165,26 @@ try {
 
     // 账号体系（邮箱注册/登录；token 由主进程存 userData/settings.json）
     authGetState: () => ipcRenderer.invoke('auth:get-state'),
-    authRegister: (email, password, nickname) => ipcRenderer.invoke('auth:register', { email, password, nickname }),
+    authRegister: (email, password, nickname, code) => ipcRenderer.invoke('auth:register', { email, password, nickname, code }),
     authLogin: (email, password) => ipcRenderer.invoke('auth:login', { email, password }),
     authMe: () => ipcRenderer.invoke('auth:me'),
     authLogout: () => ipcRenderer.invoke('auth:logout'),
+    authUpdateProfile: (nickname) => ipcRenderer.invoke('auth:profile', { nickname }),
+    // 邮箱验证码（scene: register|reset）/ 找回密码 / 头像上传
+    authSendCode: (email, scene) => ipcRenderer.invoke('auth:send-code', { email, scene }),
+    authReset: (email, code, password) => ipcRenderer.invoke('auth:reset', { email, code, password }),
+    authAvatar: (dataUrl) => ipcRenderer.invoke('auth:avatar', { dataUrl }),
+    // 积分充值（个人收款码 + 凭证批款）
+    creditsOrderCreate: (amount) => ipcRenderer.invoke('credits:order-create', { amount }),
+    creditsOrderVoucher: (id, voucher) => ipcRenderer.invoke('credits:order-voucher', { id, voucher }),
+    creditsOrdersMy: () => ipcRenderer.invoke('credits:orders-my'),
+    creditsOrderCancel: (id) => ipcRenderer.invoke('credits:order-cancel', { id }),
+    creditsBalance: () => ipcRenderer.invoke('credits:balance'),
+    creditsSignin: () => ipcRenderer.invoke('credits:signin'),
+
+    // 互联网传输每日限额（2GB/天，公网连接计流量）
+    netQuota: () => ipcRenderer.invoke('net:quota'),
+    onNetQuotaExceeded: (cb) => ipcRenderer.on('net-quota-exceeded', () => { try { cb() } catch { } }),
 
     // 应用更新检查（GitHub Releases）+ 语音合成试听（v2.4.97）
     checkUpdate: () => ipcRenderer.invoke('app:check-update'),
@@ -255,6 +271,10 @@ try {
     aiClearChat: (sessionId) => ipcRenderer.invoke('ai:clear-chat', { sessionId }),
     aiGetConfig: () => ipcRenderer.invoke('ai:get-config'),
     aiSetConfig: (cfg) => ipcRenderer.invoke('ai:set-config', cfg),
+    aiBuiltinModels: () => ipcRenderer.invoke('ai:builtin-models'),
+    cloudSyncStatus: () => ipcRenderer.invoke('cloudsync:status'),
+    cloudSyncNow: () => ipcRenderer.invoke('cloudsync:now'),
+    presenceList: () => ipcRenderer.invoke('presence:list'),
     aiGetHistory: (sessionId) => ipcRenderer.invoke('ai:get-history', { sessionId }),
     aiListSnapshots: () => ipcRenderer.invoke('ai:snapshots'),
     aiRestoreSnapshot: (id) => ipcRenderer.invoke('ai:restore-snapshot', { id }),

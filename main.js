@@ -3,6 +3,7 @@ const path = require('path')
 const os = require('os')
 const net = require('net')
 const fs = require('fs')
+const crypto = require('crypto')
 const { spawn } = require('child_process')
 
 // Windows 通知必需：设置 AppUserModelId，否则系统通知不弹出
@@ -303,6 +304,46 @@ function createTray() {
   })
 }
 
+// ===== 互联网传输每日限额（v0.5）：公网 IP 连接的收发流量 2GB/天，局域网不限 =====
+// 计数在 tcpAgent 按连接的公网/桥接标记累加，这里只负责"当日窗口 + 持久化"（3 秒防抖落盘，别让每个 chunk 都写盘）
+const NET_DAILY_LIMIT = 2 * 1024 * 1024 * 1024
+let _netUsage = null
+let _netSaveTimer = null
+
+function netUsageToday() {
+  const d = new Date()
+  const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  if (!_netUsage || _netUsage.date !== today) _netUsage = { date: today, bytes: 0 }
+  return _netUsage
+}
+
+function netUsagePersist() {
+  clearTimeout(_netSaveTimer)
+  _netSaveTimer = setTimeout(() => { try { setSetting('netUsage', _netUsage) } catch { } }, 3000)
+}
+
+function netQuotaHooks() {
+  try { _netUsage = getSetting('netUsage') || null } catch { _netUsage = null }
+  return {
+    // 发向：超额拒绝（返回 false 时 tcpAgent 会断开该公网连接）
+    take(n) {
+      const u = netUsageToday()
+      if (u.bytes + n > NET_DAILY_LIMIT) return false
+      u.bytes += n
+      netUsagePersist()
+      return true
+    },
+    // 收向：只累计不拦截（对方发送端有自己的出向额度兜底）
+    add(n) {
+      const u = netUsageToday()
+      u.bytes += n
+      netUsagePersist()
+    }
+  }
+}
+
+function netQuotaLeft() { return Math.max(0, NET_DAILY_LIMIT - netUsageToday().bytes) }
+
 function initServices() {
   log('initServices:开始初始化...')
   const userDataPath = app.getPath('userData')
@@ -310,9 +351,14 @@ function initServices() {
   
   authManager = new AuthManager(userDataPath)
   log('authManager created')
-  
-  tcpAgent = new TCPAgent(authManager)
+
+  tcpAgent = new TCPAgent(authManager, { netQuota: netQuotaHooks() })
   log('tcpAgent created')
+
+  // 互联网传输超额：通知渲染层弹提示（连接已被 tcpAgent 断开）
+  tcpAgent.on('net-quota-exceeded', () => {
+    try { if (mainWindow) mainWindow.webContents.send('net-quota-exceeded') } catch { }
+  })
 
   // 自净化：清理历史脏数据（旧版本 bug 会把"自己"写进 IPv6 设备表），守住后不再混入
   try {
@@ -539,15 +585,8 @@ function initServices() {
     log(`UDP 启动错误: ${err.message}`)
   }
 
-  // 互联网模式：按设置自动启动
-  try {
-    if (getSetting('relayEnabled')) {
-      startNetRelay(getSetting('relayHost'))
-      log('互联网模式已自动启动')
-    }
-  } catch (err) {
-    log(`互联网模式启动错误: ${err.message}`)
-  }
+  // 互联网模式（v0.5）：官方 presence 自动连接（登录即心跳，30 秒/次），不再支持自定义中转服务器。
+  // 旧版 relayEnabled/relayHost 设置废弃不再读取（startNetRelay 保留仅供日后官方桥接复用）
   log('initServices:完成')
 }
 
@@ -796,7 +835,8 @@ ipcMain.handle('app:get-info', () => {
     localName: customName || localName,
     computerName: os.hostname(),
     customName: customName || '',
-    platform: os.platform()
+    platform: os.platform(),
+    selfId: tcpAgent ? tcpAgent.deviceId : ''
   }
 })
 
@@ -871,6 +911,11 @@ ipcMain.handle('connection:connect', async (event, { deviceId }) => {
 
 ipcMain.handle('connection:connect-by-ip', async (event, { ip }) => {
   return tcpAgent.connectByIP(ip)
+})
+
+// 互联网传输额度查询（渲染层设备列表展示 + 连接前预检）
+ipcMain.handle('net:quota', async () => {
+  return { limit: NET_DAILY_LIMIT, used: netUsageToday().bytes, left: netQuotaLeft() }
 })
 
 ipcMain.handle('connection:disconnect', async (event, { deviceId }) => {
@@ -2004,7 +2049,9 @@ ipcMain.handle('settings:set', async (event, { key, value }) => {
 // === 账号体系（msmate-api：邮箱注册/登录；token 存 userData/settings.json）===
 // 游客可用：互传核心不依赖账号；账号用于后续云同步/远程/积分等在线能力
 // MSMATE_API_BASE 环境变量可覆盖服务地址（本地联调用）
-const AUTH_API_BASE = process.env.MSMATE_API_BASE || 'http://api.mosina.top:3210'
+// 注意：api.mosina.top 域名在备案完成前会被腾讯云/运营商 DPI 拦截（连 API POST 也拦），
+// 故默认走 IP 直连；备案通过后把默认值切回域名
+const AUTH_API_BASE = process.env.MSMATE_API_BASE || 'http://101.43.150.46:3210'
 
 function authRequest(pathname, { method = 'GET', body = null, token = '', timeoutMs = 15000 } = {}) {
   return new Promise((resolve, reject) => {
@@ -2035,12 +2082,28 @@ function authRequest(pathname, { method = 'GET', body = null, token = '', timeou
 
 function authGetSaved() {
   const a = getSetting('auth')
-  if (a && typeof a === 'object' && a.token && a.user) return a
+  // 读取时也归一化：老存档（authSave 修复前写入）avatarUrl 是相对路径，启动首屏直接渲染会加载失败
+  if (a && typeof a === 'object' && a.token && a.user) return { token: a.token, user: normalizeUser(a.user) }
   return { token: '', user: null }
 }
 
 function authSave(token, user) {
-  setSetting('auth', token ? { token, user } : null)
+  // 落盘前归一化 user：avatarUrl 相对路径转绝对 URL。修复"头像偶发回退默认"——
+  // 存档里若是 /avatars/... 相对路径，file:// 渲染层启动加载不出来，点开账号面板触发 auth:me 才恢复
+  setSetting('auth', token ? { token, user: user ? normalizeUser(user) : null } : null)
+  // 内置模型服务商条目同步进 aiProviderList（槽位机制用）：有 token 带 key，登出只清 key（槽位回落用户自己的服务商）
+  try {
+    const list = JSON.parse(getSetting('aiProviderList') || '[]') || []
+    let p = list.find(x => x && x.id === 'msmate')
+    if (!token) {
+      if (p) p.apiKey = ''
+    } else {
+      if (!p) { p = { id: 'msmate', name: 'MSMate 内置（扣积分）' }; list.push(p) }
+      p.baseUrl = AUTH_API_BASE + '/v1/ai/openai'
+      p.apiKey = token
+    }
+    setSetting('aiProviderList', JSON.stringify(list))
+  } catch { }
 }
 
 ipcMain.handle('auth:get-state', () => {
@@ -2048,12 +2111,14 @@ ipcMain.handle('auth:get-state', () => {
   return { token: a.token || '', user: a.user || null }
 })
 
-ipcMain.handle('auth:register', async (event, { email, password, nickname }) => {
+ipcMain.handle('auth:register', async (event, { email, password, nickname, code }) => {
   try {
-    const r = await authRequest('/v1/auth/register', { method: 'POST', body: { email, password, nickname } })
+    // agree:'v1' = 协议同意记录（渲染层注册表单已强制勾选，服务端存档防扯皮）
+    const r = await authRequest('/v1/auth/register', { method: 'POST', body: { email, password, nickname, code, agree: 'v1' } })
     if (r.status === 200 && r.data && r.data.ok) {
       authSave(r.data.token, r.data.user)
-      return { ok: true, user: r.data.user }
+      syncKickoff()
+      return { ok: true, user: normalizeUser(r.data.user) }
     }
     return { ok: false, error: (r.data && r.data.error) || `注册失败（HTTP ${r.status}）` }
   } catch (err) {
@@ -2066,7 +2131,8 @@ ipcMain.handle('auth:login', async (event, { email, password }) => {
     const r = await authRequest('/v1/auth/login', { method: 'POST', body: { email, password } })
     if (r.status === 200 && r.data && r.data.ok) {
       authSave(r.data.token, r.data.user)
-      return { ok: true, user: r.data.user }
+      syncKickoff()
+      return { ok: true, user: normalizeUser(r.data.user) }
     }
     return { ok: false, error: (r.data && r.data.error) || `登录失败（HTTP ${r.status}）` }
   } catch (err) {
@@ -2081,8 +2147,10 @@ ipcMain.handle('auth:me', async () => {
   try {
     const r = await authRequest('/v1/auth/me', { token: a.token })
     if (r.status === 200 && r.data && r.data.ok) {
-      authSave(a.token, r.data.user)
-      return { ok: true, user: r.data.user }
+      // 滑动续签：服务端换发新 token 时保存新值（同步刷新 aiProviderList 里内置服务商的 key）
+      authSave(r.data.token || a.token, r.data.user)
+      syncKickoff() // 启动校验成功 = 已登录，触发云同步对账
+      return { ok: true, user: normalizeUser(r.data.user) }
     }
     if (r.status === 401) authSave(null)
     return { ok: false, user: r.status === 401 ? null : a.user }
@@ -2095,6 +2163,308 @@ ipcMain.handle('auth:logout', () => {
   authSave(null)
   return { ok: true }
 })
+
+// 资料编辑：改昵称（成功后同步本地存档）
+ipcMain.handle('auth:profile', async (event, { nickname }) => {
+  const a = authGetSaved()
+  if (!a.token) return { ok: false, error: '尚未登录' }
+  try {
+    const r = await authRequest('/v1/auth/profile', { method: 'PATCH', body: { nickname }, token: a.token })
+    if (r.status === 200 && r.data && r.data.ok) {
+      authSave(a.token, r.data.user)
+      return { ok: true, user: normalizeUser(r.data.user) }
+    }
+    return { ok: false, error: (r.data && r.data.error) || `保存失败（HTTP ${r.status}）` }
+  } catch (err) {
+    return { ok: false, error: `网络错误：${err.message}` }
+  }
+})
+
+// === 邮箱验证码 / 头像 / 积分 / 云同步（对应服务端 v0.3） ===
+
+// 用户信息归一化：avatarUrl 相对路径 → 绝对 URL（渲染层 <img> 直接可用）
+function normalizeUser(u) {
+  if (u && typeof u.avatarUrl === 'string' && u.avatarUrl.startsWith('/')) {
+    u.avatarUrl = AUTH_API_BASE + u.avatarUrl
+  }
+  return u
+}
+
+// 邮箱验证码（scene: register|reset）；dev 模式服务端直接返回 devCode
+ipcMain.handle('auth:send-code', async (event, { email, scene }) => {
+  try {
+    const r = await authRequest('/v1/auth/send-code', { method: 'POST', body: { email, scene } })
+    return { ok: !!(r.data && r.data.ok), sent: !!(r.data && r.data.sent), devCode: r.data && r.data.devCode, error: (r.data && r.data.error) || (r.status !== 200 ? `HTTP ${r.status}` : '') }
+  } catch (err) {
+    return { ok: false, error: `网络错误：${err.message}` }
+  }
+})
+
+// 验证码重置密码（服务端会吊销旧 token，返回新 token 直接续登录态）
+ipcMain.handle('auth:reset', async (event, { email, code, password }) => {
+  try {
+    const r = await authRequest('/v1/auth/reset', { method: 'POST', body: { email, code, password } })
+    if (r.status === 200 && r.data && r.data.ok) {
+      authSave(r.data.token, r.data.user)
+      return { ok: true, user: normalizeUser(r.data.user) }
+    }
+    return { ok: false, error: (r.data && r.data.error) || `重置失败（HTTP ${r.status}）` }
+  } catch (err) {
+    return { ok: false, error: `网络错误：${err.message}` }
+  }
+})
+
+// 上传头像（渲染层已压成 128x128 base64 dataUrl）
+ipcMain.handle('auth:avatar', async (event, { dataUrl }) => {
+  const a = authGetSaved()
+  if (!a.token) return { ok: false, error: '尚未登录' }
+  try {
+    const r = await authRequest('/v1/auth/avatar', { method: 'POST', body: { dataUrl }, token: a.token, timeoutMs: 30000 })
+    if (r.status === 200 && r.data && r.data.ok) {
+      authSave(a.token, r.data.user)
+      return { ok: true, user: normalizeUser(r.data.user) }
+    }
+    return { ok: false, error: (r.data && r.data.error) || `上传失败（HTTP ${r.status}）` }
+  } catch (err) {
+    return { ok: false, error: `网络错误：${err.message}` }
+  }
+})
+
+// === 积分充值（个人收款码 + 凭证人工批款） ===
+
+ipcMain.handle('credits:order-create', async (event, { amount }) => {
+  const a = authGetSaved()
+  if (!a.token) return { ok: false, error: '登录后才能充值' }
+  try {
+    const r = await authRequest('/v1/credits/orders', { method: 'POST', body: { amount }, token: a.token })
+    if (r.status === 200 && r.data && r.data.ok) return { ok: true, order: r.data.order }
+    return { ok: false, error: (r.data && r.data.error) || `下单失败（HTTP ${r.status}）` }
+  } catch (err) {
+    return { ok: false, error: `网络错误：${err.message}` }
+  }
+})
+
+ipcMain.handle('credits:order-voucher', async (event, { id, voucher }) => {
+  const a = authGetSaved()
+  if (!a.token) return { ok: false, error: '尚未登录' }
+  try {
+    const r = await authRequest(`/v1/credits/orders/${encodeURIComponent(id)}/voucher`, { method: 'POST', body: { voucher }, token: a.token })
+    if (r.status === 200 && r.data && r.data.ok) return { ok: true, order: r.data.order }
+    return { ok: false, error: (r.data && r.data.error) || `提交失败（HTTP ${r.status}）` }
+  } catch (err) {
+    return { ok: false, error: `网络错误：${err.message}` }
+  }
+})
+
+ipcMain.handle('credits:orders-my', async () => {
+  const a = authGetSaved()
+  if (!a.token) return { ok: false, error: '尚未登录', orders: [] }
+  try {
+    const r = await authRequest('/v1/credits/orders/my', { token: a.token })
+    if (r.status === 200 && r.data && r.data.ok) return { ok: true, orders: r.data.orders || [] }
+    return { ok: false, error: (r.data && r.data.error) || `查询失败（HTTP ${r.status}）`, orders: [] }
+  } catch (err) {
+    return { ok: false, error: `网络错误：${err.message}`, orders: [] }
+  }
+})
+
+ipcMain.handle('credits:order-cancel', async (event, { id }) => {
+  const a = authGetSaved()
+  if (!a.token) return { ok: false, error: '尚未登录' }
+  try {
+    const r = await authRequest(`/v1/credits/orders/${encodeURIComponent(id)}/cancel`, { method: 'POST', token: a.token })
+    if (r.status === 200 && r.data && r.data.ok) return { ok: true, order: r.data.order }
+    return { ok: false, error: (r.data && r.data.error) || `取消失败（HTTP ${r.status}）` }
+  } catch (err) {
+    return { ok: false, error: `网络错误：${err.message}` }
+  }
+})
+
+ipcMain.handle('credits:balance', async () => {
+  const a = authGetSaved()
+  if (!a.token) return { ok: false, credits: 0 }
+  try {
+    const r = await authRequest('/v1/credits/balance', { token: a.token })
+    if (r.status === 200 && r.data && r.data.ok) return { ok: true, credits: r.data.credits || 0 }
+    return { ok: false, credits: 0 }
+  } catch {
+    return { ok: false, credits: 0, offline: true }
+  }
+})
+
+// 每日签到（+50/天，累计封顶 200）：成功后同步本地存档的余额与签到进度
+ipcMain.handle('credits:signin', async () => {
+  const a = authGetSaved()
+  if (!a.token) return { ok: false, error: '登录后才能签到' }
+  try {
+    const r = await authRequest('/v1/credits/signin', { method: 'POST', token: a.token })
+    const d = r.data || {}
+    if (r.status === 200 && d.ok) {
+      if (a.user) {
+        a.user.credits = d.credits
+        a.user.sign = { total: d.total, lastDate: new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10) }
+        authSave(a.token, a.user)
+      }
+      return { ok: true, awarded: d.awarded, total: d.total, cap: d.cap, credits: d.credits }
+    }
+    return { ok: false, error: d.error || `签到失败（HTTP ${r.status}）`, total: d.total, cap: d.cap, credits: d.credits }
+  } catch (err) {
+    return { ok: false, error: `网络错误：${err.message}` }
+  }
+})
+
+// === 云同步：登录后自动 把「Work 会话 + AI 设置」备份到账号，换设备登录自动恢复 ===
+// 策略：登录/启动校验成功后运行一次——云端较新则恢复（恢复前把本地 ai-chat 备份），否则推送本地
+// 之后每 5 分钟：本地数据有变化（hash 不同）自动推送。恢复后需重启应用加载会话，会弹提示。
+
+const SYNC_SETTING_KEYS = ['aiApiKey', 'aiBaseUrl', 'aiProviderList', 'chatModelList', 'visionModelList', 'aiWebDeepseek', 'aiTtsModel', 'aiTtsVoice']
+const SYNC_PUSH_INTERVAL_MS = 5 * 60 * 1000
+
+function syncHash(s) {
+  return crypto.createHash('sha1').update(String(s)).digest('hex')
+}
+
+// 递归收集目录下所有 .json：{ 相对路径: 解析后的对象 }
+function syncCollectJson(dir, baseRel, out) {
+  let entries = []
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+  for (const ent of entries) {
+    const full = path.join(dir, ent.name)
+    const rel = baseRel ? baseRel + '/' + ent.name : ent.name
+    if (ent.isDirectory()) {
+      syncCollectJson(full, rel, out)
+    } else if (ent.isFile() && ent.name.endsWith('.json')) {
+      try { out[rel] = JSON.parse(fs.readFileSync(full, 'utf8')) } catch { }
+    }
+  }
+}
+
+function syncGatherBlob() {
+  const root = app.getPath('userData')
+  const blob = { v: 1, aiChat: {}, settings: {} }
+  syncCollectJson(path.join(root, 'ai-chat'), '', blob.aiChat)
+  for (const k of SYNC_SETTING_KEYS) {
+    try { const v = getSetting(k); if (v !== undefined) blob.settings[k] = v } catch { }
+  }
+  return blob
+}
+
+function syncCopyDir(src, dest) {
+  fs.mkdirSync(dest, { recursive: true })
+  let entries = []
+  try { entries = fs.readdirSync(src, { withFileTypes: true }) } catch { return }
+  for (const ent of entries) {
+    const s = path.join(src, ent.name), d = path.join(dest, ent.name)
+    if (ent.isDirectory()) syncCopyDir(s, d)
+    else if (ent.isFile()) { try { fs.copyFileSync(s, d) } catch { } }
+  }
+}
+
+// 应用云端 blob：先备份本地 ai-chat（防同步翻车可回滚），再覆盖写盘 + 回填设置
+function syncApplyBlob(blob) {
+  const root = app.getPath('userData')
+  const chatDir = path.join(root, 'ai-chat')
+  if (fs.existsSync(chatDir)) {
+    try { syncCopyDir(chatDir, path.join(root, `ai-chat.bak-${Date.now()}`)) } catch { }
+  }
+  // 清空会话目录后重写（备份已留存）
+  try { fs.rmSync(chatDir, { recursive: true, force: true }) } catch { }
+  fs.mkdirSync(chatDir, { recursive: true })
+  const files = blob && blob.aiChat ? blob.aiChat : {}
+  for (const rel of Object.keys(files)) {
+    const norm = String(rel).replace(/\\/g, '/')
+    if (norm.includes('..')) continue // 防路径穿越
+    if (norm.split('/').length > 3) continue // 只收 根文件 / 一级 / 二级子目录（sessions/<id>/mswork_chat.json）
+    const dest = path.join(chatDir, norm)
+    try {
+      fs.mkdirSync(path.dirname(dest), { recursive: true })
+      fs.writeFileSync(dest, JSON.stringify(files[rel], null, 2))
+    } catch { }
+  }
+  const st = blob && blob.settings ? blob.settings : {}
+  for (const k of SYNC_SETTING_KEYS) {
+    if (st[k] !== undefined) { try { setSetting(k, st[k]) } catch { } }
+  }
+}
+
+let syncRunning = false
+let syncLastPushHash = ''
+
+async function syncAutoRun(reason) {
+  if (syncRunning) return
+  const a = authGetSaved()
+  if (!a.token) return
+  syncRunning = true
+  try {
+    const local = syncGatherBlob()
+    const localHash = syncHash(JSON.stringify(local))
+    syncLastPushHash = localHash
+    const st = getSetting('syncState') || {}
+    const r = await authRequest('/v1/sync', { token: a.token, timeoutMs: 20000 })
+    if (r.status === 200 && r.data && r.data.ok && r.data.blob) {
+      const cloudUpdatedAt = r.data.updatedAt || ''
+      const cloudNewer = !st.lastSyncAt || !cloudUpdatedAt || new Date(cloudUpdatedAt) > new Date(st.lastSyncAt)
+      const cloudHash = syncHash(JSON.stringify(r.data.blob))
+      if (cloudNewer && cloudHash !== localHash) {
+        // 云端较新且内容不同 → 恢复云端到本地（先备份）
+        syncApplyBlob(r.data.blob)
+        setSetting('syncState', { lastSyncAt: new Date().toISOString(), lastHash: cloudHash })
+        syncLastPushHash = cloudHash
+        try {
+          const { BrowserWindow } = require('electron')
+          const win = BrowserWindow.getAllWindows()[0]
+          if (win) win.webContents.send('notification:toast', { message: '已从云端恢复会话与 AI 设置，重启应用后生效', type: 'success' })
+        } catch { }
+      } else if (cloudHash !== localHash) {
+        // 云端较旧 → 推送本地覆盖云端
+        await authRequest('/v1/sync', { method: 'PUT', token: a.token, body: { blob: local }, timeoutMs: 30000 })
+        setSetting('syncState', { lastSyncAt: new Date().toISOString(), lastHash: localHash })
+      } else {
+        setSetting('syncState', { lastSyncAt: new Date().toISOString(), lastHash: localHash })
+      }
+    } else if (r.status === 200 && r.data && r.data.ok && !r.data.blob) {
+      // 云端为空：首推
+      await authRequest('/v1/sync', { method: 'PUT', token: a.token, body: { blob: local }, timeoutMs: 30000 })
+      setSetting('syncState', { lastSyncAt: new Date().toISOString(), lastHash: localHash })
+    }
+  } catch { /* 离线静默 */ } finally {
+    syncRunning = false
+  }
+}
+
+// 定时推送：本地会话/设置变化后 5 分钟内自动备份到云端
+setInterval(() => {
+  const a = authGetSaved()
+  if (!a.token) return
+  const local = syncGatherBlob()
+  const h = syncHash(JSON.stringify(local))
+  if (h !== syncLastPushHash) syncAutoRun('periodic').catch(() => { })
+}, SYNC_PUSH_INTERVAL_MS)
+
+// 登录成功后的同步入口（供 auth handler 触发，不阻塞登录流程）
+function syncKickoff() {
+  setTimeout(() => syncAutoRun('login').catch(() => { }), 2500)
+}
+
+ipcMain.handle('sync:run-now', () => {
+  syncAutoRun('manual').catch(() => { })
+  return { ok: true }
+})
+
+// ===== 互联网设备在线登记（v0.4）：登录设备 30s 心跳上报 msmate-api /v1/presence =====
+// 服务端记录公网 IP，其他设备拉列表拿到 IP 后走 tcpAgent P2P 直连（端口 45679）
+async function presencePing() {
+  const a = authGetSaved()
+  if (!a || !a.token) return
+  try {
+    await authRequest('/v1/presence', {
+      method: 'POST', token: a.token, timeoutMs: 10000,
+      body: { deviceId: tcpAgent.deviceId, name: tcpAgent.deviceName || os.hostname(), platform: process.platform }
+    })
+  } catch { /* 离线静默，下轮心跳补 */ }
+}
+setInterval(() => { presencePing() }, 30000)
+setTimeout(() => { presencePing() }, 5000) // 启动后尽快上线
 
 // === MSWork AI 助手 IPC ===
 // ===== 定时任务（v2.4.97）：设置里配置"每天 HH:MM 给某个会话派发任务"，到点自动给 WorkAgent 发消息 =====
@@ -2560,6 +2930,42 @@ function registerAIIPC() {
     const agent = workAgent || getWorkAgent()
     if (!agent) return false
     return agent.setConfig(cfg)
+  })
+  // 内置模型清单（设置面板渲染"MSMate 内置"卡片，含积分单价）
+  ipcMain.handle('ai:builtin-models', async () => {
+    try {
+      const r = await authRequest('/v1/ai/models', {})
+      if (r.status === 200 && r.data && r.data.ok) return { ok: true, data: r.data }
+      return { ok: false, error: (r.data && r.data.error) || `HTTP ${r.status}` }
+    } catch (err) {
+      return { ok: false, error: `网络错误：${err.message}` }
+    }
+  })
+  // ===== 云同步状态/手动触发（设置 → 数据同步 面板显示） =====
+  ipcMain.handle('cloudsync:status', () => {
+    const st = getSetting('syncState') || {}
+    const a = authGetSaved()
+    return { loggedIn: !!(a && a.token), lastSyncAt: st.lastSyncAt || '', running: syncRunning }
+  })
+  ipcMain.handle('cloudsync:now', async () => {
+    const a = authGetSaved()
+    if (!a || !a.token) return { ok: false, error: '请先登录 MSMate 账号' }
+    await syncAutoRun('manual')
+    const st = getSetting('syncState') || {}
+    return { ok: true, lastSyncAt: st.lastSyncAt || '' }
+  })
+  // ===== 互联网在线设备列表（presence，P2P 直连用） =====
+  ipcMain.handle('presence:list', async () => {
+    const selfId = tcpAgent ? tcpAgent.deviceId : ''
+    const a = authGetSaved()
+    if (!a || !a.token) return { ok: false, selfId, devices: [], error: '请先登录 MSMate 账号' }
+    try {
+      const r = await authRequest('/v1/presence', { token: a.token, timeoutMs: 10000 })
+      if (r.status === 200 && r.data && r.data.ok) return { ok: true, selfId, devices: r.data.devices || [] }
+      return { ok: false, selfId, devices: [], error: (r.data && r.data.error) || `HTTP ${r.status}` }
+    } catch (err) {
+      return { ok: false, selfId, devices: [], error: `网络错误：${err.message}` }
+    }
   })
   // ===== 语音输入：录音数据 → 硅基流动 ASR（SenseVoiceSmall，OpenAI 兼容 /audio/transcriptions） =====
   ipcMain.handle('ai:voice-transcribe', async (event, { data, mime }) => {

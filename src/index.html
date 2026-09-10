@@ -18,6 +18,10 @@
   <link rel="stylesheet" href="styles/main.css">
 </head>
 <body>
+  <!-- 开屏动画：全白 + logo 弹入，界面就绪后整体淡出 -->
+  <div id="splash" class="splash">
+    <img class="splash-logo" src="../assets/msmate-logo.png" alt="MSMate">
+  </div>
   <!-- 自定义背景层（全局设置 → 外观 里配置，半透明浮于内容之下） -->
   <div id="appBackground" class="app-bg hidden">
     <div class="app-bg-img" id="appBgImg"></div>
@@ -53,6 +57,12 @@
         <button id="helpBtn" class="btn btn-ghost btn-sm" title="操作手册与功能说明">
           <span data-icon="circle-help"></span>
         </button>
+        <div class="topbar-account">
+          <span id="creditBadge" class="credit-badge hidden" title="积分余额 · 点击充值"><span data-icon="coins"></span><span id="creditValue">0</span></span>
+          <button id="accountBtn" class="account-btn" title="账号：登录 / 个人资料">
+            <span id="accountBtnInner" class="account-btn-inner" data-icon="user"></span>
+          </button>
+        </div>
         <div id="pairCodeDisplay" class="pair-code hidden">
           <span>配对码：</span>
           <span id="pairCode" class="pair-code-value">------</span>
@@ -86,7 +96,7 @@
               <span>连接</span>
             </button>
           </div>
-          <div class="relay-row" id="relayRow" title="互联网模式：通过中转服务器连接异地设备">
+          <div class="relay-row" id="relayRow" title="互联网模式：登录后自动连接官方服务，异地设备自动出现在列表">
             <span class="relay-icon" data-icon="globe"></span>
             <span class="relay-label">互联网模式</span>
             <span id="relayStatusTag" class="relay-status off">关闭</span>
@@ -202,7 +212,10 @@
               <button class="input-icon-btn voice-btn" id="voiceInputBtn" title="语音输入：点击开始/结束；聊天界面内也可按住 V 说话（松开自动转文字）">
                 <svg viewBox="0 0 24 24" width="14" height="14"><rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor"/><path d="M6 11a6 6 0 0 0 12 0M12 17.5V21" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
               </button>
-              <select id="chatModelQuick" class="model-quick-select" title="主模型快捷切换（清单在 设置 → AI设置 → 我的常用模型 里维护）"></select>
+              <div class="model-quick-wrap" id="chatModelQuickWrap">
+                <button type="button" id="chatModelQuickBtn" class="model-quick-btn" title="主模型快捷切换">默认模型</button>
+                <div class="model-quick-menu hidden" id="chatModelQuickMenu"></div>
+              </div>
               <button class="approval-switch manual" id="aiApprovalTag" title="点击切换审批模式：手动批准=每个风险操作都要确认；自动信任=全自动（C盘除桌面仍需确认）">
                 <span class="as-label">手动批准</span>
                 <span class="as-track"><span class="as-knob"></span></span>
@@ -528,68 +541,198 @@
         </div>
         <div class="modal-body">
           <div class="pair-code-input">
-            <label>当前状态：<strong id="relayStatusText">未启用</strong></label>
+            <label>官方服务：<strong id="relayStatusText">检查中...</strong></label>
+          </div>
+          <p class="ptt-hint">登录 MSMate 账号后自动连接官方服务器，无需任何配置。双方的在线设备会自动出现在下方设备列表（带「互联网」徽标），点击即可直连。</p>
+          <div class="pair-code-input">
+            <label>本机设备 ID（发给对方，对方在列表点你或输你的 IP 直连）：</label>
+            <input type="text" id="relaySelfId" readonly>
           </div>
           <div class="pair-code-input">
-            <label>中转服务器地址（域名或IP:端口）：</label>
-            <input type="text" id="relayHostInput" placeholder="例如：relay.example.com:9769">
+            <label>今日互联网传输额度</label>
+            <div class="meta" id="relayQuotaLine">查询中...</div>
           </div>
-          <p class="ptt-hint">启用后可与异地的设备互通，全程 TLS 加密；局域网直连不受影响，两边可同时使用。</p>
           <details class="help-more">
             <summary>了解更多</summary>
-            <p>首次连接会记录服务器证书指纹，证书变化将拒绝连接（防劫持）；服务器换证书时点下方「重置服务器指纹」。</p>
-            <p>首次连接异地的设备仍需照常配对。</p>
+            <p>互联网设备通过官方服务器登记与发现，文件传输走公网 P2P 直连（端口 45679），服务器不经手文件内容。</p>
+            <p>每日互联网传输额度 2GB，局域网直连不受影响；首次连接异地设备仍需照常配对。</p>
           </details>
         </div>
         <div class="modal-footer">
-          <button class="btn btn-ghost btn-xs" id="relayResetPin">重置服务器指纹</button>
           <button class="btn btn-secondary" id="relayCancel">关闭</button>
-          <button class="btn btn-primary" id="relaySave">保存并连接</button>
         </div>
       </div>
     </div>
 
-    <!-- 账号弹窗（登录 / 注册 / 已登录信息；游客可用互传全部功能） -->
+    <!-- 账号弹窗（登录 / 注册 / 已登录资料编辑；游客可用互传全部功能） -->
     <div class="modal-overlay hidden" id="accountModal">
-      <div class="modal">
-        <div class="modal-header">
-          <h3><span data-icon="circle-user-round"></span>账号</h3>
+      <div class="modal modal-auth">
+        <button class="modal-x" id="authCloseX" title="关闭">
+          <svg viewBox="0 0 24 24" width="14" height="14"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
+        </button>
+        <!-- 品牌头：登录/注册态共用 -->
+        <div class="auth-brand">
+          <img class="auth-brand-logo" src="../assets/icon.png" alt="MSMate">
+          <h2 class="auth-brand-title" id="authBrandTitle">欢迎回来</h2>
+          <p class="auth-brand-sub" id="authBrandSub">登录 MSMate，继续你的跨设备工作台</p>
         </div>
         <div class="modal-body">
-          <!-- 未登录：登录 / 注册表单 -->
+          <!-- 未登录：登录 / 注册 / 找回密码 表单 -->
           <div id="authForms">
-            <div class="auth-tabs">
+            <div class="auth-tabs" id="authTabs">
               <button class="auth-tab active" data-authtab="login" id="authTabLogin">登录</button>
               <button class="auth-tab" data-authtab="register" id="authTabRegister">注册</button>
             </div>
             <div class="auth-field">
               <label>邮箱</label>
-              <input type="email" id="authEmail" placeholder="you@example.com" autocomplete="off">
+              <div class="auth-input-wrap">
+                <span class="auth-input-icon" data-icon="mail"></span>
+                <input type="email" id="authEmail" placeholder="you@example.com" autocomplete="off">
+              </div>
             </div>
             <div class="auth-field hidden" id="authNicknameField">
               <label>昵称（可选）</label>
-              <input type="text" id="authNickname" placeholder="怎么称呼你" maxlength="32" autocomplete="off">
+              <div class="auth-input-wrap">
+                <span class="auth-input-icon" data-icon="user"></span>
+                <input type="text" id="authNickname" placeholder="怎么称呼你" maxlength="32" autocomplete="off">
+              </div>
+            </div>
+            <div class="auth-field hidden" id="authCodeField">
+              <label>邮箱验证码</label>
+              <div class="auth-input-wrap auth-code-wrap">
+                <span class="auth-input-icon" data-icon="shield-check"></span>
+                <input type="text" id="authCode" placeholder="6 位验证码" maxlength="6" autocomplete="off">
+                <button type="button" class="auth-code-send" id="authCodeSend">获取验证码</button>
+              </div>
             </div>
             <div class="auth-field">
-              <label>密码</label>
-              <input type="password" id="authPassword" placeholder="至少 8 位" autocomplete="off">
+              <label id="authPasswordLabel">密码</label>
+              <div class="auth-input-wrap">
+                <span class="auth-input-icon" data-icon="lock"></span>
+                <input type="password" id="authPassword" placeholder="至少 8 位" autocomplete="off">
+                <button type="button" class="auth-eye" id="authEye" title="显示 / 隐藏密码">
+                  <span data-icon="eye"></span>
+                </button>
+              </div>
             </div>
             <p class="auth-error hidden" id="authError"></p>
+            <div class="auth-agree-row hidden" id="authAgreeField">
+              <input type="checkbox" id="authAgree">
+              <span>我已阅读并同意<a id="authAgreementLink">《MSMate 用户协议》</a>（含 AI 使用与数据免责条款）</span>
+            </div>
             <p class="ptt-hint">不登录也能用全部互传功能；账号用于云同步、远程等在线能力。</p>
+            <div class="auth-links">
+              <button type="button" class="auth-link" id="authForgotLink">忘记密码？</button>
+              <button type="button" class="auth-link hidden" id="authBackLogin">返回登录</button>
+            </div>
           </div>
-          <!-- 已登录：资料卡 -->
+          <!-- 已登录：资料卡（可编辑昵称 / 上传头像） -->
           <div id="authProfile" class="auth-profile hidden">
-            <div class="auth-avatar-big" id="authProfileAvatar">M</div>
-            <div class="auth-profile-info">
-              <div class="auth-profile-name" id="authProfileName">-</div>
-              <div class="auth-profile-email" id="authProfileEmail">-</div>
+            <div class="auth-profile-main">
+              <div class="auth-avatar-wrap" id="authAvatarWrap" title="点击更换头像">
+                <div class="auth-avatar-big" id="authProfileAvatar">M</div>
+                <img class="auth-avatar-img hidden" id="authProfileAvatarImg" alt="头像">
+                <div class="auth-avatar-mask"><span data-icon="upload"></span></div>
+                <input type="file" id="authAvatarFile" accept="image/png,image/jpeg" class="hidden">
+              </div>
+              <div class="auth-profile-info">
+                <div class="auth-profile-name" id="authProfileName">-</div>
+                <div class="auth-profile-email" id="authProfileEmail">-</div>
+              </div>
+              <button class="btn btn-ghost btn-xs" id="authEditNick" title="修改昵称">
+                <span data-icon="square-pen"></span>
+              </button>
+            </div>
+            <!-- 昵称编辑态 -->
+            <div class="auth-nick-edit hidden" id="authNickEdit">
+              <input type="text" id="authNickInput" maxlength="32" placeholder="新的昵称" autocomplete="off">
+              <button class="btn btn-primary btn-xs" id="authNickSave">保存</button>
+              <button class="btn btn-ghost btn-xs" id="authNickCancel">取消</button>
+            </div>
+            <div class="auth-credit-row" id="authCreditRow">
+              <span class="auth-credit-icon" data-icon="coins"></span>
+              <span>积分</span>
+              <span class="auth-credit-val" id="authCreditVal">0</span>
+              <button class="btn btn-primary btn-xs" id="authRechargeBtn">充值</button>
             </div>
           </div>
         </div>
         <div class="modal-footer">
           <button class="btn btn-ghost btn-xs" id="authCancel">关闭</button>
           <button class="btn btn-secondary hidden" id="authLogout"><span data-icon="log-out"></span><span>退出登录</span></button>
-          <button class="btn btn-primary" id="authSubmit">登录</button>
+          <button class="btn btn-primary btn-auth-submit" id="authSubmit">登录</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 积分充值弹窗：个人收款码 + 凭证提交，人工批款自动到账 -->
+    <div class="modal-overlay hidden" id="creditsModal">
+      <div class="modal modal-credits">
+        <button class="modal-x" id="creditsCloseX" title="关闭">
+          <svg viewBox="0 0 24 24" width="14" height="14"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
+        </button>
+        <div class="auth-brand">
+          <img class="auth-brand-logo" src="../assets/icon.png" alt="MSMate">
+          <h2 class="auth-brand-title">积分充值</h2>
+          <p class="auth-brand-sub">¥1 = 100 积分 · 人工核对后自动到账</p>
+        </div>
+        <div class="modal-body">
+          <!-- 第一步：选金额 -->
+          <div id="creditsStepAmount">
+            <div class="credits-signin" id="creditsSigninRow">
+              <div class="credits-signin-info">
+                <span class="credits-signin-title">每日签到 <b>+50</b> 积分</span>
+                <span class="credits-signin-progress" id="creditsSigninProgress">累计 0/200</span>
+              </div>
+              <div class="credits-signin-bar"><i id="creditsSigninBarFill"></i></div>
+              <button type="button" class="credits-signin-btn" id="creditsSigninBtn">签到</button>
+            </div>
+            <div class="credits-balance-row">
+              <span data-icon="coins"></span>
+              <span>当前余额</span>
+              <b id="creditsBalanceVal">0</b>
+            </div>
+            <div class="credits-grid" id="creditsGrid">
+              <button class="credits-tier" data-amount="1">¥1<div>100 积分</div></button>
+              <button class="credits-tier" data-amount="3">¥3<div>300 积分</div></button>
+              <button class="credits-tier" data-amount="6">¥6<div>600 积分</div></button>
+              <button class="credits-tier" data-amount="30">¥30<div>3000 积分</div></button>
+              <button class="credits-tier" data-amount="68">¥68<div>6800 积分</div></button>
+              <button class="credits-tier" data-amount="128">¥128<div>12800 积分</div></button>
+            </div>
+            <p class="credits-error hidden" id="creditsError"></p>
+            <button class="btn btn-primary btn-block" id="creditsNextBtn" disabled>下一步：微信支付</button>
+          </div>
+          <!-- 第二步：扫码付款 + 提交凭证 -->
+          <div id="creditsStepPay" class="hidden">
+            <div class="credits-pay-head">
+              <span>应付金额</span>
+              <b id="creditsPayAmount">¥0</b>
+              <span class="credits-order-id" id="creditsOrderId"></span>
+            </div>
+            <div class="credits-qr-wrap">
+              <img src="../assets/wechat-pay-qr.png" alt="微信收款码" draggable="false">
+              <p class="credits-qr-hint">微信扫码 · 备注/留言填 <b id="creditsOrderShort"></b> 更快到账</p>
+            </div>
+            <div class="auth-field">
+              <label>付款凭证号（微信：我 → 服务 → 钱包 → 账单，点开该笔交易复制“转账单号”）</label>
+              <div class="auth-input-wrap">
+                <span class="auth-input-icon" data-icon="clipboard"></span>
+                <input type="text" id="creditsVoucher" placeholder="转账单号，10 位数字" maxlength="32" autocomplete="off">
+              </div>
+            </div>
+            <p class="credits-error hidden" id="creditsPayError"></p>
+            <button class="btn btn-primary btn-block" id="creditsSubmitVoucher">我已付款，提交审核</button>
+            <button class="btn btn-ghost btn-block" id="creditsBackBtn">返回重选金额</button>
+          </div>
+          <!-- 我的订单 -->
+          <div class="credits-orders">
+            <div class="credits-orders-head">我的订单</div>
+            <div id="creditsOrdersList"><div class="credits-orders-empty">暂无订单</div></div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost btn-xs" id="creditsCloseBtn">关闭</button>
         </div>
       </div>
     </div>
@@ -613,6 +756,31 @@
         <div class="modal-footer">
           <button class="btn btn-secondary" id="pairReject">取消</button>
           <button class="btn btn-primary" id="pairSubmitCode">确认配对</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 用户协议弹窗 -->
+    <div class="modal-overlay hidden" id="agreementModal">
+      <div class="modal">
+        <div class="modal-header">
+          <h3>MSMate 用户协议</h3>
+        </div>
+        <div class="modal-body agreement-body">
+          <p><strong>更新日期：2026-09-10</strong></p>
+          <p><strong>一、服务说明</strong></p>
+          <p>MSMate（下称"本软件"）提供局域网/互联网文件互传、AI 助手等工具功能。内置 AI 模型服务由运营者出借其自有的第三方模型服务商接口额度供注册用户使用，按积分计费；该服务为共享性质，运营者有权根据运营情况调整可用模型、计费标准或暂停服务。</p>
+          <p><strong>二、AI 生成内容免责</strong></p>
+          <p>AI 输出的内容由模型自动生成，仅供参考，不代表本软件立场。用户不得利用 AI 功能从事任何违反法律法规或公序良俗的活动（包括但不限于侵权、诈骗、传播恶意程序、造谣、色情、赌博等）。用户对其输入的指令及对 AI 产出内容的使用承担全部责任；因违规使用产生的一切后果由用户自行承担，本软件不承担任何责任。</p>
+          <p><strong>三、数据与文件操作免责</strong></p>
+          <p>AI 助手具备文件移动、重命名、删除等操作能力，互传功能涉及文件读写。虽然本软件提供快照、撤销等防护机制，仍请用户自行备份重要数据。对因使用本软件（含 AI 操作、传输失败、设备故障、不可抗力等）导致的任何数据丢失、损坏或损失，本软件不承担赔偿责任。</p>
+          <p><strong>四、积分与充值</strong></p>
+          <p>积分为本软件内的虚拟凭证，仅限本软件内使用；充值到账前需经人工核对，一经消耗不支持退款。签到等福利活动以页面说明为准，运营者保留调整或终止的权利。</p>
+          <p><strong>五、账号与协议变更</strong></p>
+          <p>用户应妥善保管账号密码。本协议可能随版本更新调整，重大变更会在软件内公告；继续使用即视为接受更新后的协议。若不同意本协议任何条款，请停止使用本软件。</p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-primary" id="agreementCloseBtn">我已阅读</button>
         </div>
       </div>
     </div>
@@ -761,10 +929,14 @@
           </div>
           <div class="ai-settings-panes">
             <div class="ai-pane active" data-pane="model">
+              <div class="ai-sep-title">内置模型（登录即可用，按积分计费）</div>
+              <div id="aiBuiltinCards" class="ai-builtin-cards"></div>
+              <div class="ai-sep-title">自定义模型（用自己的 API Key，不扣积分）</div>
               <div class="pair-code-input">
                 <label>服务商：</label>
                 <select id="aiProviderSelect" class="sort-select">
                   <option value="siliconflow">硅基流动</option>
+                  <option value="msmate">MSMate 内置（扣积分）</option>
                   <option value="deepseek">DeepSeek 官方</option>
                   <option value="zhipu">智谱 GLM</option>
                   <option value="openrouter">OpenRouter</option>
@@ -880,7 +1052,7 @@
                 </div>
                 <div class="ai-model-row">
                   <input type="text" id="aiTtsTestText" placeholder="试听文本，默认：你好喵，我是 MSMate 的 AI 助手" style="flex:1">
-                  <button type="button" id="aiTtsTestBtn" class="btn btn-sm" data-icon="play"><span>试听</span>/button>
+                  <button type="button" id="aiTtsTestBtn" class="btn btn-sm" data-icon="play"><span>试听</span></button>
                 </div>
               </div>
               <div class="pair-code-input">
@@ -923,7 +1095,7 @@
               <div class="ai-rules-block">
                 <div class="mem-header-row">
                   <label><span data-icon="clock"></span> 定时任务（每天到点自动给 AI 派活，应用开着才触发）：</label>
-                  <button class="btn btn-sm" id="aiScheduleAddBtn" data-icon="plus"><span>添加</span>/button>
+                  <button class="btn btn-sm" id="aiScheduleAddBtn" data-icon="plus"><span>添加</span></button>
                 </div>
                 <div class="data-sync-row">
                   <input type="time" id="aiScheduleTime" class="sort-input" style="width:110px">
@@ -961,10 +1133,20 @@
             </div>
             <div class="ai-pane" data-pane="data">
               <div class="ai-rules-block">
+                <div class="mem-header-row">
+                  <label><span data-icon="cloud"></span> 云同步（登录 MSMate 账号后自动进行）：</label>
+                  <span class="cloud-sync-state" id="cloudSyncState">…</span>
+                </div>
+                <p class="ptt-hint">登录后自动把 Work 会话与 AI 设置备份到你的账号（本地有变化后 5 分钟内推送，换设备登录同一账号自动恢复）。互传记录与普通设置不在云同步范围。</p>
+                <div class="data-sync-row">
+                  <button class="btn btn-secondary" id="cloudSyncNowBtn">立即同步</button>
+                </div>
+              </div>
+              <div class="ai-rules-block">
                 <label>把设置、规则、长期记忆、所有会话记录、工作台（含记事本）打包成一个 zip，拷到另一台电脑导入即可无缝续接。</label>
                 <div class="data-sync-row">
-                  <button class="btn btn-primary" id="aiExportDataBtn" data-icon="upload"><span>导出数据</span>/button>
-                  <button class="btn btn-secondary" id="aiImportDataBtn" data-icon="download"><span>导入数据</span>/button>
+                  <button class="btn btn-primary" id="aiExportDataBtn" data-icon="upload"><span>导出数据</span></button>
+                  <button class="btn btn-secondary" id="aiImportDataBtn" data-icon="download"><span>导入数据</span></button>
                 </div>
               </div>
               <p class="ptt-hint">典型用法：在家导出 → U盘/局域网互传拷到公司 → 公司导入继续推进。<br>导入会<b>覆盖</b>本机的同名数据（导入前自动备份到快照目录），完成后应用会自动重启生效。</p>
@@ -1179,5 +1361,23 @@
   <script src="js/word-rich.js"></script>
   <script src="js/work.js"></script>
   <script src="js/auth.js"></script>
+  <script src="js/credits.js"></script>
+  <script>
+    // 开屏收尾：界面脚本全部就绪后，logo 停留一拍再整体淡出并移除（防 app.js 异常导致白屏卡死：
+    // load 事件即使脚本出错也会触发；兜底 4 秒强制撤屏）
+    ;(function () {
+      var done = false
+      function hideSplash() {
+        if (done) return
+        done = true
+        var s = document.getElementById('splash')
+        if (!s) return
+        s.classList.add('hide')
+        setTimeout(function () { if (s.parentNode) s.parentNode.removeChild(s) }, 520)
+      }
+      window.addEventListener('load', function () { setTimeout(hideSplash, 700) })
+      setTimeout(hideSplash, 4000)
+    })()
+  </script>
 </body>
 </html>

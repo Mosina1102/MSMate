@@ -13,6 +13,29 @@ const TCP_PORT = parseInt(process.env.MSC_TCP_PORT || '45679', 10)
 const BUFFER_SIZE = 64 * 1024
 const REQUEST_TIMEOUT = 30000
 
+// 公网 IP 判断（互联网传输每日限额用）：公网地址的连接计流量，局域网/内网/环回不计
+function isPublicIP(ip) {
+  const s = String(ip || '').replace(/^::ffff:/, '')
+  const v = net.isIP(s)
+  if (v === 4) {
+    const [a, b] = s.split('.').map(Number)
+    if (a === 0 || a === 10 || a === 127) return false
+    if (a === 172 && b >= 16 && b <= 31) return false
+    if (a === 192 && b === 168) return false
+    if (a === 169 && b === 254) return false // 链路本地
+    if (a === 100 && b >= 64 && b <= 127) return false // CGNAT 运营商大内网
+    return true
+  }
+  if (v === 6) {
+    const low = s.toLowerCase()
+    if (low === '::1' || low === '::') return false
+    if (low.startsWith('fe80')) return false // 链路本地
+    if (low.startsWith('fc') || low.startsWith('fd')) return false // ULA 私有
+    return true // 2000::/3 全球单播
+  }
+  return false
+}
+
 // 获取桌面路径（兼容 OneDrive 重定向），失败返回 null
 function getDesktopPath() {
   try {
@@ -87,9 +110,11 @@ async function createOfficeFile(filePath, fileType) {
 }
 
 class TCPAgent extends EventEmitter {
-  constructor(authManager) {
+  constructor(authManager, options = {}) {
     super()
     this.authManager = authManager
+    // 互联网传输每日限额钩子（main.js 注入）：{ take(n)→bool 扣减并判断是否超额, add(n) 只累计（收向） }
+    this.netQuota = (options && options.netQuota) || null
     this.server = null
     this.connections = new Map()
     this.pendingSockets = new Map() // 2.0：已连接但未通过配对码验证的设备（deviceId -> socket）
@@ -177,8 +202,10 @@ class TCPAgent extends EventEmitter {
       socket._buffer = Buffer.alloc(0)
       socket._connected = false
       socket._role = 'inbound' // 被动方：对方发起的连接
+      if (isPublicIP(socket.remoteAddress)) socket._viaNet = true // 公网入站 = 互联网传输，计入每日额度
 
       socket.on('data', (data) => {
+        if (socket._viaNet && this.netQuota) this.netQuota.add(data.length) // 收向流量累计
         socket._buffer = Buffer.concat([socket._buffer, data])
         this.drainBuffer(socket)
       })
@@ -657,11 +684,25 @@ class TCPAgent extends EventEmitter {
     return true
   }
 
+  // 互联网传输每日限额：公网/桥接连接发送前扣减额度，超额断开并通知一次
+  _netQuotaGate(socket, bytes) {
+    if (!socket._viaNet || !this.netQuota) return true
+    if (this.netQuota.take(bytes)) return true
+    if (!socket._netQuotaHit) {
+      socket._netQuotaHit = true
+      this.emit('net-quota-exceeded')
+      this.emit('log', '互联网传输今日额度已用完，连接已断开（明日自动恢复）')
+    }
+    try { socket.destroy() } catch { }
+    return false
+  }
+
   sendMsg(socket, type, data, requestId) {
     try {
       const payload = JSON.stringify({ type, data, ...(requestId ? { requestId } : {}) })
       const msgBuf = Buffer.from(payload, 'utf-8')
       const header = Buffer.from(`${msgBuf.length}:${type}\n`, 'utf-8')
+      if (!this._netQuotaGate(socket, header.length + msgBuf.length)) return false
       socket.write(Buffer.concat([header, msgBuf]))
     } catch (err) {
       this.emit('log', `发送消息错误: ${err.message}`)
@@ -677,9 +718,11 @@ class TCPAgent extends EventEmitter {
         metaLen.writeUInt32BE(metaBuf.length, 0)
         const combined = Buffer.concat([metaLen, metaBuf, payloadBuf])
         const header = Buffer.from(`${combined.length}:chunk\n`, 'utf-8')
+        if (!this._netQuotaGate(socket, header.length + combined.length)) return false
         return socket.write(Buffer.concat([header, combined]))
       } else {
         const header = Buffer.from(`${payloadBuf.length}:${type}\n`, 'utf-8')
+        if (!this._netQuotaGate(socket, header.length + payloadBuf.length)) return false
         return socket.write(Buffer.concat([header, payloadBuf]))
       }
     } catch (err) {
@@ -1469,8 +1512,10 @@ class TCPAgent extends EventEmitter {
         socket._lastPongTime = Date.now()
         socket._tempIP = trimmedIP
         socket._role = 'outbound' // 发起方：本机主动连接
+        if (isPublicIP(trimmedIP)) socket._viaNet = true // 公网出站 = 互联网传输，计入每日额度
 
         socket.on('data', (data) => {
+          if (socket._viaNet && this.netQuota) this.netQuota.add(data.length) // 收向流量累计
           socket._buffer = Buffer.concat([socket._buffer, data])
           this.drainBuffer(socket)
         })
@@ -1505,10 +1550,12 @@ class TCPAgent extends EventEmitter {
     socket._connected = true
     socket._lastPongTime = Date.now()
     socket._viaRelay = true
+    socket._viaNet = true // 互联网桥接通道：无论收发都走中转流量，计入每日额度
     socket._role = 'inbound' // 互联网桥接：本端为被动方（显码），发起方通过 connectByIP 建立桥接
     if (opts.tempIP) socket._tempIP = opts.tempIP
 
     socket.on('data', (data) => {
+      if (this.netQuota) this.netQuota.add(data.length) // 收向流量累计
       socket._buffer = Buffer.concat([socket._buffer, data])
       this.drainBuffer(socket)
     })

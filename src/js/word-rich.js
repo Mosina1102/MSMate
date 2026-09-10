@@ -1999,13 +1999,16 @@ async function manualConnect() {
 
 function renderDeviceList() {
   if (!deviceItems || !deviceCount) return
-  // 合并三类设备：局域网 > 中转 > IPv6 历史（同 ID 以高优先级为准）
+  // 合并四类设备：局域网 > 中转 > IPv6 历史 > 互联网 presence（同 ID 以高优先级为准）
   const devices = Array.from(state.devices.values())
   for (const d of state.relayDevices.values()) {
     if (!state.devices.has(d.deviceId)) devices.push(d)
   }
   for (const p of state.ipv6Peers.values()) {
     if (!state.devices.has(p.deviceId) && !state.relayDevices.has(p.deviceId)) devices.push(p)
+  }
+  for (const d of state.netDevices.values()) {
+    if (!state.devices.has(d.deviceId) && !state.relayDevices.has(d.deviceId) && !state.ipv6Peers.has(d.deviceId)) devices.push(d)
   }
 
   if (devices.length === 0) {
@@ -2023,10 +2026,12 @@ function renderDeviceList() {
     const statusText = isActive ? '浏览中' : (isConnected ? '已连接·切换' : '点击连接')
     const viaRelay = !!device.viaRelay
     const viaIPv6 = !!device.viaIPv6
+    const viaNet = !!device.viaNet
     let metaText = device.ip
     let icon = iconSvg('laptop')
     let badge = ''
-    if (viaRelay) { metaText = '互联网通道'; icon = iconSvg('globe'); badge = ' <span class="relay-badge">远程</span>' }
+    if (viaNet) { icon = iconSvg('globe'); badge = ' <span class="relay-badge">互联网</span>' }
+    else if (viaRelay) { metaText = '互联网通道'; icon = iconSvg('globe'); badge = ' <span class="relay-badge">远程</span>' }
     else if (viaIPv6) { metaText = 'IPv6 直连'; icon = iconSvg('radio-tower'); badge = ' <span class="relay-badge">远程</span>' }
     return `<div class="device-item ${isActive ? 'connected' : ''}" data-device-id="${device.deviceId}">
       <span class="device-icon">${icon}</span>
@@ -2037,7 +2042,7 @@ function renderDeviceList() {
       </div>
       <span class="device-status ${isActive || isConnected ? 'online' : 'offline'}">${statusText}</span>
     </div>`
-  }).join('')
+  }).join('') + netQuotaHintHtml(devices)
 
   deviceCount.textContent = devices.length
 
@@ -2063,7 +2068,7 @@ function renderDeviceList() {
 }
 
 async function connectToDevice(deviceId) {
-  const device = state.devices.get(deviceId) || state.relayDevices.get(deviceId) || state.ipv6Peers.get(deviceId)
+  const device = state.devices.get(deviceId) || state.relayDevices.get(deviceId) || state.ipv6Peers.get(deviceId) || state.netDevices.get(deviceId)
   if (!device) {
     showToast('设备信息不存在，请刷新设备列表', 'error')
     return
@@ -2071,115 +2076,125 @@ async function connectToDevice(deviceId) {
   state.lastConnectedIP = device.ip
   state.manualDisconnect = false
   state.reconnectAttempts = 0
+  // 互联网设备（公网/中转/IPv6）：连接前查每日额度（2GB），用完就别白连了
+  if (device.viaNet || device.viaRelay || device.viaIPv6) {
+    const q = await _api.netQuota().catch(() => null)
+    if (q && q.left <= 0) {
+      showToast('今日互联网传输额度已用完（2GB/天），明日自动恢复', 'error')
+      return
+    }
+  }
   showToast(`正在连接 ${device.hostname || device.name}...`, 'info')
   try {
-    // 三条通道：中转 / IPv6 历史 / 局域网直连
+    // 四条通道：中转 / IPv6 历史 / 互联网 presence P2P 直连 / 局域网直连
     const result = device.viaRelay
       ? await _api.relayConnect(deviceId)
       : device.viaIPv6
         ? await _api.ipv6ConnectPeer(deviceId)
-        : await _api.connectByIP(device.ip)
+        : await _api.connectByIP(device.ip) // viaNet（公网 IP 直连）与局域网同走 connectByIP（端口 45679）
     if (!result.success) {
-      showToast(`连接失败: ${result.error}（请确认对方 MSMate 已打开）`, 'error')
+      showToast(`连接失败: ${result.error}（请确认对方 MSMate 已打开；互联网直连需对方公网 IP 可达）`, 'error')
     }
   } catch (err) {
     showToast(`连接失败: ${err.message}（请确认对方 MSMate 已打开）`, 'error')
   }
 }
 
-// === 互联网模式（中转服务器） ===
-function relayStatusText(snap) {
-  switch (snap.status) {
-    case 'online': return '已连接中转服务器'
-    case 'connecting': return '连接中...' + (snap.error ? `（${snap.error}）` : '')
-    case 'error': return `${snap.error || '连接失败'}`
-    default: return '未启用'
-  }
+// === 互联网传输每日额度（2GB/天）：列表提示 + 连接前预检 + 超额断开提示 ===
+let _netQuotaCache = null
+async function refreshNetQuota() {
+  try { _netQuotaCache = await _api.netQuota() } catch { }
+}
+function netQuotaHintHtml(devices) {
+  const hasNet = (devices || []).some(d => d.viaNet || d.viaRelay || d.viaIPv6)
+  if (!hasNet || !_netQuotaCache) return ''
+  const b = _netQuotaCache.left || 0
+  const fmt = b >= 1073741824 ? `${(b / 1073741824).toFixed(1)}GB` : `${Math.max(0, Math.round(b / 1048576))}MB`
+  return `<div class="net-quota-hint">${iconSvg('globe')} 互联网传输今日剩余 ${fmt} / 2GB</div>`
+}
+if (window.api && window.api.onNetQuotaExceeded) {
+  window.api.onNetQuotaExceeded(() => {
+    _netQuotaCache = null
+    showToast('今日互联网传输额度已用完（2GB/天），明日自动恢复', 'error')
+  })
 }
 
+// === 互联网在线设备（v0.4）：msmate-api presence 登记，30s 轮询；连接走 P2P 公网 IP 直连 ===
+async function refreshNetDevices() {
+  let changed = false
+  await refreshNetQuota()
+  try {
+    const r = await _api.presenceList()
+    if (r && r.ok) {
+      const seen = new Set()
+      for (const d of (r.devices || [])) {
+        if (d.deviceId === r.selfId) continue // 排除自己
+        seen.add(d.deviceId)
+        const prev = state.netDevices.get(d.deviceId)
+        if (!prev || prev.ip !== d.ip || prev.name !== d.name) changed = true
+        state.netDevices.set(d.deviceId, { deviceId: d.deviceId, name: d.name, platform: d.platform, ip: d.ip, viaNet: true })
+      }
+      for (const k of Array.from(state.netDevices.keys())) {
+        if (!seen.has(k)) { state.netDevices.delete(k); changed = true }
+      }
+    }
+  } catch { /* 离线保留旧列表，下轮再刷 */ }
+  if (changed || state.netDevices.size) renderDeviceList()
+}
+setInterval(refreshNetDevices, 30000)
+setTimeout(refreshNetDevices, 6000)
+
+// === 互联网模式（v0.5：官方服务自动连接，无需用户配置） ===
+// 侧栏状态徽标 = 登录态（presence 心跳随登录自动运行）；弹窗展示官方连接状态 + 本机 ID + 额度
 function updateRelayTag(snap) {
   const tag = $('relayStatusTag')
   if (!tag) return
-  if (snap.status === 'online') {
-    tag.textContent = '在线'
-    tag.className = 'relay-status on'
-  } else if (snap.status === 'connecting') {
-    tag.textContent = '连接中'
-    tag.className = 'relay-status wait'
-  } else if (snap.status === 'error') {
-    tag.textContent = '异常'
-    tag.className = 'relay-status err'
-  } else {
-    tag.textContent = '关闭'
-    tag.className = 'relay-status off'
-  }
+  const loggedIn = snap && snap.loggedIn
+  tag.textContent = loggedIn ? '在线' : '未登录'
+  tag.className = `relay-status ${loggedIn ? 'on' : 'off'}`
   const modalText = $('relayStatusText')
-  if (modalText) modalText.textContent = relayStatusText(snap)
+  if (modalText) modalText.textContent = loggedIn ? '已连接官方服务（设备心跳 30 秒/次）' : '未登录（点顶栏头像登录后自动启用）'
 }
 
 async function openRelayModal() {
   const m = $('relayModal')
   if (!m) return
   m.classList.remove('hidden')
+  // 登录态 + 在线设备数
   try {
-    const st = await _api.relayGetState()
-    $('relayHostInput').value = st.host || ''
-    updateRelayTag({ status: st.enabled ? st.status : 'stopped', error: st.lastError })
+    const st = await _api.authGetState()
+    const loggedIn = !!(st && st.token)
+    updateRelayTag({ loggedIn })
+    const n = state.netDevices.size
+    if (loggedIn) {
+      const extra = n ? ` · 当前 ${n} 台设备在线` : ' · 暂无其他设备在线（双方都登录后自动出现在列表）'
+      const modalText = $('relayStatusText')
+      if (modalText) modalText.textContent = '已连接官方服务（设备心跳 30 秒/次）' + extra
+    }
+  } catch { updateRelayTag({ loggedIn: false }) }
+  // 本机设备 ID
+  try {
+    const info = await _api.getInfo()
+    const el = $('relaySelfId')
+    if (el && info && info.selfId) el.value = info.selfId
+  } catch { }
+  // 今日额度
+  try {
+    const q = await _api.netQuota()
+    const line = $('relayQuotaLine')
+    if (line && q) {
+      const b = q.left || 0
+      const fmt = b >= 1073741824 ? `${(b / 1073741824).toFixed(1)}GB` : `${Math.max(0, Math.round(b / 1048576))}MB`
+      line.textContent = `剩余 ${fmt} / 2GB（局域网直连不限）`
+    }
   } catch { }
 }
 
-async function handleRelaySave() {
-  const hostInput = $('relayHostInput')
-  const host = hostInput ? hostInput.value.trim() : ''
-  if (!host) {
-    showToast('请填写中转服务器地址（域名或IP:端口）', 'error')
-    return
-  }
-  try {
-    const r = await _api.relaySave(true, host)
-    if (r && r.success === false) {
-      showToast('保存失败，请重试', 'error')
-      return
-    }
-    showToast('已保存，正在连接中转服务器...', 'success')
-    const m = $('relayModal')
-    if (m) m.classList.add('hidden')
-  } catch (err) {
-    showToast(`保存失败: ${err.message}`, 'error')
-  }
-}
-
-async function handleRelayResetPin() {
-  try {
-    await _api.relayResetPin()
-    showToast('已重置服务器指纹，下次连接将重新记录', 'success')
-  } catch (err) {
-    showToast(`重置失败: ${err.message}`, 'error')
-  }
-}
-
 function initRelayUI() {
-  if (!_api.relayGetState) return
-  if (_api.onRelayStatus) _api.onRelayStatus((snap) => { updateRelayTag(snap); })
-  if (_api.onRelayDevices) _api.onRelayDevices((devices) => {
-    const next = new Map()
-    for (const d of (devices || [])) {
-      if (d && d.deviceId) {
-        next.set(d.deviceId, {
-          deviceId: d.deviceId,
-          name: d.name,
-          hostname: d.name,
-          ip: 'via-relay',
-          viaRelay: true
-        })
-      }
-    }
-    state.relayDevices = next
-    renderDeviceList()
-  })
-  _api.relayGetState().then((st) => {
-    updateRelayTag({ status: st.enabled ? st.status : 'stopped', error: st.lastError })
-  }).catch(() => { })
+  // 官方 presence 模式：状态徽标 = 登录态；旧中转服务器的状态/设备钩子已废弃
+  if (_api.authGetState) {
+    _api.authGetState().then((st) => updateRelayTag({ loggedIn: !!(st && st.token) })).catch(() => { })
+  }
 }
 
 // === IPv6 直连 ===

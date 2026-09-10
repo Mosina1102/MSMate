@@ -1302,11 +1302,19 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
           }
         } catch { /* 压缩不可用就用原图直发 */ }
       }
-      // 识图模型配置：默认硅基流动免费视觉模型，可在 AI 设置里改
+      // 识图模型配置：默认硅基流动免费视觉模型，可在 AI 设置里改；
+      // 没配任何 Key 时回落 MSMate 内置代理（登录即用，走积分计费）——内置用户也有看图工具
       const pv = resolveModelProvider(getSetting, 'vision')
-      const apiKey = (pv && pv.apiKey) || getSetting('aiVisionApiKey') || getSetting('aiApiKey') || ''
-      if (!apiKey) return { ok: false, message: '未配置 API Key（AI 设置里设置后才能识图）' }
-      const baseUrl = (pv && pv.baseUrl) || (getSetting('aiVisionBaseUrl') || getSetting('aiBaseUrl') || 'https://api.siliconflow.cn/v1').replace(/\/+$/, '')
+      let apiKey = (pv && pv.apiKey) || getSetting('aiVisionApiKey') || getSetting('aiApiKey') || ''
+      let baseUrl = (pv && pv.baseUrl) || (getSetting('aiVisionBaseUrl') || getSetting('aiBaseUrl') || 'https://api.siliconflow.cn/v1').replace(/\/+$/, '')
+      if (!apiKey) {
+        try {
+          const list = JSON.parse(getSetting('aiProviderList') || '[]') || []
+          const m = list.find(x => x && x.id === 'msmate' && x.apiKey && x.baseUrl)
+          if (m) { apiKey = m.apiKey; baseUrl = String(m.baseUrl || '').replace(/\/+$/, '') }
+        } catch { }
+      }
+      if (!apiKey) return { ok: false, message: '未配置 API Key（AI 设置里设置后才能识图；登录 MSMate 账号可直接用内置看图）' }
       const model = getSetting('aiVisionModel') || 'PaddlePaddle/PaddleOCR-VL-1.5'
       let question = String(args.question || '').trim() || '请识别这张图片：先用一句话说明它整体是什么（照片/截图/文档/表格等），再描述画面主要内容（主体、场景、界面元素、图表结构）。图中如有文字（含水印、域名、版权行）请如实转录并注明位置；如果图中没有文字，直接说"图中无文字"并描述画面即可，不要硬凑或猜测文字内容。'
       // DeepSeek-OCR 官方要求文本以 <image> 标记开头，否则模型对不上图会幻觉输出
@@ -1326,8 +1334,9 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       const answer = await new Promise((resolve) => {
         let u
         try { u = new URL(baseUrl + '/chat/completions') } catch { return resolve('【配置错误】baseUrl 无效：' + baseUrl) }
-        const req = https.request({
-          method: 'POST', hostname: u.hostname, port: u.port || 443, path: u.pathname + u.search,
+        // MSMate 内置代理是 http（IP 直连），按协议选模块
+        const req = (u.protocol === 'http:' ? http : https).request({
+          method: 'POST', hostname: u.hostname, port: u.port || (u.protocol === 'http:' ? 80 : 443), path: u.pathname + u.search,
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}`, 'Content-Length': Buffer.byteLength(body) },
           timeout: 60000
         }, (res) => {

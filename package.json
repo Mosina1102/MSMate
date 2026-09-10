@@ -23,7 +23,7 @@
     "productName": "MSMate",
     "copyright": "Copyright © 2026",
     "directories": {
-      "output": "release_build_v2711",
+      "output": "release_build_v2712",
       "buildResources": "assets"
     },
     "artifactName": "${productName}.Setup.${version}.${ext}",

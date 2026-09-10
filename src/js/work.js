@@ -12,6 +12,10 @@ const AI_PROVIDERS = {
     name: '硅基流动',
     baseUrl: 'https://api.siliconflow.cn/v1'
   },
+  msmate: {
+    name: 'MSMate 内置（扣积分）',
+    baseUrl: '' // 动态：登录账号 + 服务端代理，无需手动配置
+  },
   deepseek: {
     name: 'DeepSeek 官方',
     baseUrl: 'https://api.deepseek.com/v1'
@@ -603,8 +607,7 @@ function initWorkMode() {
   // 全局设置（外观 / 互联与传输 / 设备 / 关于）
   initGlobalSettings()
   $('aiApprovalTag').addEventListener('click', toggleApprovalMode)
-  const quickSel = $('chatModelQuick')
-  if (quickSel) quickSel.addEventListener('change', (e) => onQuickModelChange(e.target.value))
+  fillQuickModelSelect() // v0.4：自绘模型菜单（按钮+菜单的事件在函数内绑定一次）
   const sessionMenu = $('sessionMenu')
   $('sessionBarBtn').addEventListener('click', (e) => {
     e.stopPropagation()
@@ -630,6 +633,29 @@ function initWorkMode() {
   // 数据同步：导出 / 导入
   $('aiExportDataBtn').addEventListener('click', exportWorkData)
   $('aiImportDataBtn').addEventListener('click', importWorkData)
+  // 云同步：状态显示 + 立即同步（登录后自动备份 Work 会话+AI 设置到账号，每 5 分钟）
+  $('cloudSyncNowBtn').addEventListener('click', async () => {
+    const btn = $('cloudSyncNowBtn')
+    const st = $('cloudSyncState')
+    btn.disabled = true
+    if (st) st.textContent = '同步中…'
+    try {
+      const r = await _api.cloudSyncNow()
+      if (r && r.ok) {
+        const t = fmtLocalTime(r.lastSyncAt)
+        if (st) st.textContent = `上次同步：${t || '刚刚'}`
+        showToast('云同步完成：Work 会话与 AI 设置已备份到账号', 'success')
+      } else {
+        if (st) st.textContent = '同步失败（未登录或网络不通）'
+        showToast((r && r.error) || '云同步失败', 'error')
+      }
+    } catch (err) {
+      if (st) st.textContent = '同步失败'
+      showToast(`云同步失败: ${err.message}`, 'error')
+    }
+    btn.disabled = false
+  })
+  refreshCloudSyncState()
   $('aiProviderSelect').addEventListener('change', applyProviderUI)
   // 服务商库：选中回填编辑表单，💾 存入/更新，🗑 删除；各模型槽位下拉选用即存
   if ($('aiProviderLibSelect')) {
@@ -968,32 +994,96 @@ async function toggleApprovalMode() {
   showToast(next === 'auto' ? '已切换：自动信任（C盘除桌面仍需批准）' : '已切换：手动批准', 'success')
 }
 
-// ===== 主模型快捷切换（聊天输入区下拉；识图模型不参与）=====
-async function fillQuickModelSelect() {
-  const sel = $('chatModelQuick')
-  if (!sel) return
-  const list = (await _api.getSetting('chatModelList')) || []
-  const cur = (work.config && work.config.model) || ''
-  // 当前模型不在清单里也要显示出来（自定义值），置顶
-  const opts = cur && !list.includes(cur) ? [cur, ...list] : list.slice()
-  if (!opts.length) {
-    sel.innerHTML = '<option value="">默认模型</option>'
-    return
-  }
-  sel.innerHTML = opts.map((m) => `<option value="${escapeHtml(m)}" title="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('')
-  sel.value = cur && opts.includes(cur) ? cur : opts[0]
+// ===== 主模型快捷切换（聊天输入区自绘菜单：内置模型置顶带积分价 + 常用模型，Trae 风格分组）=====
+function mqmBtnLabel(model) {
+  const btn = $('chatModelQuickBtn')
+  if (!btn) return
+  const m = String(model || '')
+  const name = m.startsWith('[内置]') ? `内置·${m.slice(4).split('/').pop()}` : (m || '默认模型')
+  btn.textContent = name
+  btn.title = m ? `${m}（点击切换主模型）` : '主模型快捷切换'
 }
 
-async function onQuickModelChange(v) {
-  const model = String(v || '').trim()
-  if (!model) return
-  work.config.model = model
-  try {
-    await _api.aiSetConfig({ model })
-    showToast(`已切换主模型：${model}`, 'success')
-  } catch (err) {
-    showToast(`切换失败: ${err.message}`, 'error')
+function renderQuickModelMenu(builtin, list, cur) {
+  const menu = $('chatModelQuickMenu')
+  if (!menu) return
+  // 积分倍率（Trae 风格）：输出 10 积分/百万tokens = 1x，0.9x ≈ 9 积分/百万tokens
+  const ratio = (c) => (c.creditsPerMTokOut / 10).toFixed(2).replace(/0+$/, '').replace(/\.$/, '') + 'x'
+  const row = (val, name, price, tip) => `
+    <button type="button" class="mqm-item${val === cur ? ' active' : ''}" data-model="${escapeHtml(val)}" title="${escapeHtml(tip || val)}">
+      <span class="mqm-check">${val === cur ? '✓' : ''}</span>
+      <span class="mqm-name">${escapeHtml(name)}</span>
+      ${price ? `<span class="mqm-price">${escapeHtml(price)}</span>` : ''}
+    </button>`
+  let html = ''
+  if (builtin && Array.isArray(builtin.chat) && builtin.chat.length) {
+    const chatList = builtin.chat.filter((c) => !c.visionOnly) // visionOnly 只服务内置看图工具
+    if (chatList.length) {
+      html += '<div class="mqm-group">内置模型（登录后可用，按积分计费）</div>'
+      html += chatList.map((c) => row(
+        '[内置]' + c.id,
+        c.name,
+        ratio(c),
+        `${c.desc} · ${ratio(c)} = 每百万tokens 输入 ${c.creditsPerMTokIn} / 输出 ${c.creditsPerMTokOut} 积分`
+      )).join('')
+    }
   }
+  html += '<div class="mqm-group">常用模型</div>'
+  html += (list && list.length ? list : []).map((m) => row(m, m, '', m)).join('')
+  if (!list || !list.length) html += '<div class="mqm-item mqm-hint" style="cursor:default">清单为空，去 设置 → AI设置 → 模型服务 添加常用模型</div>'
+  menu.innerHTML = html
+  menu.querySelectorAll('.mqm-item[data-model]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      menu.classList.add('hidden')
+      const model = btn.getAttribute('data-model') || ''
+      if (model.startsWith('[内置]')) {
+        const st = await _api.authGetState().catch(() => ({}))
+        if (!st || !st.token) { showToast('内置模型需先登录 MSMate 账号（点顶栏头像）', 'info'); return }
+      }
+      work.config.model = model
+      mqmBtnLabel(model)
+      try {
+        await _api.aiSetConfig({ model })
+        showToast(`已切换主模型：${model.startsWith('[内置]') ? model.slice(4).split('/').pop() : model}`, 'success')
+      } catch (err) {
+        showToast(`切换失败: ${err.message}`, 'error')
+      }
+    })
+  })
+}
+
+async function fillQuickModelSelect() {
+  const btn = $('chatModelQuickBtn')
+  if (!btn) return
+  mqmBtnLabel((work.config && work.config.model) || '')
+  if (btn._mqmBound) return // 事件只绑一次；后续调用只刷新按钮文案
+  btn._mqmBound = true
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation()
+    const menu = $('chatModelQuickMenu')
+    if (!menu) return
+    if (!menu.classList.contains('hidden')) { menu.classList.add('hidden'); return }
+    const [list, builtinR] = await Promise.all([
+      _api.getSetting('chatModelList').catch(() => []),
+      _builtinModelsCache ? Promise.resolve(_builtinModelsCache) : _api.aiBuiltinModels().then((r) => (r && r.ok ? r.data : null)).catch(() => null)
+    ])
+    if (builtinR) _builtinModelsCache = builtinR
+    renderQuickModelMenu(builtinR, Array.isArray(list) ? list : [], (work.config && work.config.model) || '')
+    // fixed 定位贴按钮上方（侧栏 overflow:hidden 会裁掉 absolute 浮层，只能走 fixed）
+    menu.classList.add('hidden')
+    menu.style.visibility = 'hidden'
+    menu.classList.remove('hidden')
+    const rect = btn.getBoundingClientRect()
+    const mw = menu.offsetWidth
+    menu.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - mw - 8)) + 'px'
+    menu.style.top = (rect.top - 6) + 'px'
+    menu.style.visibility = ''
+  })
+  document.addEventListener('click', (e) => {
+    const menu = $('chatModelQuickMenu')
+    if (!menu || menu.classList.contains('hidden')) return
+    if (!menu.contains(e.target) && !btn.contains(e.target)) menu.classList.add('hidden')
+  })
 }
 
 // ===== 主题切换（执事风=默认 / 经典白 / 深色）=====
@@ -1269,6 +1359,7 @@ async function openAiSettings() {
   } catch {}
   applyProviderUI()
   syncWebDeepseekBtn()
+  loadBuiltinCards() // v0.4 内置模型卡片：每次打开面板刷新清单与余额
   $('aiSettingsModal').classList.remove('hidden')
 }
 
@@ -1277,22 +1368,120 @@ function applyProviderUI() {
   const p = AI_PROVIDERS[key] || AI_PROVIDERS.custom
   const baseInput = $('aiBaseUrlInput')
   const keyInput = $('aiApiKeyInput')
+  const baseRow = $('aiBaseUrlRow')
   const prof = (aiCfgCache && aiCfgCache.profiles && aiCfgCache.profiles[key]) || null
-  if (key === 'custom') {
-    baseInput.disabled = false
-    baseInput.placeholder = 'https://api.xxx.com/v1'
-    if (prof && prof.baseUrl) baseInput.value = prof.baseUrl
-  } else {
-    baseInput.value = p.baseUrl
+  if (key === 'msmate') {
+    // 内置：走服务端代理 + 登录态鉴权，无需 baseUrl/Key
+    if (baseRow) baseRow.classList.add('hidden')
+    baseInput.value = ''
     baseInput.disabled = true
+    keyInput.value = ''
+    keyInput.disabled = true
+    keyInput.placeholder = '使用当前登录账号，无需 Key'
+  } else {
+    if (baseRow) baseRow.classList.remove('hidden')
+    keyInput.disabled = false
+    if (key === 'custom') {
+      baseInput.disabled = false
+      baseInput.placeholder = 'https://api.xxx.com/v1'
+      if (prof && prof.baseUrl) baseInput.value = prof.baseUrl
+    } else {
+      baseInput.value = p.baseUrl
+      baseInput.disabled = true
+    }
+    // Key 输入框按平台档案显示状态：各平台 Key 并存，切换服务商不丢
+    keyInput.value = ''
+    keyInput.placeholder = (prof && prof.hasKey)
+      ? `该平台已设置（${prof.apiKeyMasked}），留空保持不变`
+      : (aiCfgCache && aiCfgCache.hasKey && key === (aiCfgCache.provider || 'siliconflow')
+        ? `已设置（${aiCfgCache.apiKeyMasked}），留空保持不变` : '未设置，请输入')
   }
-  // Key 输入框按平台档案显示状态：各平台 Key 并存，切换服务商不丢
-  keyInput.value = ''
-  keyInput.placeholder = (prof && prof.hasKey)
-    ? `该平台已设置（${prof.apiKeyMasked}），留空保持不变`
-    : (aiCfgCache && aiCfgCache.hasKey && key === (aiCfgCache.provider || 'siliconflow')
-      ? `已设置（${aiCfgCache.apiKeyMasked}），留空保持不变` : '未设置，请输入')
   fillModelSelects() // 常用模型清单来自用户自管设置，与服务商无关
+}
+
+// ===== 云同步状态（数据同步面板）：登录后自动进行，这里只展示与手动触发 =====
+// lastSyncAt 存的是 UTC ISO 串（主进程 toISOString），展示前转本地时间（否则差 8 小时）
+function fmtLocalTime(iso) {
+  const d = new Date(iso)
+  if (!iso || isNaN(d.getTime())) return ''
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+async function refreshCloudSyncState() {
+  const st = $('cloudSyncState')
+  if (!st) return
+  try {
+    const r = await _api.cloudSyncStatus()
+    if (!r || !r.loggedIn) { st.textContent = '未登录（登录后自动开启）'; return }
+    const t = fmtLocalTime(r.lastSyncAt)
+    st.textContent = t ? `上次同步：${t}` : '已登录，等待首次同步'
+  } catch { st.textContent = '状态获取失败' }
+}
+
+function updateBuiltinBalance(n) {
+  const el = $('aiBuiltinBalance')
+  if (el && typeof n === 'number') el.textContent = `余额 ${n} 积分`
+}
+
+// ===== MSMate 内置模型卡片（v0.4）：登录后可用，按积分计费 =====
+let _builtinModelsCache = null
+async function loadBuiltinCards() {
+  const el = $('aiBuiltinCards')
+  if (!el) return
+  const state = await _api.authGetState().catch(() => ({}))
+  if (!state || !state.token) {
+    el.innerHTML = '<div class="ai-builtin-empty">登录 MSMate 账号后可用内置模型（按积分计费，无需自己的 API Key）</div>'
+    return
+  }
+  if (!_builtinModelsCache) {
+    const r = await _api.aiBuiltinModels().catch(() => null)
+    if (!r || !r.ok) {
+      el.innerHTML = `<div class="ai-builtin-empty">${(r && r.error) || '内置模型清单获取失败'}</div>`
+      return
+    }
+    _builtinModelsCache = r.data
+  }
+  const m = _builtinModelsCache
+  const bal = await _api.creditsBalance().catch(() => null)
+  const balance = bal && bal.ok ? bal.credits : null
+  // 积分倍率（Trae 风格）：输出 10 积分/百万tokens = 1x；真实单价放悬停提示
+  const ratio = (c) => (c.creditsPerMTokOut / 10).toFixed(2).replace(/0+$/, '').replace(/\.$/, '') + 'x'
+  const priceOf = (c) => `${ratio(c)}`
+  const priceTitle = (c) => `每百万tokens：输入 ${c.creditsPerMTokIn} / 输出 ${c.creditsPerMTokOut} 积分（1x = 10 积分/百万tokens）`
+  // visionOnly（PaddleOCR）只服务内置看图工具，不出现在可选主模型里
+  const chatCards = m.chat.filter((c) => !c.visionOnly).map((c) => `
+    <div class="ai-builtin-card${c.premium ? ' premium' : ''}">
+      <div class="ai-builtin-head"><span class="ai-builtin-name">${escapeHtml(c.name)}</span>${c.premium ? '<span class="ai-builtin-tag">深度</span>' : ''}${c.vision ? '<span class="ai-builtin-tag">视觉</span>' : ''}</div>
+      <div class="ai-builtin-desc" title="${escapeHtml(priceTitle(c))}">${escapeHtml(c.desc)} · <span class="ai-builtin-price">${escapeHtml(priceOf(c))}</span></div>
+      <button type="button" class="ai-builtin-use" data-model="${escapeHtml(c.id)}">设为对话模型</button>
+    </div>`).join('')
+  const imgLine = m.image.map((c) => `${escapeHtml(c.name)}（${c.creditsPerImage} 积分/张）`).join('、')
+  const toolLine = `生图：${imgLine} · 语音合成：${escapeHtml(m.tts.name)} · 语音识别：${escapeHtml(m.asr.name)}（${m.asr.creditsPerReq} 积分/次）——在下方槽位选「MSMate 内置（扣积分）」即可使用`
+  el.innerHTML = `
+    <div class="ai-builtin-topline"><span class="ai-builtin-title">内置模型</span><span class="ai-builtin-balance" id="aiBuiltinBalance">余额 ${balance === null ? '…' : balance + ' 积分'}</span></div>
+    <div class="ai-builtin-grid">${chatCards}</div>
+    <div class="ai-builtin-toolhint">${toolLine}</div>`
+  el.querySelectorAll('.ai-builtin-use').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-model')
+      const model = '[内置]' + id
+      $('aiModelInput').value = model
+      $('aiProviderSelect').value = 'msmate'
+      applyProviderUI()
+      try {
+        await _api.aiSetConfig({ model })
+        const fresh = await _api.aiGetConfig()
+        if (fresh) { work.config = fresh; updateApprovalTag() }
+        fillQuickModelSelect()
+        showToast(`已切换到内置模型：${id.split('/').pop()}`, 'success')
+        const balEl = $('aiBuiltinBalance')
+        const nb = await _api.creditsBalance().catch(() => null)
+        if (balEl && nb && nb.ok) balEl.textContent = `余额 ${nb.credits} 积分`
+      } catch (err) {
+        showToast(`切换失败：${err.message}`, 'error')
+      }
+    })
+  })
 }
 
 // ===== 服务商库（v2.4.61 老大方案）：顶部统一管理多个运营商（名称+地址+Key，可自定义增删），
@@ -2052,6 +2241,22 @@ function appendChatError(text) {
   div.className = 'chat-msg error'
   div.textContent = text
   chatList.appendChild(div)
+  // v0.4 积分不足（服务端 402 INSUFFICIENT_CREDITS）：错误条下方附「去充值」，一键打开充值弹窗
+  if (/积分不足|INSUFFICIENT_CREDITS/.test(String(text))) {
+    const row = document.createElement('div')
+    row.className = 'chat-msg chat-recharge-row'
+    const btn = document.createElement('button')
+    btn.type = 'button'
+    btn.className = 'btn btn-primary btn-xs'
+    btn.textContent = '去充值'
+    btn.addEventListener('click', () => {
+      btn.disabled = true
+      if (typeof creditsOpen === 'function') creditsOpen()
+      btn.disabled = false
+    })
+    row.appendChild(btn)
+    chatList.appendChild(row)
+  }
   scrollChat(true)
 }
 
@@ -2101,7 +2306,7 @@ async function restoreHistory(sid) {
   if (!Array.isArray(history)) return
   // 从历史消息重建过程折叠块：assistant 消息里的 tool 块 → ⚙️ 折叠块，最后的纯文本回复展开
   let groupCalls = [] // 当前一轮累积的工具调用摘要 [{name, args}]
-  const flushGroup = (finalMsg) => {
+  const flushGroup = (finalMsg, reasoning, credits) => {
     if (groupCalls.length) {
       clearChatEmpty()
       appendProcessFold(groupCalls)
@@ -2112,10 +2317,20 @@ async function restoreHistory(sid) {
       const div = document.createElement('div')
       div.className = 'chat-msg assistant'
       div.innerHTML = '<div class="chat-assistant-head"><img class="ai-avatar" src="../assets/icon.png" alt=""><span class="ai-name">MSMate</span></div>'
+      // 历史里的 _reasoning（v0.4 入史）：重载后恢复"已深度思考"折叠块
+      if (reasoning) {
+        const think = document.createElement('div')
+        think.className = 'chat-thinking collapsed'
+        think.innerHTML = `<div class="chat-thinking-header"><span class="chat-thinking-chevron">${iconSvg('chevron-down')}</span><span class="label">已深度思考（点击展开）</span></div><div class="chat-thinking-body"></div>`
+        think.querySelector('.chat-thinking-header').addEventListener('click', () => think.classList.toggle('collapsed'))
+        div.appendChild(think)
+        think.querySelector('.chat-thinking-body').textContent = String(reasoning).replace(/(?:\s*\n){3,}/g, '\n\n').trim()
+      }
       const contentEl = document.createElement('div')
       contentEl.className = 'chat-content'
       div.appendChild(contentEl)
       linkifyFilePaths(contentEl, finalMsg)
+      if (credits > 0) mountCreditsTag(div, credits) // 历史里的 _credits：重载后悬停仍能看到本次消耗
       chatList.appendChild(div)
     }
   }
@@ -2132,7 +2347,7 @@ async function restoreHistory(sid) {
         groupCalls.push(...calls)
         if (clean) flushGroup(null) // 有说明文字但后面还有工具/回复，说明文字并入历史（可忽略）
       } else if (clean) {
-        flushGroup(clean)
+        flushGroup(clean, msg._reasoning, msg._credits)
       }
     }
   }
@@ -2340,6 +2555,13 @@ function handleAiEventInner(ev) {
       scrollChat()
       break
     }
+    case 'ai_credits': {
+      // v0.4 内置模型扣费回执：淡灰小字挂在本条 AI 回复底部，平时隐藏、悬停显示
+      const bal = typeof ev.balance === 'number' ? ev.balance : null
+      if (ev.credits != null) mountCreditsTag(work.curAssistant, ev.credits, bal)
+      if (bal !== null) updateBuiltinBalance(bal) // 面板开着的话顺手刷新余额
+      break
+    }
     case 'tool_parse_error': { // 限流/断流自动重试：带转圈的等待提示（单条复用不刷屏，不能关气泡——assistant_start 每轮只发一次，关了后续 delta 会丢）
       if (ev.error) showRetryWait(ev.error)
       break
@@ -2382,10 +2604,30 @@ function handleAiEventInner(ev) {
     case 'run_done':
       finalizeAssistant()
       finalizeRound()
+      if ((ev.credits || 0) > 0) mountCreditsTag(null, ev.credits, ev.balance) // 兜底：流中 ai_credits 没挂上时补到最后一条回复
       hideWaitingSpin() // 任务收尾，撤掉等待行
       setChatRunning(false)
       break
   }
+}
+
+// 积分消耗标注挂载：container 传 curAssistant 或 null（null = 最后一条 AI 回复，run_done 兜底用）
+function mountCreditsTag(container, credits, balance) {
+  const div = container || (() => {
+    const list = curChatEl()
+    if (!list) return null
+    const msgs = list.querySelectorAll('.chat-msg.assistant')
+    return msgs.length ? msgs[msgs.length - 1] : null
+  })()
+  if (!div || !(credits > 0)) return
+  let tag = div.querySelector(':scope > .msg-credits')
+  if (!tag) {
+    tag = document.createElement('div')
+    tag.className = 'msg-credits'
+    div.appendChild(tag)
+  }
+  const bal = typeof balance === 'number' ? ` · 余额 ${balance}` : ''
+  tag.textContent = `本次消耗 ${credits} 积分${bal}`
 }
 
 // 等待转圈行：消息发出后/每轮工具执行间隙，提示"模型在干活"（assistant_start 时撤掉）

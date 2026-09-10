@@ -65,9 +65,17 @@ console.log('— 账号 auth 域静态一致性 —')
 const authjs = fs.readFileSync(path.join(ROOT, 'src/js/auth.js'), 'utf8')
 ok(/<script src="js\/work\.js"><\/script>\s*<script src="js\/auth\.js"><\/script>/.test(html), 'index.html 引入 auth.js（紧跟 work.js 之后）')
 const authIds = [
+  // 顶栏入口
+  'accountBtn', 'accountBtnInner', 'creditBadge', 'creditValue',
+  // 侧栏账号行
   'accountRow', 'accountAvatar', 'accountName', 'accountSub',
-  'accountModal', 'authForms', 'authProfile', 'authEmail', 'authNickname',
-  'authNicknameField', 'authPassword', 'authError', 'authSubmit', 'authLogout', 'authCancel',
+  // 弹窗与表单
+  'accountModal', 'authCloseX', 'authBrandTitle', 'authBrandSub',
+  'authForms', 'authProfile', 'authEmail', 'authNickname',
+  'authNicknameField', 'authPassword', 'authEye', 'authError', 'authSubmit', 'authLogout', 'authCancel',
+  // 资料卡：昵称编辑 + 积分占位（authCreditRow 为纯展示容器，无需 JS 引用）
+  'authEditNick', 'authNickEdit', 'authNickInput', 'authNickSave', 'authNickCancel',
+  'authCreditVal',
 ]
 for (const id of authIds) {
   ok(html.includes(`id="${id}"`), `HTML 含 #${id}`)
@@ -75,24 +83,102 @@ for (const id of authIds) {
 for (const id of authIds) {
   ok(authjs.includes(`'${id}'`), `auth.js 引用 #${id}`)
 }
-ok(html.includes('data-icon="circle-user-round"'), '弹窗标题用 circle-user-round 图标')
+ok(html.includes('data-icon="coins"'), '积分徽标与积分行用 coins 图标')
+ok(html.includes('data-icon="eye"'), '密码眼睛默认 eye 图标')
+ok(html.includes('data-icon="square-pen"'), '修改昵称用 square-pen 图标')
 ok(html.includes('data-icon="log-out"'), '退出登录按钮用 log-out 图标')
 ok(authjs.includes("rowAvatar.innerHTML = iconSvg('user')"), '账号行头像 SVG 走 innerHTML（防乱码约定）')
+ok(authjs.includes("btnInner.innerHTML = iconSvg('user')"), '顶栏头像 SVG 走 innerHTML（防乱码约定）')
+ok(authjs.includes("iconSvg(authState.eyeOn ? 'eye-off' : 'eye')"), '眼睛切换走 innerHTML 动态图标')
+ok(!authjs.includes('authApplyAvatar('), 'auth.js 无幽灵函数 authApplyAvatar 引用（E2E 抓过的渲染抛错 bug）')
+ok(authjs.includes('authApplyAvatarImg(btnInner,') && authjs.includes('authApplyAvatarImg(rowAvatar,'), '顶栏+侧栏头像统一走 authApplyAvatarImg（有头像图显示图，无图显示首字）')
+ok(css.includes('.avatar-mini-img'), 'CSS 头像图样式存在')
 ok(authjs.includes('authState.user'), 'authState.user 登录态字段存在')
 ok(authjs.includes('authMe()'), '启动时后台校验 token')
 ok(authjs.includes('data-authtab'), '登录/注册页签切换就位')
+ok(authjs.includes('authUpdateProfile'), '昵称编辑走 authUpdateProfile 桥')
 ok(css.includes('.account-row'), 'CSS 侧栏账号行样式存在')
-ok(css.includes('.auth-field input'), 'CSS 登录表单输入样式存在')
-ok(css.includes('.auth-error'), 'CSS 错误提示样式存在')
+ok(css.includes('.account-btn'), 'CSS 顶栏头像按钮样式存在')
+ok(css.includes('.credit-badge'), 'CSS 积分徽标样式存在')
+ok(css.includes('.auth-brand-logo'), 'CSS 弹窗品牌头样式存在')
+ok(css.includes('.auth-input-wrap input'), 'CSS 登录表单输入样式存在')
+ok(css.includes('.auth-error.shake'), 'CSS 错误抖动动画存在')
+ok(css.includes('.auth-nick-edit'), 'CSS 昵称编辑态样式存在')
+ok(css.includes('.auth-credit-row'), 'CSS 积分行样式存在')
+ok(css.includes('body.work-mode .account-row'), 'Work 模式账号行隐藏（不挤输入框）')
 // 主进程与 preload 配对
 const mainjs = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8')
 const preloadjs = fs.readFileSync(path.join(ROOT, 'preload.js'), 'utf8')
-for (const ch of ['auth:get-state', 'auth:register', 'auth:login', 'auth:me', 'auth:logout']) {
+for (const ch of ['auth:get-state', 'auth:register', 'auth:login', 'auth:me', 'auth:logout', 'auth:profile']) {
   ok(mainjs.includes(`'${ch}'`), `main.js 注册 ${ch}`)
   ok(preloadjs.includes(`'${ch}'`), `preload.js 桥接 ${ch}`)
 }
-ok(mainjs.includes('api.mosina.top:3210'), '主进程指向 msmate-api 服务地址')
+ok(mainjs.includes('101.43.150.46:3210'), '主进程指向 msmate-api 服务地址（IP 直连，备案前域名被拦）')
+ok(mainjs.includes('body: { email, password, nickname, code, agree: \'v1\' }'), 'auth:register 转发邮箱验证码与协议标记（code 不许丢）')
+ok(preloadjs.includes('authRegister: (email, password, nickname, code)'), 'preload 注册桥把 code 传给主进程（E2E 抓过的丢参 bug）')
+ok(mainjs.includes('body: { email, code, password }'), 'auth:reset 转发验证码与密码')
 ok(mainjs.includes("getSetting('auth')"), 'token 存 settings.json（auth 键）')
+// 服务端
+const serversrc = fs.readFileSync(path.join(ROOT, 'api-server/server.js'), 'utf8')
+ok(serversrc.includes("'/v1/auth/profile'"), '服务端提供 PATCH /v1/auth/profile（改昵称）')
+
+// === 3.5 用户协议（防扯皮条款）静态一致性 ===
+console.log('— 用户协议 agreement 静态一致性 —')
+ok(html.includes('id="agreementModal"') && html.includes('MSMate 用户协议'), 'HTML 含协议全文弹窗')
+ok(html.includes('id="authAgreeField"') && html.includes('id="authAgree"'), '注册表单含协议勾选框')
+ok(html.includes('id="authAgreementLink"'), '协议勾选行含可点击链接')
+ok(html.includes('出借其自有的第三方模型服务商接口额度') && html.includes('不承担赔偿责任'), '协议含出借说明与数据免责关键条款')
+ok(html.includes('id="agreementCloseBtn"'), '协议弹窗有关闭按钮')
+for (const el of ['authAgreeField', 'authAgreementLink']) {
+  ok(authjs.includes(`'${el}'`), `auth.js 引用 #${el}`)
+}
+ok(authjs.includes("checked") && authjs.includes('《MSMate 用户协议》'), '注册提交校验协议勾选')
+ok(authjs.includes('agreementModal'), 'auth.js 绑定协议弹窗开关')
+ok(mainjs.includes("agree: 'v1'"), 'main.js 注册请求带协议版本标记')
+ok(serversrc.includes("body.agree !== 'v1'") && serversrc.includes("agreed: 'v1'"), '服务端注册校验并存档协议版本')
+
+// === 4. 积分充值（credits 域）静态一致性 ===
+console.log('— 积分充值 credits 域静态一致性 —')
+ok(/<script src="js\/auth\.js"><\/script>\s*<script src="js\/credits\.js"><\/script>/.test(html), 'index.html 引入 credits.js（紧跟 auth.js 之后）')
+const creditsjs = fs.readFileSync(path.join(ROOT, 'src/js/credits.js'), 'utf8')
+const creditsIds = [
+  'creditsModal', 'creditsCloseX', 'creditsCloseBtn',
+  'creditsStepAmount', 'creditsStepPay',
+  'creditsBalanceVal', 'creditsGrid', 'creditsError', 'creditsNextBtn',
+  'creditsPayAmount', 'creditsOrderId', 'creditsOrderShort', 'creditsVoucher',
+  'creditsPayError', 'creditsSubmitVoucher', 'creditsBackBtn', 'creditsOrdersList',
+  'creditsSigninRow', 'creditsSigninProgress', 'creditsSigninBarFill', 'creditsSigninBtn',
+]
+for (const id of creditsIds) {
+  ok(html.includes(`id="${id}"`), `HTML 含 #${id}`)
+  ok(creditsjs.includes(`'${id}'`), `credits.js 引用 #${id}`)
+}
+ok(!html.includes('creditsCustom') && !creditsjs.includes('creditsCustom'), '自定义金额输入已移除（固定档位）')
+for (const amount of [1, 3, 6, 30, 68, 128]) {
+  ok(html.includes(`data-amount="${amount}"`), `充值档位 ¥${amount} 就位`)
+}
+ok(html.includes('../assets/wechat-pay-qr.png'), '充值弹窗引用微信收款码')
+ok(fs.existsSync(path.join(ROOT, 'assets/wechat-pay-qr.png')), 'assets/wechat-pay-qr.png 收款码图片存在')
+ok(html.includes('data-icon="clipboard"'), '凭证输入用 clipboard 图标（data-icon 占位）')
+ok(creditsjs.includes('creditsOpen'), 'credits.js 定义 creditsOpen 入口')
+ok(authjs.includes('creditsOpen()'), 'auth.js 积分徽标/充值按钮调起 creditsOpen')
+ok(creditsjs.includes('authState.user'), '充值面板校验登录态')
+ok(creditsjs.includes('window.api.creditsOrderCreate'), '下单走 creditsOrderCreate 桥')
+ok(creditsjs.includes('window.api.creditsOrderVoucher'), '凭证提交走 creditsOrderVoucher 桥')
+ok(creditsjs.includes('window.api.creditsOrdersMy'), '订单列表走 creditsOrdersMy 桥')
+ok(creditsjs.includes('window.api.creditsBalance'), '余额刷新走 creditsBalance 桥')
+ok(creditsjs.includes('innerHTML') && !/textContent\s*=\s*iconSvg/.test(creditsjs), 'credits.js 动态图标/列表一律 innerHTML（防乱码约定）')
+ok(creditsjs.includes('cs-${o.status}') && creditsjs.includes('rejectReason'), '被拒订单展示拒绝原因（状态类动态映射 cs-*）')
+ok(css.includes('.credits-tier.active'), 'CSS 档位选中态样式存在')
+ok(css.includes('.credits-order-status'), 'CSS 订单状态徽标样式存在')
+ok(css.includes('.cs-reviewing') && css.includes('.cs-done') && css.includes('.cs-rejected'), 'CSS 审核/到账/拒绝状态色存在')
+for (const ch of ['credits:order-create', 'credits:order-voucher', 'credits:orders-my', 'credits:balance']) {
+  ok(mainjs.includes(`'${ch}'`), `main.js 注册 ${ch}`)
+  ok(preloadjs.includes(`'${ch}'`), `preload.js 桥接 ${ch}`)
+}
+ok(serversrc.includes("'/v1/credits/orders'"), '服务端提供 POST /v1/credits/orders（下单）')
+ok(serversrc.includes('/v1/credits/orders/my'), '服务端提供 GET /v1/credits/orders/my')
+ok(serversrc.includes('/admin'), '服务端内置 /admin 批款后台')
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`)
 process.exit(fail ? 1 : 0)
