@@ -1,15 +1,32 @@
 // 反反爬模块：浏览器请求头伪装 + 反爬特征识别 + Electron 无头渲染兜底
 // 原则：纯 Node 环境（测试/异常）下渲染兜底优雅降级，绝不炸主流程
+// v2.7.15 过盾增强（思路学 Scrapling StealthyFetcher.solve_cloudflare，BSD-3）：
+// CF 评分模型 = 指纹一致性 + 行为信号 + 出口 IP，过了发 cf_clearance——解法是"配得上信任的浏览器"，
+// 不是硬闯。据此修三处指纹自爆：①UA 声称 Chrome/124 但引擎是 Chromium 108（改引擎版本对齐）
+// ②渲染窗 webgl:false（WebGL 缺失本身就是无头特征，改开启）③Electron 默认 UA 带 Electron/ 尾巴（一键识别）
+// 加一个挑战等待循环：命中 CF 挑战页时在隐藏窗里等它自动通过（cf_clearance 落袋），不点击不硬闯
+
+// 真实引擎版本：Electron 渲染层有 process.versions.chrome（完整四段，如 108.0.5359.62）；
+// 纯 Node 环境（冒烟）回退 108.0.0.0（Electron 22 对齐值）
+const ENGINE_CHROME_VER = String((typeof process !== 'undefined' && process.versions && process.versions.chrome) || '108.0.0.0')
+
+// 引擎对齐 UA：版本号与真 Chromium 引擎一致、无 Electron 尾巴——过盾首选（CF 会交叉核对 UA/sec-ch-ua/TLS 指纹）
+function engineUA() {
+  return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${ENGINE_CHROME_VER} Safari/537.36`
+}
+
 const UA_WINDOWS = 'Windows NT 10.0; Win64; x64'
 
 // 浏览器身份池：轮换 UA 过"单一 UA 指纹"型反爬；Accept 用主流浏览器真实值
+// 注意指纹一致性：0/1 是 Chromium 系（Edge 同内核 TLS 一致），版本跟随真实引擎；
+// 2 是 Firefox——TLS 与 UA 不一致，只给无 CF 的普通站当多样性备胎（web_fetch 重试顺序 0→1→2，失败自动升级渲染兜底）
 const BROWSER_PROFILES = [
   {
-    ua: `Mozilla/5.0 (${UA_WINDOWS}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36`,
+    ua: engineUA(),
     accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
   },
   {
-    ua: `Mozilla/5.0 (${UA_WINDOWS}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.2420.65`,
+    ua: `Mozilla/5.0 (${UA_WINDOWS}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${ENGINE_CHROME_VER} Safari/537.36 Edg/${ENGINE_CHROME_VER}`,
     accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7'
   },
   {
@@ -58,6 +75,16 @@ function looksLikeAntiCrawl(status, bodyText) {
 // mode='videos'：同样渲染+滚动 → 提取视频直链（video 标签/源/网络记录里的 mp4/webm/m3u8 等）
 const IMAGE_URL_FIELDS = ['src', 'currentSrc', 'data-src', 'data-original', 'data-imgurl', 'data-backup-imgurl', 'data-lazy-src', 'data-echo', 'data-real-src', 'srcset']
 
+// 挑战页在窗内检测（注入渲染进程跑）：title/正文命中挑战特征且正文极短 = 还卡在盾上
+const CHALLENGE_CHECK_JS = `(() => {
+  try {
+    const sigs = /just a moment\\.|checking your browser|challenge-platform|cf-chl|attention required|verify you are a human|请完成(以下)?(安全)?验证|人机身份验证/i
+    const t = String(document.title || '')
+    const body = String(document.body ? document.body.innerText : '').slice(0, 1500)
+    return !!(sigs.test(t) || (body.length < 1200 && sigs.test(body)))
+  } catch (e) { return false }
+})()`
+
 async function renderPage(url, { timeoutMs = 30000, userAgent, mode = 'html' } = {}) {
   let electronMod = null
   try { electronMod = require('electron') } catch {}
@@ -76,15 +103,31 @@ async function renderPage(url, { timeoutMs = 30000, userAgent, mode = 'html' } =
       nodeIntegration: false,
       sandbox: true,
       images: wantMedia,      // 媒体直链模式必须真加载图片（懒加载 JS 才会写入真实 src；naturalWidth 才有值）
-      webgl: false
+      // WebGL 必须开：CF 检查 WebGL vendor/renderer，缺失本身就是无头特征（v2.7.15 修正，原 webgl:false 是指纹自爆）
+      webgl: true
     }
   })
   // 超时不销毁窗口，直接 stop 网络然后抓当前已有 DOM（半渲染也比被拦强）
   const timer = setTimeout(() => { try { win.webContents.stop() } catch {} }, timeoutMs)
   try {
-    if (userAgent) win.webContents.setUserAgent(userAgent)
+    // UA 与引擎版本对齐（默认 engineUA）：Electron 默认 UA 带 Electron/ 尾巴一键识别，外部传入的版本号不匹配也会被 CF 交叉核对识破
+    win.webContents.setUserAgent(userAgent || engineUA())
     try { await win.loadURL(url) } catch {} // 跳转/慢加载可能 reject，只要页面加载了一部分就继续抓
     await new Promise((r) => setTimeout(r, 1500)) // 给 JS 渲染/懒加载一点时间
+    // 挑战等待循环（学 Scrapling solve_cloudflare）：命中 CF 挑战页时留在窗里等它自动通过——
+    // 挑战 JS 过检后会自行跳转/重载，轮询到标记消失（cf_clearance 同步落入会话 cookie）再抓真页面。
+    // 不点击不模拟人手：managed 互动模式交给用户日常浏览器，这里只吃"非交互/隐形"两档自动过
+    try {
+      const isChal = async () => { try { return await win.webContents.executeJavaScript(CHALLENGE_CHECK_JS) } catch { return false } }
+      if (await isChal()) {
+        const deadline = Date.now() + Math.max(0, Math.min(12000, timeoutMs - 3000))
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 800))
+          if (!(await isChal())) break
+        }
+        await new Promise((r) => setTimeout(r, 1200)) // 过盾后让真页面渲染一拍
+      }
+    } catch { /* 挑战等待失败不影响后续抓取 */ }
     if (wantMedia) {
       // 滚动触发懒加载（图片站标配）：分 4 屏滚到底，每屏 500ms；再回顶等最后一批挂载
       await win.webContents.executeJavaScript(`(async () => {
@@ -177,4 +220,4 @@ async function renderPage(url, { timeoutMs = 30000, userAgent, mode = 'html' } =
   }
 }
 
-module.exports = { browserHeaders, looksLikeAntiCrawl, renderPage, BROWSER_PROFILES }
+module.exports = { browserHeaders, looksLikeAntiCrawl, renderPage, engineUA, BROWSER_PROFILES }

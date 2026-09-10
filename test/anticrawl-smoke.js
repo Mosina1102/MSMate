@@ -4,7 +4,7 @@ const fs = require('fs')
 const os = require('os')
 const http = require('http')
 const { createTools } = require('../ai/tools')
-const { browserHeaders, looksLikeAntiCrawl, renderPage } = require('../ai/anticrawl')
+const { browserHeaders, looksLikeAntiCrawl, renderPage, engineUA, BROWSER_PROFILES } = require('../ai/anticrawl')
 
 function startServer(routes) {
   const hits = {}
@@ -30,6 +30,14 @@ async function main() {
   ok('请求头含 UA/Accept/Accept-Language', h0['User-Agent'] && h0['Accept'] && h0['Accept-Language'])
   ok('不同序号身份不同（轮换）', h0['User-Agent'] !== h1['User-Agent'])
   ok('序号循环取（5 == 2 组）', h5['User-Agent'] === browserHeaders(2)['User-Agent'])
+
+  // ===== 1.5 过盾一致性（v2.7.15 学 Scrapling：指纹一致性 = UA ↔ 引擎版本 ↔ sec-ch-ua 交叉核对）=====
+  const eu = engineUA()
+  ok('engineUA 与引擎版本对齐（纯 Node 回退 108）', /Chrome\/108\.0\.0\.0 Safari/.test(eu), eu)
+  ok('engineUA 无 Electron 尾巴（一键识别特征）', !/Electron/i.test(eu), eu)
+  ok('过盾首选身份 = engineUA（引擎对齐）', h0['User-Agent'] === eu)
+  ok('profile0/1 均 Chromium 系且版本对齐', !/Firefox/.test(BROWSER_PROFILES[0].ua) && /Chrome\/108\.0\.0\.0/.test(BROWSER_PROFILES[1].ua) && /Edg\/108\.0\.0\.0/.test(BROWSER_PROFILES[1].ua), BROWSER_PROFILES[1].ua)
+  ok('挑战等待循环已内置（solve_cloudflare 式轮询）', /challenge-platform/.test(require('fs').readFileSync(path.join(__dirname, '..', 'ai', 'anticrawl.js'), 'utf8').split('挑战等待循环')[1] || '') === true)
 
   // ===== 2. 单元：反爬识别 =====
   ok('403 判定为反爬', looksLikeAntiCrawl(403, '') === true)

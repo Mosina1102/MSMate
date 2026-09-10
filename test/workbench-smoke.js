@@ -2217,13 +2217,14 @@ console.log('— v2.4.82：钩子半残中毒修复（第二句话起永久瞎�
     const agentjs = fs.readFileSync(path.join(ROOT, 'ai/agent.js'), 'utf8')
     const toolsDef = fs.readFileSync(path.join(ROOT, 'ai/tools.js'), 'utf8')
     const mainjs2 = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8')
-    // ① 手册六册落盘且非空
+    // ① 手册七册落盘且非空
     const manualDir = path.join(ROOT, 'ai', 'manuals')
-    const manualNames = ['word文档.md', '论文排版.md', '表格.md', '图片视频.md', '网络下载.md', '跨设备协作.md']
-    ok(manualNames.every((n) => { try { return fs.statSync(path.join(manualDir, n)).size > 2000 } catch { return false } }), '手册六册落盘且非空（>2KB）')
+    const manualNames = ['word文档.md', '论文排版.md', '表格.md', 'ppt文档.md', '图片视频.md', '网络下载.md', '跨设备协作.md']
+    ok(manualNames.every((n) => { try { return fs.statSync(path.join(manualDir, n)).size > 2000 } catch { return false } }), '手册七册落盘且非空（>2KB，含 ppt文档）')
     // ② TOOL_DEFS manual 字段计数（brief 瘦身 + 手册指向；行尾手册路径=双轨渲染）
     const manualCount = (toolsDef.match(/manual: '/g) || []).length
-    ok(manualCount === 29, `TOOL_DEFS manual 字段计数 = 29（实际 ${manualCount}）`)
+    ok(manualCount === 32, `TOOL_DEFS manual 字段计数 = 32（实际 ${manualCount}）`)
+    ok(toolsDef.includes("manual: 'ppt文档'") && toolsDef.includes("name: 'create_pptx'") && toolsDef.includes("name: 'read_pptx'") && toolsDef.includes("name: 'edit_pptx'"), 'PPT 三件套注册（create_pptx/read_pptx/edit_pptx → 手册：ppt文档）')
     ok(toolsDef.includes('→ 手册：ai_manuals/'), 'buildToolPromptSection 双轨渲染（manual 工具行尾带手册路径）')
     // ③ releaseManualsTo 真跑：释放到临时目录，6 册非空
     try {

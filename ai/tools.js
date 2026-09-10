@@ -7,7 +7,7 @@
 const fs = require('fs')
 const path = require('path')
 const crypto = require('crypto')
-const { createDocx, readDocxText, readPdfText, parseWordComments, parseWordFormat, wordFormatFingerprint, parseFormatRuleText, extractPaperFormatSpec, checkPaperFormat, anchorSpecRole, convertNumPrToText, replaceCoverFields, scanWordTables, formatWordTable, addWordTable, editWordTable, fixPaperPaging, svgToPng, isLegacyDoc, applyWordFormat, applyWordTemplate, modifyDocx, createXlsx, appendXlsxRows, readXlsx, modifyXlsxCell, modifyXlsxCells, formatXlsx, listXlsxSheets } = require('./office')
+const { createDocx, readDocxText, readPdfText, parseWordComments, parseWordFormat, wordFormatFingerprint, parseFormatRuleText, extractPaperFormatSpec, checkPaperFormat, anchorSpecRole, convertNumPrToText, replaceCoverFields, scanWordTables, formatWordTable, addWordTable, editWordTable, fixPaperPaging, svgToPng, isLegacyDoc, applyWordFormat, applyWordTemplate, modifyDocx, createXlsx, appendXlsxRows, readXlsx, modifyXlsxCell, modifyXlsxCells, formatXlsx, listXlsxSheets, createPptx, readPptx, editPptx } = require('./office')
 
 let JSZip
 try { JSZip = require('jszip') } catch {}
@@ -88,6 +88,9 @@ const TOOL_DEFS = [
   { name: 'append_table_rows', params: 'path(xlsx完整路径), rows(要追加的数据行二维数组), sheet(可选,工作表名), target(可选)', desc: '向 Excel 末尾追加数据行（自动备份；值支持 "=公式"）', manual: '表格' },
   { name: 'modify_table', params: 'path(xlsx完整路径), cell(单元格引用如 B2)+value(新值,数字/文本/"=公式") 或 cells(批量修改:{"B2":"新值","C3":"=SUM(B2:B3)"}), sheet(可选,工作表名), target(可选)', desc: '改 Excel 单元格的值（自动备份），=开头写成公式；多个格子用 cells 一次批量改，禁止拆成多次调用', manual: '表格' },
   { name: 'format_table', params: 'path(xlsx完整路径), theme(可选:modern(默认)/classic/gov), target(可选)', desc: '美化已有 Excel：主题化表头/自动列宽/冻结首行/细边框（首行视为表头，自动备份）', manual: '表格' },
+  { name: 'create_pptx', params: 'path(pptx完整路径), title(演示标题,无#cover页时自动合成封面), subtitle(可选,封面副标题), content(PPT大纲:theme/style行+---分页+#cover/#toc/#section/#summary页型标记+##内容页标题,写法详见手册), target(可选)', desc: '创建 PPT 演示文稿(.pptx)自动排版：18套配色×4种风格×5种页型（封面/目录/章节页/内容/总结），页码徽标/防溢出/防同布局连用全自动。大纲写法与配色清单详见手册', manual: 'ppt文档' },
+  { name: 'read_pptx', params: 'path(pptx完整路径), target(可选)', desc: '逐页读取 PPT 文字内容（【第X页】分页列出）。改 PPT 前先读确认原文', manual: 'ppt文档' },
+  { name: 'edit_pptx', params: 'path(pptx完整路径), replacements([{find:"旧文字",replace:"新文字",all?}]), target(可选)', desc: '改已有 PPT 文字（自动备份），跨样式碎 run 的句子也能匹配。只改文字不动版式；大改版式建议 read_pptx 后用 create_pptx 重做', manual: 'ppt文档' },
   { name: 'remember', params: 'fact(要记住的内容,一句话)', desc: '写入长期记忆（跨会话生效）。三种情况必须记：①理解错被用户纠正→记正确含义；②用户讲解了你不懂的词/术语/黑话→记解释；③用户表达偏好/规则（"以后都这样"）→记成规则。其他值得记：文件习惯、项目背景、踩坑经验（如某网站要带 referer）' },
   { name: 'forget', params: 'fact(要删除的记忆条目原文)', desc: '删除一条过时或错误的记忆。fact 从系统提示词"长期记忆"清单里原样复制即可；没有可删的就不用调' },
   { name: 'web_search', params: 'query(搜索关键词,可用|分隔一次传2-3个不同角度的词)', desc: '上网搜索（四引擎并发，一次传2-3个明显不同角度的词一轮拿全，近似词只浪费引擎）。提示"全部重复"必须换思路，禁止相近 query 连搜', manual: '网络下载' },
@@ -732,6 +735,22 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       return {
         destructive: exists,
         note: exists ? `覆盖已有 Word 文档 ${args.path}（原文件会先备份）` : '新建 Word 文档',
+        paths: target === 'local' ? [args.path] : []
+      }
+    }
+    if (name === 'create_pptx') {
+      const exists = await targetExists(args.path, target)
+      return {
+        destructive: exists,
+        note: exists ? `覆盖已有 PPT 演示文稿 ${args.path}（原文件会先备份）` : '新建 PPT 演示文稿',
+        paths: target === 'local' ? [args.path] : []
+      }
+    }
+    if (name === 'edit_pptx') {
+      const exists = await targetExists(args.path, target)
+      return {
+        destructive: exists,
+        note: exists ? `修改已有 PPT ${args.path}（原文件会先备份）` : '目标文件不存在',
         paths: target === 'local' ? [args.path] : []
       }
     }
@@ -1968,6 +1987,156 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       }
     },
 
+    async create_pptx(args) {
+      if (!args.path) return { ok: false, message: '缺少 path' }
+      if (!/\.pptx$/i.test(args.path)) args.path = args.path + '.pptx'
+      const content = { title: String(args.title || ''), subtitle: String(args.subtitle || ''), content: String(args.content || '') }
+      if (!content.content.trim()) return { ok: false, message: '内容不能为空：content 是用 --- 独占一行分页的 PPT 大纲（#cover/#toc/#section/#summary 标记页型，内容页 ## 标题 + - 要点，详见手册）' }
+      const dev = resolveDevice(args.target)
+      if (dev && dev._notFound) return { ok: false, message: deviceNotFoundMsg(dev) }
+      if (!dev) {
+        try {
+          if (isProtectedLocal(args.path)) return { ok: false, message: '拒绝：C 盘（除桌面）为保护区' }
+          const existed = fs.existsSync(args.path)
+          let snapId = null
+          if (existed) {
+            const snap = snapshots.backupLocal(args.path)
+            if (!snap.ok) return { ok: false, message: `已取消写入：原文件备份失败（${snap.reason}）` }
+            snapId = snap.id
+          }
+          fs.mkdirSync(path.dirname(args.path), { recursive: true })
+          const size = await createPptx(args.path, content)
+          return {
+            ok: true,
+            message: `已${existed ? '覆盖' : '创建'} PPT 演示文稿 ${args.path}（${fmtSize(size)}），可用 open_path 打开演示`,
+            undo: existed ? { type: 'restore_snap', snapId } : { type: 'delete_local', path: args.path }
+          }
+        } catch (err) {
+          return { ok: false, message: `创建 PPT 失败: ${err.message}` }
+        }
+      }
+      // 远程创建：本地生成 → 快照远程原文件 → 上传覆盖（与 create_word 同套路）
+      const temp = path.join(tmpDir, `ai_pptx_${Date.now()}_${path.basename(args.path)}`)
+      try {
+        await createPptx(temp, content)
+        const existed = await targetExists(args.path, args.target)
+        let snapId = null
+        if (existed) {
+          snapId = genId('snap_')
+          const savePath = path.join(snapshots.snapshotDir(snapId), 'data', path.basename(args.path))
+          fs.mkdirSync(path.dirname(savePath), { recursive: true })
+          const dl = await tcpAgent.downloadFile(dev.deviceId, args.path, savePath, null, true)
+          const okDl = !!(dl && dl.success)
+          snapshots.register(snapId, {
+            id: snapId, time: Date.now(), originalPath: args.path, target: args.target,
+            deviceId: dev.deviceId, isDirectory: false,
+            size: okDl ? fs.statSync(savePath).size : 0, ok: okDl,
+            reason: okDl ? '' : '远程原文件备份失败'
+          })
+          if (!okDl) return { ok: false, message: '已取消写入：远程原文件备份失败' }
+        }
+        const up = await tcpAgent.uploadFile(dev.deviceId, temp, path.dirname(args.path), true, null, path.basename(args.path))
+        if (!up || !up.success) return { ok: false, message: `上传失败: ${(up && up.error) || '未知错误'}` }
+        return {
+          ok: true,
+          message: `已${existed ? '覆盖' : '创建'} ${dev.name} 的 PPT 演示文稿 ${args.path}`,
+          undo: existed
+            ? { type: 'restore_snap_remote', snapId, deviceId: dev.deviceId, remotePath: args.path }
+            : { type: 'delete_remote', deviceId: dev.deviceId, path: args.path }
+        }
+      } catch (err) {
+        return { ok: false, message: `远程创建 PPT 失败: ${err.message}` }
+      } finally {
+        try { fs.unlinkSync(temp) } catch {}
+      }
+    },
+
+    async read_pptx(args) {
+      if (!args.path) return { ok: false, message: '缺少 path' }
+      const dev = resolveDevice(args.target)
+      if (dev && dev._notFound) return { ok: false, message: deviceNotFoundMsg(dev) }
+      const doRead = async (p) => {
+        const r = await readPptx(p)
+        return { ok: true, message: `共 ${r.count} 页：\n\n${r.text}` }
+      }
+      if (!dev) {
+        try {
+          if (!fs.existsSync(args.path)) return { ok: false, message: `文件不存在：${args.path}。可用 search_files 找到它` }
+          return await doRead(args.path)
+        } catch (err) {
+          return { ok: false, message: `读取 PPT 失败: ${err.message}` }
+        }
+      }
+      const temp = path.join(tmpDir, `ai_read_pptx_${Date.now()}_${path.basename(args.path)}`)
+      try {
+        const dl = await tcpAgent.downloadFile(dev.deviceId, args.path, temp, null, true)
+        if (!dl || !dl.success) return { ok: false, message: `下载远程文件失败: ${(dl && dl.error) || '未知错误'}` }
+        return await doRead(temp)
+      } catch (err) {
+        return { ok: false, message: `远程读取 PPT 失败: ${err.message}` }
+      } finally {
+        try { fs.unlinkSync(temp) } catch {}
+      }
+    },
+
+    async edit_pptx(args) {
+      if (!args.path) return { ok: false, message: '缺少 path' }
+      const reps = Array.isArray(args.replacements) ? args.replacements : (args.replacements && typeof args.replacements === 'object' && args.replacements.find != null ? [args.replacements] : null)
+      if (!reps) return { ok: false, message: '缺少 replacements：传 [{find:"旧文字", replace:"新文字", all?}]（all 默认 true 全部替换）' }
+      const describeEdit = (r) => r.replaced
+        ? `替换 ${r.replaced} 处` + (r.missed.length ? `；未找到：${r.missed.join('、')}` : '')
+        : `未找到替换目标：${r.missed.join('、')}`
+      const dev = resolveDevice(args.target)
+      if (dev && dev._notFound) return { ok: false, message: deviceNotFoundMsg(dev) }
+      if (!dev) {
+        try {
+          if (!fs.existsSync(args.path)) return { ok: false, message: `文件不存在：${args.path}。先用 create_pptx 创建，或用 search_files 找到它` }
+          const snap = snapshots.backupLocal(args.path)
+          if (!snap.ok) return { ok: false, message: `已取消修改：原文件备份失败（${snap.reason}）` }
+          const result = await editPptx(args.path, { replacements: reps })
+          if (!result.replaced) {
+            return { ok: false, message: `${describeEdit(result)}，文件未改动。可先 read_pptx 确认原文措辞（跨样式碎 run 的句子也能匹配）` }
+          }
+          return {
+            ok: true,
+            message: `已精准替换 PPT ${args.path}：${describeEdit(result)}，可用 read_pptx 检查结果`,
+            undo: { type: 'restore_snap', snapId: snap.id }
+          }
+        } catch (err) {
+          return { ok: false, message: `修改 PPT 失败: ${err.message}` }
+        }
+      }
+      // 远程：下载 → 本地修改 → 备份并上传
+      const temp = path.join(tmpDir, `ai_edit_pptx_${Date.now()}_${path.basename(args.path)}`)
+      try {
+        const dl = await tcpAgent.downloadFile(dev.deviceId, args.path, temp, null, true)
+        if (!dl || !dl.success) return { ok: false, message: `下载远程文件失败: ${(dl && dl.error) || '未知错误'}` }
+        const snapId = genId('snap_')
+        const savePath = path.join(snapshots.snapshotDir(snapId), 'data', path.basename(args.path))
+        fs.mkdirSync(path.dirname(savePath), { recursive: true })
+        fs.copyFileSync(temp, savePath)
+        snapshots.register(snapId, {
+          id: snapId, time: Date.now(), originalPath: args.path, target: args.target,
+          deviceId: dev.deviceId, isDirectory: false, size: fs.statSync(savePath).size, ok: true, reason: ''
+        })
+        const resultRemote = await editPptx(temp, { replacements: reps })
+        if (!resultRemote.replaced) {
+          return { ok: false, message: `${describeEdit(resultRemote)}，文件未改动。可先 read_pptx 确认原文措辞` }
+        }
+        const up = await tcpAgent.uploadFile(dev.deviceId, temp, path.dirname(args.path), true, null, path.basename(args.path))
+        if (!up || !up.success) return { ok: false, message: `上传失败: ${(up && up.error) || '未知错误'}` }
+        return {
+          ok: true,
+          message: `已替换 ${dev.name} 的 PPT ${args.path}：${describeEdit(resultRemote)}`,
+          undo: { type: 'restore_snap_remote', snapId, deviceId: dev.deviceId, remotePath: args.path }
+        }
+      } catch (err) {
+        return { ok: false, message: `远程修改 PPT 失败: ${err.message}` }
+      } finally {
+        try { fs.unlinkSync(temp) } catch {}
+      }
+    },
+
     async create_table(args) {
       if (!args.path) return { ok: false, message: '缺少 path' }
       let headers = Array.isArray(args.headers) ? args.headers : []
@@ -2415,7 +2584,7 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       // 真浏览器加载 + 滚动触发懒加载后，从 img 属性/网络请求记录里抓真实直链
       if (imagesMode) {
         try {
-          const list = await renderPage(url, { userAgent: browserHeaders(0)['User-Agent'], mode: 'images' })
+          const list = await renderPage(url, { mode: 'images' })
           webSeenMark(url)
           const lines = list.map((x, i) => `${i + 1}. ${x.u}${x.w ? `（宽约${x.w}px）` : ''}`)
           return { ok: true, message: noteRepeat(`渲染页面「${url}」抓到 ${list.length} 个图片直链（JS 渲染后的真实地址，按可信度排序）：\n${lines.join('\n')}\n\n提示：直链可能有防盗链/时效性，download_file 失败就换下一个；搜图类站点多为缩略图或中图，对分辨率不满意就换高清图源`) }
@@ -2427,7 +2596,7 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       // 视频直链模式（v2.4.73）：与 images 同款无头渲染，抓 video/source 标签+网络请求里的视频地址
       if (videosMode) {
         try {
-          const list = await renderPage(url, { userAgent: browserHeaders(0)['User-Agent'], mode: 'videos' })
+          const list = await renderPage(url, { mode: 'videos' })
           webSeenMark(url)
           const lines = list.map((x, i) => `${i + 1}. ${x.u}${x.tag ? `（${x.tag}）` : ''}`)
           return { ok: true, message: noteRepeat(`渲染页面「${url}」抓到 ${list.length} 个视频地址（JS 渲染后的真实地址）：\n${lines.join('\n')}\n\n提示：①.mp4/.webm 直链可直接 download_file 下载；②.m3u8/.m4s/.ts 是 HLS 切片流不是完整文件，download_file 下不了（只能下到索引/切片），别反复尝试；③带防盗链的直链失败就换下一个；④页面若要点击/登录后才出视频，open_url 让用户手动看`) }
@@ -2445,7 +2614,7 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
           if (links.length) return { ok: true, message: `页面「${url}」提取到 ${links.length} 个链接：\n${links.join('\n')}` }
           // 静态 HTML 没链接 → 八成是 JS 动态渲染站（老大实锤百度图片类）：无头渲染后再提一轮
           try {
-            const html2 = await renderPage(url, { userAgent: browserHeaders(0)['User-Agent'] })
+            const html2 = await renderPage(url) // UA 由 renderPage 默认走引擎对齐 engineUA（过盾一致性）
             const links2 = extractPageLinks(html2, url)
             if (links2.length) return { ok: true, message: `页面「${url}」是 JS 动态渲染站（静态抓取无链接），经无头浏览器渲染后提取到 ${links2.length} 个链接：\n${links2.join('\n')}` }
           } catch {}
@@ -2488,7 +2657,7 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
         return rr.ok ? { ...rr, message: noteRepeat(rr.message) } : rr
       }
       try {
-        const html = await renderPage(url, { userAgent: browserHeaders(0)['User-Agent'] })
+        const html = await renderPage(url) // UA 由 renderPage 默认走引擎对齐 engineUA（过盾一致性）
         const r = await processResp('text/html', html)
         if (!r.ok) return r
         webSeenMark(url)
@@ -3084,6 +3253,12 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
         const w = args.mode === 'replace' ? '重写' : (args.mode === 'edit' ? '精准替换' : '修改')
         const n = args.mode === 'edit' && Array.isArray(args.replacements) ? `（${args.replacements.length} 处）` : ''
         return `${t}${w} Word 文档 ${args.path}${n}`
+      }
+      case 'create_pptx': return `${t}创建 PPT 演示文稿 ${args.path}`
+      case 'read_pptx': return `${t}读取 PPT 内容 ${args.path}`
+      case 'edit_pptx': {
+        const n = Array.isArray(args.replacements) ? `（${args.replacements.length} 处）` : ''
+        return `${t}替换 PPT 文字 ${args.path}${n}`
       }
       case 'create_table': return `${t}创建 Excel 表格 ${args.path}`
       case 'read_table': return `${t}读取 Excel 表格 ${args.path}`

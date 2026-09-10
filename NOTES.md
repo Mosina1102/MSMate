@@ -1,5 +1,15 @@
 # MSMate 任务状态
 
+## 2026-09-10 v2.7.15：PPT 三件套（学 MiniMax skills）+ CF 过盾增强 + docx 校验关卡
+
+- **PPT 三件套（create_pptx/read_pptx/edit_pptx）**：office.js 新增 `createPptx/readPptx/editPptx`，新依赖 pptxgenjs@4.0.1（纯 CJS，Electron 22 探针过：test/electron-probe-pptx）。设计系统照搬 MiniMax-AI/skills pptx-generator（MIT）：18 调色板 × 4 风格配方（sharp/soft/rounded/pill）× 5 页型（cover/toc/section/content/summary），页码徽标/fit:shrink 防溢出/正文左对齐/防同布局连用全自动。AI 侧大纲协议：theme/style 头两行 + `---` 分页 + 页型标记；手册 ai/manuals/ppt文档.md。MiniMax 的 .NET/Python 栈（docx/xlsx/pdf skills）依赖带不进 Electron 包，只借鉴思路不引依赖
+- **docx 校验关卡（学 minimax-docx XSD gate）**：office.js 新增 validateDocx——createDocx/editDocx/modifyDocx 写盘后自动跑，硬错误（zip 损坏/缺部件/w:p 不配对）throw 让 AI 自愈，软告警（rel 未注册/样式未定义/目标缺失）返回 issues。坏件不交差
+- **Scrapling 调研**：TLS 伪装/浏览器自动化对活在真 Chromium 里的 MSMate 是出厂自带，不引入；但 solve_cloudflare 思路挖出三处指纹自爆
+- **CF 过盾增强（anticrawl.js）**：①新增 engineUA()（UA 版本对齐 process.versions.chrome=108.0.5359.215，去掉 Electron/ 尾巴）②渲染窗 webgl:false→true（WebGL 缺失=无头特征）③Firefox profile 降为非 CF 站备胎（TLS 不一致）④新增挑战等待循环：命中 CF 挑战页在隐藏窗轮询 ≤12s 等自动过盾（cf_clearance 落袋）再抓 DOM，不点击不硬闯。tools.js 三处 renderPage 调用点去硬编码 Chrome/124 UA
+- **工具注册清单**：TOOL_DEFS + 实现 + classify 审批分类（create_pptx 新建免审批/覆盖标记 destructive、edit_pptx 同）+ describe 显示 case；手册注册 = MANUAL_FILES + manualsIndexSection + 手册文件
+- **测试**：pptx-smoke 22/22（生成/读取/编辑/关卡/工具层/classify）；anticrawl-smoke 25/25（新增引擎对齐/无尾巴/等待循环断言）；workbench-smoke 1067（manual 计数 29→32 + PPT 三件套注册 + 手册七册）；global-ui 260；Electron 探针（PPT 全链路 + validateDocx + engineUA 真机对齐）；真机启动零脚本错误
+- **发版**：v2.7.15；产物目录 release_build_v2715；probe-asar 抽查版本参数化
+
 ## 2026-09-09 v2.7.12-wip：app.js 模块化拆分（8361 行 → 6 文件，为插件化铺路）
 
 - **背景**：老大确认要走"账号体系 + 合作开发 + 插件化"路线。8361 行 app.js 单文件是两大障碍：多人协作必冲突、功能拆不出插件。本轮做纯物理拆分（零逻辑改动），沿用项目已有 `<script>` 顺序加载模式（icons.js/webchat.js 先例）

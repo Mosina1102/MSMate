@@ -482,6 +482,7 @@ async function createDocx(filePath, content) {
     } catch { /* 预填失败退回纯域版，不影响文档生成 */ }
   }
   fs.writeFileSync(filePath, finalBuf)
+  await validateDocx(filePath, { throwOnError: true })
   return finalBuf.length
 }
 
@@ -671,6 +672,7 @@ async function editDocx(filePath, content) {
   zip.file('word/document.xml', xml)
   const buffer = await zip.generateAsync({ type: 'nodebuffer' })
   fs.writeFileSync(filePath, buffer)
+  await validateDocx(filePath, { throwOnError: true })
   return { replaced, missed, size: buffer.length }
 }
 
@@ -731,6 +733,7 @@ async function modifyDocx(filePath, content, mode) {
   zip.file('word/document.xml', xml)
   const buffer = await zip.generateAsync({ type: 'nodebuffer' })
   fs.writeFileSync(filePath, buffer)
+  await validateDocx(filePath, { throwOnError: true })
   return buffer.length
 }
 
@@ -3061,4 +3064,419 @@ async function svgToPng(svgPath, pngPath, opts = {}) {
   return { width: w, height: h, size: fs.statSync(pngPath).size }
 }
 
-module.exports = { createDocx, readDocxText, readPdfText, parseWordComments, parseWordFormat, wordFormatFingerprint, parseFormatRuleText, extractPaperFormatSpec, checkPaperFormat, anchorSpecRole, convertNumPrToText, replaceCoverFields, applyWordFormat, applyWordTemplate, modifyDocx, createXlsx, appendXlsxRows, readXlsx, modifyXlsxCell, modifyXlsxCells, formatXlsx, listXlsxSheets, scanWordTables, formatWordTable, addWordTable, editWordTable, fixPaperPaging, svgToPng, isLegacyDoc, isFormatDemoPara, splitTplSections, classifyTplSection, softbreakSplitBlocks }
+// ===== PPT 生成/读取/编辑（v2.7.15：pptxgenjs 引擎；设计系统学习引用 MiniMax-AI/skills pptx-generator，MIT）=====
+// 主题契约五键：primary(标题深色) body(正文) accent(强调) light(浅色块) bg(背景)
+// 硬规则（源自 MiniMax 踩坑集）：hex 不带 #（带 # 文件损坏）、透明度用 transparency 属性不编进 hex、
+// 标题禁下划装饰线、正文禁加粗、标题 fit:'shrink' 防溢出、正文左对齐禁居中
+const PptxGenJS = require('pptxgenjs')
+
+const PPT_FONTS = { cn: 'Microsoft YaHei', en: 'Arial' }
+
+// 18 套调色板（配色值取自 MiniMax 设计系统色表，按主题契约分配角色；body 为可读性校正色）
+const PPT_PALETTES = {
+  authority: { colors: { primary: '2B2D42', body: '3E4159', accent: 'D90429', light: 'A9B4C2', bg: 'EDF2F4' }, note: '商务权威/年报/政企' },
+  wellness:  { colors: { primary: '006D77', body: '2F6B72', accent: 'E29578', light: '83C5BE', bg: 'EDF6F9' }, note: '健康疗愈/医护/瑜伽' },
+  nature:    { colors: { primary: '283618', body: '41472B', accent: 'BC6C25', light: 'DDA15E', bg: 'FEFAE0' }, note: '自然户外/环保/农业' },
+  vintage:   { colors: { primary: '003049', body: '27435A', accent: 'C1121F', light: '669BBC', bg: 'FDF0D5' }, note: '复古学院/人文/历史' },
+  candy:     { colors: { primary: '3D3D3D', body: '555555', accent: 'CDB4DB', light: 'FFC8DD', bg: 'FFFFFF' }, note: '柔和创意/母婴/甜品' },
+  bohemian:  { colors: { primary: '6B705C', body: '5C5645', accent: 'D4A373', light: 'CCD5AE', bg: 'FEFAE0' }, note: '波西米亚/婚礼/家居' },
+  vivid:     { colors: { primary: '023047', body: '12405E', accent: 'FB8500', light: '8ECAE6', bg: 'FFFFFF' }, note: '高能科技/运动/路演' },
+  craft:     { colors: { primary: '414833', body: '4A4A38', accent: '7F5539', light: 'A68A64', bg: 'EDE0D4' }, note: '手作匠艺/咖啡/烘焙' },
+  technight: { colors: { primary: 'FFC300', body: 'D6E4F0', accent: '003566', light: '001D3D', bg: '000814' }, dark: true, note: '暗夜科技/发布/汽车（深底）' },
+  chart:     { colors: { primary: '264653', body: '2E4A55', accent: 'E76F51', light: 'E9C46A', bg: 'FFFFFF' }, note: '教育图表/数据/统计' },
+  forest:    { colors: { primary: '344E41', body: '3B5A4B', accent: '588157', light: 'A3B18A', bg: 'DAD7CD' }, note: '森林生态/ESG/景观' },
+  fashion:   { colors: { primary: '4A5759', body: '566567', accent: 'EDAFB8', light: 'B0C4B1', bg: 'F7E1D7' }, note: '莫兰迪时尚/美妆/杂志' },
+  food:      { colors: { primary: '335C67', body: '540B0E', accent: 'E09F3E', light: 'FFF3B0', bg: 'FFFFFF' }, note: '复古美食/展览/纪录片' },
+  luxury:    { colors: { primary: '22223B', body: '4A4E69', accent: '9A8C98', light: 'C9ADA7', bg: 'F2E9E4' }, note: '高端紫灰/珠宝/咨询' },
+  techblue:  { colors: { primary: '03045E', body: '12315A', accent: '0077B6', light: '90E0EF', bg: 'CAF0F8' }, note: '纯净科技蓝/AI/云/海洋' },
+  coastal:   { colors: { primary: '0081A7', body: '0B6E85', accent: 'F07167', light: 'FED9B7', bg: 'FDFCDC' }, note: '海岸珊瑚/旅行/夏日' },
+  mint:      { colors: { primary: '0E6B5C', body: '2E7D6E', accent: 'FF9F1C', light: 'CBF3F0', bg: 'FFFFFF' }, note: '橙薄荷/儿童/快消/社媒' },
+  platinum:  { colors: { primary: '0A0A0A', body: '333333', accent: 'D4AF37', light: 'EFEFEF', bg: 'FFFFFF' }, note: '铂金白金/金融/奢侈/官网' }
+}
+
+// 4 种风格配方（圆角/边距/间距，单位英寸；页幅 10 × 5.625 LAYOUT_16x9）
+const PPT_STYLES = {
+  sharp:   { key: 'sharp',   rS: 0,    rM: 0.03, rL: 0.05, margin: 0.3, pad: 0.14, gap: 0.18, block: 0.3 },
+  soft:    { key: 'soft',    rS: 0.05, rM: 0.08, rL: 0.12, margin: 0.4, pad: 0.18, gap: 0.22, block: 0.42 },
+  rounded: { key: 'rounded', rS: 0.1,  rM: 0.15, rL: 0.25, margin: 0.5, pad: 0.24, gap: 0.28, block: 0.56 },
+  pill:    { key: 'pill',    rS: 0.2,  rM: 0.3,  rL: 0.5,  margin: 0.6, pad: 0.3,  gap: 0.34, block: 0.7 }
+}
+
+const PPT_CN_RE = /[\u2E80-\u9FFF\uF900-\uFAFF\uFF01-\uFF5E\u3000-\u303F]/
+function pptFontOf(text) { return PPT_CN_RE.test(String(text)) ? PPT_FONTS.cn : PPT_FONTS.en }
+
+// 文本宽度估算（英寸）与行高估算：中文全宽、ASCII 0.56 宽
+function pptEstUnits(text) {
+  let u = 0
+  for (const ch of String(text)) u += PPT_CN_RE.test(ch) ? 1 : 0.56
+  return u
+}
+function pptTextH(text, wIn, fontSize, lh = 1.32) {
+  const lines = Math.max(1, Math.ceil((pptEstUnits(text) * fontSize) / 72 / Math.max(wIn, 0.1)))
+  return lines * fontSize * lh / 72
+}
+
+// 圆角矩形辅助：radius<=0 退化为直角矩形（避免 PptxGenJS rectRadius 0 的歧义）
+function pptShape(pres, slide, opts) {
+  const o = { ...opts }
+  const r = o.rectRadius != null ? o.rectRadius : 0.1
+  delete o.rectRadius
+  if (r <= 0.001) return slide.addShape(pres.shapes.RECTANGLE, o)
+  return slide.addShape(pres.shapes.ROUNDED_RECTANGLE, { ...o, rectRadius: r })
+}
+
+// 页码徽标（MiniMax 规范：除封面外每页必带，右下角 x9.3 y5.12）
+function pptBadge(pres, slide, num, pal) {
+  const fill = pal.dark ? pal.colors.primary : pal.colors.accent
+  const txt = pal.dark ? pal.colors.bg : 'FFFFFF'
+  slide.addShape(pres.shapes.OVAL, { x: 9.3, y: 5.12, w: 0.36, h: 0.36, fill: { color: fill } })
+  slide.addText(String(num), { x: 9.3, y: 5.12, w: 0.36, h: 0.36, fontSize: 11, fontFace: PPT_FONTS.en, color: txt, bold: true, align: 'center', valign: 'middle', margin: 0 })
+}
+
+// 大纲解析：theme/style 头两行 + --- 分页 + #cover/#toc/#section/#summary 页型标记（## 内容页标题）
+function pptParseOutline(content) {
+  const meta = { theme: null, style: null }
+  const lines0 = String(content || '').split(/\r?\n/)
+  let i = 0
+  for (; i < lines0.length; i++) {
+    const t = lines0[i].trim()
+    if (/^(theme|palette|配色|style|风格)\s*[:：]/i.test(t)) {
+      const m = t.split(/[:：]/)
+      const k = m[0].trim().toLowerCase(), v = m.slice(1).join(':').trim().toLowerCase()
+      if (/^(theme|palette|配色)$/.test(k)) meta.theme = v
+      else meta.style = v
+      continue
+    }
+    break
+  }
+  const blocks = lines0.slice(i).join('\n').split(/^---+\s*$/m).map(s => s.trim()).filter(Boolean)
+  const slides = blocks.map((block) => {
+    const lines = block.split(/\r?\n/).map(l => l.replace(/\s+$/, ''))
+    const sl = { type: 'content', title: '', subs: [], bullets: [], paras: [], table: null, quote: '', image: null }
+    let idx = 0
+    const first = (lines[0] || '').trim()
+    const mk = first.match(/^#(cover|toc|section|summary)\s*[:：]?\s*(.*)$/i)
+    if (mk) { sl.type = mk[1].toLowerCase(); sl.title = mk[2].trim(); idx = 1 }
+    else {
+      const h = first.match(/^#{1,3}\s*(.+)$/)
+      if (h) { sl.title = h[1].trim(); idx = 1 }
+    }
+    const rows = []
+    for (; idx < lines.length; idx++) {
+      const t = lines[idx].trim()
+      if (!t) continue
+      if (/^\|.+\|$/.test(t)) {
+        const cells = t.slice(1, -1).split('|').map(c => c.trim())
+        if (cells.every(c => /^:?-{2,}:?$/.test(c))) continue
+        rows.push(cells)
+        continue
+      }
+      if (rows.length) { sl.table = rows.splice(0) }
+      const img = t.match(/^!\[[^\]]*\]\(([^)]+)\)/)
+      if (img) { sl.image = img[1].trim().replace(/^file:\/\/\//, ''); continue }
+      if (/^[-*•]\s+/.test(t)) { sl.bullets.push(t.replace(/^[-*•]\s+/, '')); continue }
+      if (/^>\s?/.test(t)) { sl.quote = (sl.quote ? sl.quote + ' ' : '') + t.replace(/^>\s?/, ''); continue }
+      if (/^#{2,4}\s+(.*)$/.test(t)) { sl.subs.push(t.replace(/^#{2,4}\s+/, '')); continue }
+      sl.paras.push(t)
+    }
+    if (rows.length) sl.table = rows
+    return sl
+  })
+  return { meta, slides }
+}
+
+async function createPptx(filePath, content) {
+  let titleHint = '', subtitleHint = ''
+  if (content && typeof content === 'object' && !Array.isArray(content)) {
+    titleHint = String(content.title || '')
+    subtitleHint = String(content.subtitle || '')
+    content = content.content != null ? String(content.content) : ''
+  }
+  const { meta, slides } = pptParseOutline(content)
+  if (!slides.length) throw new Error('PPT 内容为空：content 用 --- 独占一行分页，页首 #cover/#toc/#section/#summary 标记页型，内容页用 ## 标题 + - 要点（详见手册）')
+  if (!slides.some(s => s.type === 'cover') && titleHint) {
+    slides.unshift({ type: 'cover', title: titleHint, subs: subtitleHint ? [subtitleHint] : [], bullets: [], paras: [], table: null, quote: '', image: null })
+  }
+  if (slides.length > 30) throw new Error(`页数超限（${slides.length} 页 > 30 页上限），请合并或精简大纲`)
+
+  const pal = PPT_PALETTES[PPT_PALETTES[meta.theme] ? meta.theme : 'authority'].colors
+  const palDark = !!PPT_PALETTES[PPT_PALETTES[meta.theme] ? meta.theme : 'authority'].dark
+  const st = PPT_STYLES[PPT_STYLES[meta.style] ? meta.style : 'soft']
+  const ACC = pal.accent, BODY = pal.body, LIGHT = pal.light, BG = pal.bg, PRI = pal.primary
+
+  const pres = new PptxGenJS()
+  pres.layout = 'LAYOUT_16x9'
+  const PAGE_W = 10, PAGE_H = 5.625
+  let contentIdx = 0, sectionIdx = 0, pageNo = 0
+
+  for (const sl of slides) {
+    pageNo++
+    const slide = pres.addSlide()
+    slide.background = { color: BG }
+
+    if (sl.type === 'cover') {
+      // 角部装饰块（浅色大圆角矩形出血 + 强调色小出血块），禁用标题下划装饰线
+      pptShape(pres, slide, { x: 7.6, y: -1.4, w: 4.4, h: 4.4, fill: { color: LIGHT, transparency: palDark ? 30 : 45 }, rectRadius: st.rL })
+      pptShape(pres, slide, { x: -1.1, y: 4.3, w: 3.2, h: 2.4, fill: { color: ACC, transparency: palDark ? 45 : 78 }, rectRadius: st.rL })
+      const title = sl.title || '演示文稿'
+      slide.addText(title, { x: 0.6, y: 1.85, w: 8.8, h: 1.15, fontSize: 40, bold: true, color: PRI, fontFace: pptFontOf(title), align: 'center', fit: 'shrink' })
+      const sub = sl.subs[0] || sl.paras[0] || ''
+      if (sub) slide.addText(sub, { x: 1.2, y: 3.12, w: 7.6, h: 0.5, fontSize: 17, color: palDark ? BODY : ACC, fontFace: pptFontOf(sub), align: 'center', fit: 'shrink' })
+      const subFromSubs = sl.subs.length > 0
+      const metaTxt = (subFromSubs ? sl.subs.slice(1) : sl.subs).concat(subFromSubs ? sl.paras : sl.paras.slice(1)).filter(Boolean).join('  ·  ')
+      if (metaTxt) {
+        pptShape(pres, slide, { x: 3.3, y: 4.02, w: 3.4, h: 0.42, fill: { color: ACC }, rectRadius: 0.21 })
+        slide.addText(metaTxt, { x: 3.3, y: 4.02, w: 3.4, h: 0.42, fontSize: 11, color: palDark ? BG : 'FFFFFF', fontFace: pptFontOf(metaTxt), align: 'center', valign: 'middle', margin: 0, fit: 'shrink' })
+      }
+    } else if (sl.type === 'toc') {
+      const t = sl.title || '目录'
+      slide.addText(t, { x: st.margin, y: 0.42, w: 4.5, h: 0.6, fontSize: 30, bold: true, color: PRI, fontFace: pptFontOf(t), align: 'left' })
+      const items = sl.bullets.slice(0, 8)
+      const twoCol = items.length > 5
+      const colW = twoCol ? (PAGE_W - st.margin * 2 - st.block) / 2 : PAGE_W - st.margin * 2
+      items.forEach((it, i) => {
+        const col = twoCol ? i % 2 : 0
+        const row = twoCol ? Math.floor(i / 2) : i
+        const x = st.margin + col * (colW + st.block)
+        const y = 1.5 + row * 0.72
+        pptShape(pres, slide, { x, y: y + 0.05, w: 0.5, h: 0.5, fill: { color: palDark ? ACC : LIGHT }, rectRadius: st.rS })
+        slide.addText(String(i + 1).padStart(2, '0'), { x, y: y + 0.05, w: 0.5, h: 0.5, fontSize: 14, bold: true, color: palDark ? BG : PRI, fontFace: PPT_FONTS.en, align: 'center', valign: 'middle', margin: 0 })
+        const label = it.replace(/^[0-9０-９]+[\s.．、）)]*\s*/, '')
+        slide.addText(label, { x: x + 0.64, y, w: colW - 0.64, h: 0.6, fontSize: 15, color: BODY, fontFace: pptFontOf(label), align: 'left', valign: 'middle', fit: 'shrink', margin: 0 })
+      })
+    } else if (sl.type === 'section') {
+      sectionIdx++
+      const t = sl.title || `第 ${sectionIdx} 部分`
+      const numbered = /^[0-9ⅠⅡⅢⅣⅤⅥ]/.test(t)
+      const numTxt = numbered ? t.split(/[\s.．、]+/)[0] : String(sectionIdx).padStart(2, '0')
+      const name = numbered ? t.replace(/^[0-9ⅠⅡⅢⅣⅤⅥ]+[\s.．、）)]*\s*/, '') : t
+      const intro = sl.subs[0] || sl.paras[0] || ''
+      if (sectionIdx % 2 === 1) {
+        pptShape(pres, slide, { x: 0.7, y: 1.75, w: 1.7, h: 1.7, fill: { color: ACC }, rectRadius: st.rL })
+        slide.addText(numTxt, { x: 0.7, y: 1.75, w: 1.7, h: 1.7, fontSize: 34, bold: true, color: palDark ? BG : 'FFFFFF', fontFace: PPT_FONTS.en, align: 'center', valign: 'middle', margin: 0 })
+        slide.addText(name, { x: 2.75, y: 1.82, w: 6.6, h: 0.95, fontSize: 30, bold: true, color: PRI, fontFace: pptFontOf(name), align: 'left', valign: 'middle', fit: 'shrink' })
+        if (intro) slide.addText(intro, { x: 2.77, y: 2.85, w: 6.6, h: 0.55, fontSize: 13, color: BODY, fontFace: pptFontOf(intro), align: 'left', fit: 'shrink', margin: 0 })
+      } else {
+        slide.addText(numTxt, { x: 1, y: 1.15, w: 8, h: 1.35, fontSize: 64, bold: true, color: ACC, fontFace: PPT_FONTS.en, align: 'center' })
+        slide.addText(name, { x: 1, y: 2.62, w: 8, h: 0.8, fontSize: 30, bold: true, color: PRI, fontFace: pptFontOf(name), align: 'center', fit: 'shrink' })
+        if (intro) slide.addText(intro, { x: 1.5, y: 3.55, w: 7, h: 0.5, fontSize: 13, color: BODY, fontFace: pptFontOf(intro), align: 'center', fit: 'shrink', margin: 0 })
+      }
+    } else if (sl.type === 'summary') {
+      const title = sl.title || '总结'
+      const hasList = sl.bullets.length > 0
+      slide.addText(title, { x: st.margin, y: 0.5, w: PAGE_W - st.margin * 2, h: 0.75, fontSize: 30, bold: true, color: PRI, fontFace: pptFontOf(title), align: hasList ? 'left' : 'center', fit: 'shrink' })
+      if (hasList) {
+        let y = 1.62
+        const w = PAGE_W - st.margin * 2
+        for (const b of sl.bullets.slice(0, 6)) {
+          if (y > 4.7) break
+          const h = Math.max(0.4, pptTextH(b, w - 0.45, 15) + 0.08)
+          slide.addText('✓', { x: st.margin, y, w: 0.4, h, fontSize: 16, bold: true, color: ACC, fontFace: PPT_FONTS.en, align: 'left', valign: 'top', margin: 0 })
+          slide.addText(b, { x: st.margin + 0.45, y, w: w - 0.45, h, fontSize: 15, color: BODY, fontFace: pptFontOf(b), align: 'left', valign: 'top', margin: 0 })
+          y += h + 0.12
+        }
+        const metaTxt = sl.subs.join('  ·  ')
+        if (metaTxt) slide.addText(metaTxt, { x: st.margin, y: 5.02, w, h: 0.38, fontSize: 12, color: BODY, fontFace: pptFontOf(metaTxt), align: 'left', margin: 0, fit: 'shrink' })
+      } else {
+        const sub = sl.subs.concat(sl.paras).filter(Boolean).join('  ·  ')
+        if (sub) slide.addText(sub, { x: 1.5, y: 3.3, w: 7, h: 0.55, fontSize: 14, color: BODY, fontFace: pptFontOf(sub), align: 'center', fit: 'shrink', margin: 0 })
+      }
+    } else {
+      contentIdx++
+      const title = sl.title || ''
+      if (title) slide.addText(title, { x: st.margin, y: 0.32, w: PAGE_W - st.margin * 2, h: 0.62, fontSize: 25, bold: true, color: PRI, fontFace: pptFontOf(title), align: 'left', fit: 'shrink' })
+      const bodyTop = 1.18
+      const bodyH = PAGE_H - bodyTop - 0.35
+      const bodyW = PAGE_W - st.margin * 2
+      const hasImg = !!(sl.image && fs.existsSync(sl.image))
+      const imgBox = hasImg ? { x: st.margin + bodyW * 0.52 + st.gap, y: bodyTop, w: bodyW * 0.44, h: bodyH } : null
+      const textW = hasImg ? bodyW * 0.52 - st.gap : bodyW
+
+      let y = bodyTop
+      if (sl.quote) {
+        const qh = Math.min(bodyH * 0.6, pptTextH(sl.quote, textW - 0.6, 15) + 0.44)
+        pptShape(pres, slide, { x: st.margin, y, w: textW, h: qh, fill: { color: LIGHT, transparency: palDark ? 40 : 35 }, rectRadius: st.rM })
+        pptShape(pres, slide, { x: st.margin, y, w: 0.12, h: qh, fill: { color: ACC }, rectRadius: 0.06 })
+        slide.addText(sl.quote, { x: st.margin + 0.34, y: y + 0.1, w: textW - 0.55, h: qh - 0.2, fontSize: 15, italic: true, color: BODY, fontFace: pptFontOf(sl.quote), align: 'left', valign: 'middle', margin: 0 })
+        y += qh + st.block
+      }
+
+      const useCards = !hasImg && !sl.table && !sl.quote && sl.bullets.length >= 3 && sl.bullets.length <= 6 && contentIdx % 2 === 0
+      if (useCards) {
+        const cols = 2
+        const cw = (textW - st.gap) / cols
+        const rowsN = Math.ceil(sl.bullets.length / cols)
+        const ch = Math.min(1.35, (bodyH - st.gap * (rowsN - 1)) / rowsN)
+        sl.bullets.forEach((b, i) => {
+          const x = st.margin + (i % cols) * (cw + st.gap)
+          const yy = bodyTop + Math.floor(i / cols) * (ch + st.gap)
+          pptShape(pres, slide, { x, y: yy, w: cw, h: ch, fill: { color: palDark ? ACC : LIGHT }, rectRadius: st.rM })
+          slide.addText(String(i + 1).padStart(2, '0'), { x: x + st.pad, y: yy + st.pad * 0.5, w: 0.8, h: 0.3, fontSize: 13, bold: true, color: palDark ? PRI : ACC, fontFace: PPT_FONTS.en, margin: 0 })
+          slide.addText(b, { x: x + st.pad, y: yy + st.pad * 0.5 + 0.28, w: cw - st.pad * 2, h: Math.max(0.3, ch - st.pad - 0.28), fontSize: 12.5, color: BODY, fontFace: pptFontOf(b), align: 'left', valign: 'top', margin: 0 })
+        })
+      } else if (sl.bullets.length) {
+        for (const b of sl.bullets) {
+          if (y > bodyTop + bodyH - 0.32) break
+          const h = Math.max(0.36, pptTextH(b, textW - 0.34, 14) + 0.06)
+          pptShape(pres, slide, { x: st.margin, y: y + 0.1, w: 0.14, h: 0.14, fill: { color: ACC }, rectRadius: 0.07 })
+          slide.addText(b, { x: st.margin + 0.34, y, w: textW - 0.34, h, fontSize: 14, color: BODY, fontFace: pptFontOf(b), align: 'left', valign: 'top', margin: 0 })
+          y += h + 0.14
+        }
+      } else if (sl.paras.length) {
+        const t = sl.paras.join('\n')
+        slide.addText(t, { x: st.margin, y: y + 0.05, w: textW, h: Math.min(bodyH - 0.1, pptTextH(t, textW, 14, 1.3) + 0.15), fontSize: 14, color: BODY, fontFace: pptFontOf(t), align: 'left', valign: 'top', lineSpacingMultiple: 1.3, margin: 0 })
+        y += Math.min(1.2, pptTextH(sl.paras.join('  '), textW, 14, 1.3) + 0.2)
+      }
+
+      if (sl.table) {
+        const rows = sl.table.slice(0, 12)
+        const tw = imgBox ? textW : bodyW
+        const tableRows = rows.map((cells, ri) => cells.map(c => ({
+          text: c,
+          options: ri === 0
+            ? { bold: true, color: palDark ? BG : 'FFFFFF', fill: { color: ACC }, fontSize: 12 }
+            : { color: BODY, fill: { color: ri % 2 === 0 ? (palDark ? pal.light : pal.bg) : (palDark ? pal.accent : LIGHT) }, fontSize: 11.5 }
+        })))
+        const nCol = Math.max(...rows.map(r => r.length))
+        const maxLen = Array.from({ length: nCol }, (_, ci) => Math.max(...rows.map(r => pptEstUnits(r[ci] || '') + 2)))
+        const total = maxLen.reduce((a, b) => a + b, 0) || 1
+        const colW = maxLen.map(l => +((l / total) * tw).toFixed(2))
+        slide.addTable(tableRows, { x: st.margin, y: Math.min(Math.max(y, bodyTop + 0.1), 4.6), w: tw, colW, border: { type: 'solid', pt: 0.5, color: palDark ? ACC : LIGHT }, fontFace: PPT_FONTS.cn, valign: 'middle', margin: 0.06, rowH: 0.34 })
+      }
+
+      if (imgBox) {
+        try {
+          const info = loadImage(sl.image)
+          if (info && info.width && info.height) {
+            const r = Math.min(imgBox.w / info.width, imgBox.h / info.height)
+            const w = info.width * r, h = info.height * r
+            slide.addImage({ path: sl.image, x: imgBox.x + (imgBox.w - w) / 2, y: imgBox.y + (imgBox.h - h) / 2, w, h })
+          }
+        } catch { /* 图片缺失不挡生成 */ }
+      }
+    }
+
+    if (sl.type !== 'cover') pptBadge(pres, slide, pageNo, { dark: palDark, colors: pal })
+  }
+
+  await pres.writeFile({ fileName: filePath })
+  return fs.statSync(filePath).size
+}
+
+// 读取 PPT：逐页提取文本（a:p 段落 / a:t 文本，JSZip 轻解析零依赖，对标 markitdown 的文本层）
+async function readPptx(filePath) {
+  const zip = await JSZip.loadAsync(fs.readFileSync(filePath))
+  const names = Object.keys(zip.files).filter(n => /^ppt\/slides\/slide\d+\.xml$/.test(n))
+    .sort((a, b) => (parseInt(a.match(/(\d+)/)[1], 10)) - (parseInt(b.match(/(\d+)/)[1], 10)))
+  if (!names.length) throw new Error('不是有效的 PPT 文件（缺少 ppt/slides/）')
+  const slides = []
+  for (const name of names) {
+    const xml = await zip.file(name).async('string')
+    const lines = []
+    for (const pm of xml.matchAll(/<a:p>([\s\S]*?)<\/a:p>/g)) {
+      const txt = [...pm[1].matchAll(/<a:t[^>]*>([\s\S]*?)<\/a:t>/g)].map(m => decodeEntities(m[1])).join('').trim()
+      if (txt) lines.push(txt)
+    }
+    slides.push({ page: slides.length + 1, lines })
+  }
+  return { count: slides.length, slides, text: slides.map(s => `【第 ${s.page} 页】\n` + s.lines.join('\n')).join('\n\n') }
+}
+
+// 编辑 PPT：find/replace 文本替换（层1 同一 a:t 内替换；层2 跨 run 段落重建，保留首 run rPr 格式）——与 editDocx 同构
+async function editPptx(filePath, content) {
+  const reps = normReplacements(content)
+  const zip = await JSZip.loadAsync(fs.readFileSync(filePath))
+  const names = Object.keys(zip.files).filter(n => /^ppt\/slides\/slide\d+\.xml$/.test(n))
+  if (!names.length) throw new Error('不是有效的 PPT 文件（缺少 ppt/slides/）')
+  let replaced = 0
+  const missed = []
+  const slideXml = new Map()
+  for (const name of names) slideXml.set(name, await zip.file(name).async('string'))
+  for (const rep of reps) {
+    let repCount = 0
+    for (const name of names) {
+      let xml = slideXml.get(name)
+      let count = 0
+      const findEsc = escapeXml(rep.find)
+      const repEsc = escapeXml(rep.replace)
+      xml = xml.replace(/(<a:t[^>]*>)([\s\S]*?)(<\/a:t>)/g, (m, open, txt, close) => {
+        if (!txt.includes(findEsc)) return m
+        count += rep.all ? txt.split(findEsc).length - 1 : 1
+        return open + (rep.all ? txt.split(findEsc).join(repEsc) : txt.replace(findEsc, repEsc)) + close
+      })
+      if (count === 0) {
+        xml = xml.replace(/<a:p\b[^>]*\/>|<a:p\b[^>]*>[\s\S]*?<\/a:p>/g, (pXml) => {
+          if (!pXml.endsWith('</a:p>')) return pXml
+          if (count && !rep.all) return pXml
+          const texts = [...pXml.matchAll(/<a:t[^>]*>([\s\S]*?)<\/a:t>/g)].map(m => decodeEntities(m[1]))
+          if (!texts.length) return pXml
+          const joined = texts.join('')
+          if (!joined.includes(rep.find)) return pXml
+          const parts = rep.all ? joined.split(rep.find) : (() => {
+            const i = joined.indexOf(rep.find)
+            return [joined.slice(0, i), joined.slice(i + rep.find.length)]
+          })()
+          count += rep.all ? parts.length - 1 : 1
+          const rPr = (pXml.match(/<a:r>\s*(<a:rPr[\s\S]*?<\/a:rPr>)/) || [])[1] || ''
+          let outText = ''
+          parts.forEach((seg, i) => { if (i) outText += rep.replace; outText += seg })
+          return `<a:p><a:r>${rPr}<a:t xml:space="preserve">${escapeXml(outText)}</a:t></a:r></a:p>`
+        })
+      }
+      if (count > 0) { slideXml.set(name, xml); repCount += count }
+    }
+    if (repCount === 0) missed.push(rep.find)
+    else replaced += repCount
+  }
+  for (const [name, xml] of slideXml) zip.file(name, xml)
+  const buffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
+  fs.writeFileSync(filePath, buffer)
+  return { replaced, missed, size: buffer.length }
+}
+
+// ===== docx 校验关卡（v2.7.15：学 MiniMax minimax-docx 的 XSD validation gate 思路——坏件不交差）=====
+// 硬错误（结构损坏，Word 会弹修复框）直接 throw 让 AI 当场自愈；软告警返回 issues
+async function validateDocx(filePath, opts = {}) {
+  const issues = []
+  const hard = (msg) => { if (opts.throwOnError) throw new Error('docx 校验关卡：' + msg); issues.push('[硬]' + msg) }
+  let zip
+  try {
+    zip = await JSZip.loadAsync(fs.readFileSync(filePath))
+  } catch (e) {
+    hard('zip 结构无法读取（' + e.message + '）')
+    return { ok: false, issues }
+  }
+  for (const p of ['[Content_Types].xml', 'word/document.xml', 'word/_rels/document.xml.rels']) {
+    if (!zip.files[p]) hard(`缺少必需部件 ${p}`)
+  }
+  if (issues.length) return { ok: false, issues }
+  const docXml = await zip.file('word/document.xml').async('string')
+  if (!docXml.includes('</w:document>')) hard('document.xml 不完整（缺 </w:document>）')
+  const pOpen = (docXml.match(/<w:p(?=[\s>])[^>]*(?<!\/)>/g) || []).length
+  const pClose = (docXml.match(/<\/w:p>/g) || []).length
+  if (pOpen !== pClose) hard(`段落标签不配对（<w:p> ${pOpen} 个 vs </w:p> ${pClose} 个）`)
+  // 关系引用完整性：文档里引用的每个 rId 必须在 rels 中注册，且目标文件真实存在
+  const relsXml = await zip.file('word/_rels/document.xml.rels').async('string')
+  const rels = new Map([...relsXml.matchAll(/<Relationship\b[^>]*Id="([^"]+)"[^>]*Target="([^"]+)"/g)].map(m => [m[1], m[2]]))
+  for (const m of docXml.matchAll(/r:(?:id|embed|link)="(rId\d+)"/g)) {
+    if (!rels.has(m[1])) { issues.push(`引用了未注册的关系 ${m[1]}（图片/超链接可能损坏）`); continue }
+    const target = rels.get(m[1])
+    if (!/^https?:/i.test(target)) {
+      const norm = 'word/' + target.replace(/^\//, '')
+      const normFixed = target.includes('../') ? norm.replace(/[^/]+\.\.\//g, '') : norm
+      if (!zip.files[normFixed]) issues.push(`关系 ${m[1]} 的目标文件缺失：${target}`)
+    }
+  }
+  // 样式引用完整性：pStyle 引用的样式必须在 styles.xml 定义（缺了 Word 显示默认样式）
+  if (zip.files['word/styles.xml']) {
+    const stylesXml = await zip.file('word/styles.xml').async('string')
+    const styleIds = new Set([...stylesXml.matchAll(/w:styleId="([^"]+)"/g)].map(m => m[1]))
+    for (const m of docXml.matchAll(/<w:pStyle w:val="([^"]+)"/g)) {
+      if (!styleIds.has(m[1])) issues.push(`段落引用了未定义样式 ${m[1]}`)
+    }
+  }
+  const ok = !issues.some(i => i.startsWith('[硬]'))
+  return { ok, issues }
+}
+
+module.exports = { createDocx, readDocxText, readPdfText, parseWordComments, parseWordFormat, wordFormatFingerprint, parseFormatRuleText, extractPaperFormatSpec, checkPaperFormat, anchorSpecRole, convertNumPrToText, replaceCoverFields, applyWordFormat, applyWordTemplate, modifyDocx, createXlsx, appendXlsxRows, readXlsx, modifyXlsxCell, modifyXlsxCells, formatXlsx, listXlsxSheets, scanWordTables, formatWordTable, addWordTable, editWordTable, fixPaperPaging, svgToPng, isLegacyDoc, isFormatDemoPara, splitTplSections, classifyTplSection, softbreakSplitBlocks, createPptx, readPptx, editPptx, validateDocx, PPT_PALETTES, PPT_STYLES }
