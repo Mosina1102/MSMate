@@ -1362,9 +1362,9 @@ function readBody(req, maxBytes) {
 // ─────────────────── 服务器 ───────────────────
 
 const LATEST = {
-  version: '2.7.13',
+  version: '2.7.14',
   url: 'https://github.com/Mosina1102/MSMate/releases/latest',
-  notes: '修复网页模型对话崩溃（roundCreditsUsed）；防刷单收紧（占位单唯一+凭证号全局唯一）；ntfy 推送日志',
+  notes: '设备区改版：发现/桥接双页签 + 按类型分组；远程审批式配对（对方点同意，替代看不到的配对码）；生图/看图内置优先；多步任务积分总和',
   publishedAt: '2026-09-10'
 }
 
