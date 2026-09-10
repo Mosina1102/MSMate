@@ -1362,9 +1362,9 @@ function readBody(req, maxBytes) {
 // ─────────────────── 服务器 ───────────────────
 
 const LATEST = {
-  version: '2.7.14',
+  version: '2.7.15',
   url: 'https://github.com/Mosina1102/MSMate/releases/latest',
-  notes: '设备区改版：发现/桥接双页签 + 按类型分组；远程审批式配对（对方点同意，替代看不到的配对码）；生图/看图内置优先；多步任务积分总和',
+  notes: 'AI 新增 PPT 能力（create_pptx 生成/read_pptx 读取/edit_pptx 修改，18 套配色×4 风格×5 页型自动排版）；网页抓取过盾增强（指纹一致性修复+Cloudflare 挑战页自动等待通过）；Word 生成增加结构校验关卡',
   publishedAt: '2026-09-10'
 }
 
