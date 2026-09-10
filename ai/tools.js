@@ -1302,20 +1302,28 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
           }
         } catch { /* 压缩不可用就用原图直发 */ }
       }
-      // 识图模型配置：默认硅基流动免费视觉模型，可在 AI 设置里改；
-      // 没配任何 Key 时回落 MSMate 内置代理（登录即用，走积分计费）——内置用户也有看图工具
+      // 识图模型配置：默认硅基流动免费视觉模型，可在 AI 设置里改。
+      // 优先级（v2.7.14）：显式视觉槽位服务商 > 主模型内置时走 MSMate 代理（扣积分）> 旧全局 Key > 未登录时回落内置代理
       const pv = resolveModelProvider(getSetting, 'vision')
-      let apiKey = (pv && pv.apiKey) || getSetting('aiVisionApiKey') || getSetting('aiApiKey') || ''
-      let baseUrl = (pv && pv.baseUrl) || (getSetting('aiVisionBaseUrl') || getSetting('aiBaseUrl') || 'https://api.siliconflow.cn/v1').replace(/\/+$/, '')
-      if (!apiKey) {
-        try {
-          const list = JSON.parse(getSetting('aiProviderList') || '[]') || []
-          const m = list.find(x => x && x.id === 'msmate' && x.apiKey && x.baseUrl)
-          if (m) { apiKey = m.apiKey; baseUrl = String(m.baseUrl || '').replace(/\/+$/, '') }
-        } catch { }
+      let apiKey = (pv && pv.apiKey) || ''
+      let baseUrl = (pv && pv.baseUrl) || ''
+      const builtinMain = isBuiltinMain(getSetting)
+      if (!apiKey && builtinMain) {
+        const m = resolveMsmateProvider(getSetting)
+        if (m) { apiKey = m.apiKey; baseUrl = m.baseUrl }
+      }
+      if (!apiKey) apiKey = getSetting('aiVisionApiKey') || getSetting('aiApiKey') || ''
+      if (!baseUrl) baseUrl = (getSetting('aiVisionBaseUrl') || getSetting('aiBaseUrl') || 'https://api.siliconflow.cn/v1').replace(/\/+$/, '')
+      if (!apiKey && !builtinMain) {
+        const m = resolveMsmateProvider(getSetting)
+        if (m) { apiKey = m.apiKey; baseUrl = m.baseUrl }
       }
       if (!apiKey) return { ok: false, message: '未配置 API Key（AI 设置里设置后才能识图；登录 MSMate 账号可直接用内置看图）' }
-      const model = getSetting('aiVisionModel') || 'PaddlePaddle/PaddleOCR-VL-1.5'
+      // 走内置代理时模型钳到内置视觉清单（旧存档里可能存着自定义视觉模型名，内置清单没有会 400）
+      let model = getSetting('aiVisionModel') || 'PaddlePaddle/PaddleOCR-VL-1.5'
+      if (apiKey === ((resolveMsmateProvider(getSetting) || {}).apiKey)) {
+        if (!/zai-org\/GLM-4\.5V|PaddlePaddle\/PaddleOCR/i.test(model)) model = 'PaddlePaddle/PaddleOCR-VL-1.5'
+      }
       let question = String(args.question || '').trim() || '请识别这张图片：先用一句话说明它整体是什么（照片/截图/文档/表格等），再描述画面主要内容（主体、场景、界面元素、图表结构）。图中如有文字（含水印、域名、版权行）请如实转录并注明位置；如果图中没有文字，直接说"图中无文字"并描述画面即可，不要硬凑或猜测文字内容。'
       // DeepSeek-OCR 官方要求文本以 <image> 标记开头，否则模型对不上图会幻觉输出
       if (/DeepSeek-OCR/i.test(model)) question = '<image>\n' + question
@@ -2768,12 +2776,22 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
         imgPayload = payloads.length === 1 ? payloads[0] : payloads
       }
       const pvI = resolveModelProvider(getSetting, imgPayload ? 'imageEdit' : 'image')
-      const apiKey = (pvI && pvI.apiKey) || getSetting('aiApiKey') || ''
-      if (!apiKey) return { ok: false, message: '未配置 API Key（AI 设置里设置后才能生图）' }
-      const baseUrl = (pvI && pvI.baseUrl) || (getSetting('aiBaseUrl') || 'https://api.siliconflow.cn/v1').replace(/\/+$/, '')
-      const model = imgPayload
+      let apiKey = (pvI && pvI.apiKey) || getSetting('aiApiKey') || ''
+      let baseUrl = (pvI && pvI.baseUrl) || (getSetting('aiBaseUrl') || 'https://api.siliconflow.cn/v1').replace(/\/+$/, '')
+      let model = imgPayload
         ? (getSetting('aiImageEditModel') || 'Qwen/Qwen-Image-Edit-2509')
         : (getSetting('aiImageModel') || 'Kwai-Kolors/Kolors')
+      // 主模型是内置 → 生图/改图默认走内置代理（扣积分，与主模型同口径），显式选了图片服务商才走自定义。
+      // 内置模型参数固定为服务端内置清单里的生图/改图（自定义的 Kolors 等不经过我们代理）
+      if (!pvI && isBuiltinMain(getSetting)) {
+        const m = resolveMsmateProvider(getSetting)
+        if (m) {
+          apiKey = m.apiKey
+          baseUrl = m.baseUrl
+          model = imgPayload ? 'Qwen/Qwen-Image-Edit-2509' : 'Tongyi-MAI/Z-Image-Turbo'
+        }
+      }
+      if (!apiKey) return { ok: false, message: '未配置 API Key（AI 设置里设置后才能生图）' }
       // size 严格校验（真机变体：模型传了 size:1024 这种非法格式 → 硅基流动 50507 Unknown error）
       // 编辑模式不传 image_size（跟随原图尺寸，Qwen-Image-Edit 类模型要求）
       const size = /^\d{2,4}\s*[xX×]\s*\d{2,4}$/.test(String(args.size || '')) ? String(args.size).replace(/[X×]/i, 'x').replace(/\s+/g, '') : '1024x1024'
@@ -2813,6 +2831,13 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
         ? { model, prompt, image_size: size, batch_size: wantCnt, negative_prompt: negPrompt, num_inference_steps: steps }
         : { model, prompt, image_size: size, negative_prompt: negPrompt, num_inference_steps: steps }
       const singleBody = imgPayload ? editBody : { model, prompt, image_size: size, negative_prompt: negPrompt, num_inference_steps: steps }
+      // 内置 Z-Image-Turbo（蒸馏模型）：negative_prompt/num_inference_steps 是 Kolors 系参数，走内置时剥掉用上游默认，防不兼容
+      if (model === 'Tongyi-MAI/Z-Image-Turbo') {
+        delete t2iBody.negative_prompt
+        delete t2iBody.num_inference_steps
+        delete singleBody.negative_prompt
+        delete singleBody.num_inference_steps
+      }
       const prog = (msg) => { if (typeof args.progress === 'function') args.progress(msg) }
       let resp
       try {
@@ -3118,6 +3143,19 @@ function resolveModelProvider(getSetting, ability) {
   const p = list.find((x) => x && x.id === pid)
   if (!p || !String(p.baseUrl || '').trim() || !String(p.apiKey || '').trim()) return null
   return { baseUrl: String(p.baseUrl).trim().replace(/\/+$/, ''), apiKey: String(p.apiKey).trim() }
+}
+
+// 内置主模型判定 + 内置代理解析（v2.7.14）：主模型是 [内置] 前缀时，生图/看图默认走 MSMate 内置代理
+// （扣积分，和主模型同一计费口径），用户显式给槽位选了自定义服务商才走自定义
+function isBuiltinMain(getSetting) {
+  return String(getSetting('aiModel') || '').startsWith('[内置]')
+}
+function resolveMsmateProvider(getSetting) {
+  try {
+    const list = JSON.parse(getSetting('aiProviderList') || '[]') || []
+    const m = list.find((x) => x && x.id === 'msmate' && x.apiKey && x.baseUrl)
+    return m ? { baseUrl: String(m.baseUrl).trim().replace(/\/+$/, ''), apiKey: String(m.apiKey).trim() } : null
+  } catch { return null }
 }
 
 module.exports = { createTools, resolveModelProvider, httpJson, httpDownload, extractArticleText, httpGet }
