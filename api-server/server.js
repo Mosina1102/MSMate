@@ -702,8 +702,22 @@ function handleSignin(req, res, user) {
 const NTFY_SERVER = (process.env.NTFY_SERVER || 'https://ntfy.sh').replace(/\/+$/, '')
 const NTFY_TOPIC = String(process.env.NTFY_TOPIC || '').trim()
 
+// 渠道② 邮件兜底：腾讯云到 ntfy.sh 常年不通（国内被墙），推送失败/未配置时改发邮件到发件账号自己
+// （QQ 邮箱 app 有新邮件通知）；1 分钟内同标题+内容去重，防超时重试连发
+function notifyAdminByMail(title, body, why) {
+  if (!MAIL_CFG.host || !MAIL_CFG.user || !MAIL_CFG.pass) { console.warn(`[ntfy→mail] SMTP 未配置，兜底跳过: ${title}`); return }
+  const sig = title + '|' + body
+  if (notifyAdminByMail._sig === sig && Date.now() - notifyAdminByMail._t < 60000) return
+  notifyAdminByMail._sig = sig
+  notifyAdminByMail._t = Date.now()
+  sendMail(MAIL_CFG.user, `[MSMate] ${title}`, `${body}\n\n—— ntfy 兜底邮件（原因：${why}）`).then(
+    () => console.log(`[ntfy→mail] 兜底邮件已发: ${title}（原因: ${why}）`),
+    (e) => console.error(`[ntfy→mail] 兜底邮件失败: ${e.message}`)
+  )
+}
+
 function notifyAdmin(title, body) {
-  if (!NTFY_TOPIC) return
+  if (!NTFY_TOPIC) { notifyAdminByMail(title, body, 'NTFY_TOPIC 未配置'); return }
   try {
     const payload = JSON.stringify({ topic: NTFY_TOPIC, title: String(title).slice(0, 64), message: String(body).slice(0, 300), tags: ['money_with_wings'], priority: 'high' })
     const u = new URL(NTFY_SERVER)
@@ -714,15 +728,21 @@ function notifyAdmin(title, body) {
       // 结果落日志：docker logs 可见（此前静默吞错，推送断了无从排查）
       let buf = ''
       res.on('data', c => { if (buf.length < 200) buf += c })
-      res.on('end', () => console.log(`[ntfy] ${res.statusCode} ${title}`))
-      if (res.statusCode !== 200) console.error(`[ntfy] 推送异常 ${res.statusCode}: ${buf}`)
+      res.on('end', () => {
+        console.log(`[ntfy] ${res.statusCode} ${title}`)
+        if (res.statusCode !== 200) notifyAdminByMail(title, body, `ntfy HTTP ${res.statusCode}: ${buf.slice(0, 80)}`)
+      })
     })
-    req.on('error', (e) => console.error(`[ntfy] 推送失败: ${e.message}（服务器到 ${NTFY_SERVER} 不通？）`))
+    req.on('error', (e) => {
+      console.error(`[ntfy] 推送失败: ${e.message}（服务器到 ${NTFY_SERVER} 不通？）`)
+      notifyAdminByMail(title, body, `ntfy 不通: ${e.message}`)
+    })
     req.setTimeout(8000, () => { try { req.destroy(new Error('timeout')) } catch { } })
     req.write(payload)
     req.end()
   } catch (e) {
     console.error(`[ntfy] 推送构造失败: ${e.message}`)
+    notifyAdminByMail(title, body, `ntfy 构造失败: ${e.message}`)
   }
 }
 
@@ -1570,15 +1590,21 @@ td{padding:8px;border-bottom:1px solid #f0eff6;vertical-align:top}
 tr:last-child td{border-bottom:0}
 @media (max-width:719px){
   #wrap{flex-direction:column}
-  #side{width:100%;flex-direction:row;overflow-x:auto;padding:8px;align-items:center}
+  /* ⚠ #side/#main 的直接父容器是 #panel（此前只改 #wrap 竖屏不生效，侧栏横排挤占内容区=只有横屏能用） */
+  #panel{flex-direction:column}
+  #side{width:100%;flex-direction:row;overflow-x:auto;padding:8px;align-items:center;-webkit-overflow-scrolling:touch}
   #side .logo{padding:4px 8px;white-space:nowrap}
   #side .foot{display:none}
   #side button{width:auto;white-space:nowrap;padding:8px 12px}
-  #main{padding:12px}
+  #main{padding:12px;max-width:none;width:100%}
+  /* 窄屏表格横向滚动，卡片操作按钮加触控热区 */
+  .card{overflow-x:auto}
+  button{min-height:40px}
+  .subtabs button{padding:9px 14px}
 }
 </style></head><body>
 <div id="wrap">
-  <div id="login" class="hide" style="padding:24px;max-width:420px;margin:10vh auto 0">
+  <div id="login" style="padding:24px;max-width:420px;margin:10vh auto 0">
     <div class="card">
       <h1 style="font-size:18px;margin-bottom:12px;color:#2b2350">MSMate 批款后台</h1>
       <div class="err" id="lerr"></div>
@@ -1917,6 +1943,13 @@ function poll() {
 }
 document.getElementById('key').onkeydown = function (e) { if (e.key === 'Enter' || e.keyCode === 13) login() }
 document.getElementById('lbtn').onclick = login
+// 侧栏页签导航（v0.6 重写时漏绑，页签全点不动；用事件委托，手机横滚页签同样生效）
+document.getElementById('side').onclick = function (e) {
+  var t = e.target
+  while (t && t.tagName !== 'BUTTON') t = t.parentElement
+  var v = t && t.getAttribute && t.getAttribute('data-view')
+  if (v) showView(v)
+}
 if (token) xhr('GET', '/admin/api/stats', null, function (j) {
   if (j.ok) showPanel()
   else { storageDel('adm_token'); token = '' }
@@ -2087,6 +2120,8 @@ const server = http.createServer(async (req, res) => {
     // 批款后台
     if (req.method === 'GET' && pathname === '/admin') {
       res.setHeader('Content-Type', 'text/html; charset=utf-8')
+      // 禁缓存：后台随服务端发版即时更新，浏览器拿旧 HTML 会跟新接口错配
+      res.setHeader('Cache-Control', 'no-store')
       res.statusCode = 200
       return res.end(ADMIN_HTML)
     }
@@ -2163,5 +2198,5 @@ server.on('upgrade', (req, socket) => {
 })
 
 server.listen(PORT, () => {
-  console.log(`msmate-api v0.6.0 listening on 0.0.0.0:${PORT} (mail: ${MAIL_ON ? 'SMTP' : 'dev 模式，验证码走日志/接口'})`)
+  console.log(`msmate-api v0.7.0 listening on 0.0.0.0:${PORT} (mail: ${MAIL_ON ? 'SMTP' : 'dev 模式，验证码走日志/接口'})`)
 })
