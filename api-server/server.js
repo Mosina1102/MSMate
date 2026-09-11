@@ -1957,9 +1957,9 @@ function readBody(req, maxBytes) {
 // ─────────────────── 服务器 ───────────────────
 
 const LATEST = {
-  version: '2.7.17',
+  version: '2.7.18',
   url: 'https://github.com/Mosina1102/MSMate/releases/latest',
-  notes: 'AI 新增工具组合手册：复合任务按真人助理节奏工作（开工报目标→清单挂账→逐步播报→交付交代），内置 11 条工具链配方与实战示例（如一句话做城市介绍 PPT）',
+  notes: 'AI 设计板块上线：海报/公众号封面/小红书卡片/简历邀请函，AI 写 HTML 排版渲染出图，中文文字零乱码可改稿；修复高画布渲染被屏幕裁切问题',
   publishedAt: '2026-09-11'
 }
 
