@@ -1345,9 +1345,10 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       }
       if (!apiKey) return { ok: false, message: '未配置 API Key（AI 设置里设置后才能识图；登录 MSMate 账号可直接用内置看图）' }
       // 走内置代理时模型钳到内置视觉清单（旧存档里可能存着自定义视觉模型名，内置清单没有会 400）
-      let model = getSetting('aiVisionModel') || 'PaddlePaddle/PaddleOCR-VL-1.5'
+      // 默认 Qwen3.8-27B：原生视觉稳定（PaddleOCR-VL 上游免费但限流，经常网络错误，2026-09-11 换默认）
+      let model = getSetting('aiVisionModel') || 'Qwen/Qwen3.8-27B'
       if (apiKey === ((resolveMsmateProvider(getSetting) || {}).apiKey)) {
-        if (!/zai-org\/GLM-4\.5V|PaddlePaddle\/PaddleOCR/i.test(model)) model = 'PaddlePaddle/PaddleOCR-VL-1.5'
+        if (!/zai-org\/GLM-4\.5V|PaddlePaddle\/PaddleOCR|Qwen\/Qwen3\.8/i.test(model)) model = 'Qwen/Qwen3.8-27B'
       }
       let question = String(args.question || '').trim() || '请识别这张图片：先用一句话说明它整体是什么（照片/截图/文档/表格等），再描述画面主要内容（主体、场景、界面元素、图表结构）。图中如有文字（含水印、域名、版权行）请如实转录并注明位置；如果图中没有文字，直接说"图中无文字"并描述画面即可，不要硬凑或猜测文字内容。'
       // DeepSeek-OCR 官方要求文本以 <image> 标记开头，否则模型对不上图会幻觉输出
@@ -1361,7 +1362,9 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
             { type: 'image_url', image_url: { url: `data:${mime};base64,${buf.toString('base64')}` } }
           ]
         }],
-        max_tokens: 2048
+        max_tokens: 2048,
+        // Qwen3.8 系默认开思考模式：识图不需要推理链，关掉省积分提速；上游不认该参数会忽略
+        ...( /^Qwen\/Qwen3\.8/i.test(model) ? { enable_thinking: false } : {})
       })
       // 失败时带出具体原因（状态码/错误信息/超时），AI 才不会瞎猜"服务中断"
       const answer = await new Promise((resolve) => {
@@ -1379,7 +1382,8 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
             try {
               const j = JSON.parse(text)
               const msg = j.choices && j.choices[0] && j.choices[0].message
-              if (msg && msg.content) return resolve(String(msg.content))
+              // reasoning 系模型兜底：content 为空时取 reasoning_content（思考型模型偶尔把描述写进思考区）
+              if (msg && (msg.content || msg.reasoning_content)) return resolve(String(msg.content || msg.reasoning_content))
               const apiMsg = j.error && (j.error.message || j.error.code)
               resolve(`【HTTP ${res.statusCode}】${apiMsg || text.slice(0, 200)}`)
             } catch { resolve(`【HTTP ${res.statusCode}】响应非 JSON：${text.slice(0, 200)}`) }

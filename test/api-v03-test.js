@@ -31,7 +31,7 @@ async function main() {
   const PNG1x1 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
 
   const ping = await jget('/ping')
-  check('ping 存活且版本 0.3.0', ping.code === 200 && ping.j.version === '0.3.0', ping)
+  check('ping 存活且版本 0.7.0', ping.code === 200 && ping.j.version === '0.7.0', ping)
 
   // ── 注册（验证码流程）──
   const email = `t${Date.now()}@test.dev`

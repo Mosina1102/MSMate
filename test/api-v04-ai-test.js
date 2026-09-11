@@ -37,12 +37,14 @@ async function main() {
 
   // 0. 基础
   const pingRes = await jreq('/ping')
-  check('ping 版本 0.5.0', pingRes.code === 200 && pingRes.j.version === '0.5.0', pingRes.j)
+  check('ping 版本 0.7.0', pingRes.code === 200 && pingRes.j.version === '0.7.0', pingRes.j)
 
   // 1. 模型清单（公开）
   const models = await jreq('/v1/ai/models')
-  check('模型清单 5 对话(含 visionOnly) + 2 生图 + TTS + ASR',
-    models.code === 200 && models.j.chat.length === 5 && models.j.chat.filter(c => c.visionOnly).length === 1 && models.j.image.length === 2 && models.j.tts.id && models.j.asr.id, models.j)
+  check('模型清单 6 对话(含 2 个 visionOnly) + 2 生图 + TTS + ASR',
+    models.code === 200 && models.j.chat.length === 6 && models.j.chat.filter(c => c.visionOnly).length === 2 && models.j.image.length === 2 && models.j.tts.id && models.j.asr.id, models.j)
+  check('识图默认 Qwen3.8-27B（450/1800 积分每百万 tokens）',
+    models.j.chat.some(c => c.id === 'Qwen/Qwen3.8-27B' && c.vision && c.visionOnly && c.creditsPerMTokIn === 450 && c.creditsPerMTokOut === 1800), models.j.chat)
 
   // 2. 未登录 401
   const noAuth = await jreq('/v1/ai/openai/chat/completions', { method: 'POST', body: { model: 'x' } })

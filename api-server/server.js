@@ -1019,7 +1019,8 @@ const AI_CHAT_MODELS = [
   { id: 'Qwen/Qwen3.6-35B-A3B', name: 'Qwen3.6 35B A3B', desc: '超值档，轻量任务，支持工具调用', costIn: 1.8, costOut: 10.8 },
   { id: 'zai-org/GLM-4.5V', name: 'GLM-4.5V 视觉', desc: '看图/截图理解', costIn: 1, costOut: 6, costCache: 0.1, vision: true },
   { id: 'zai-org/GLM-5.3', name: 'GLM-5.3 旗舰', desc: '深度思考，复杂任务', costIn: 8, costOut: 28, costCache: 2, premium: true },
-  { id: 'PaddlePaddle/PaddleOCR-VL-1.5', name: 'PaddleOCR 视觉', desc: '看图/OCR（内置视觉工具默认，上游免费）', costIn: 0, costOut: 0, vision: true, visionOnly: true }
+  { id: 'Qwen/Qwen3.8-27B', name: 'Qwen3.8 27B 视觉', desc: '原生视觉看图/OCR（识图默认，稳定）', costIn: 3, costOut: 12, vision: true, visionOnly: true },
+  { id: 'PaddlePaddle/PaddleOCR-VL-1.5', name: 'PaddleOCR 视觉', desc: '看图/OCR（免费备胎，上游免费但限流）', costIn: 0, costOut: 0, vision: true, visionOnly: true }
 ]
 const AI_IMAGE_MODELS = [
   // 上游 0.3 元/张 → 0.3 × 100 × 1.5 = 45 积分/张（此前 6/8 积分严重倒挂亏本，2026-09-10 修正）

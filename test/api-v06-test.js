@@ -51,7 +51,7 @@ async function main() {
 
   // ① 健康检查 + 版本
   const ping = await req('GET', '/ping')
-  ok('ping 返回 v0.6.0', ping.status === 200 && ping.data.version === '0.6.0', ping.raw)
+  ok('ping 返回 v0.7.0', ping.status === 200 && ping.data.version === '0.7.0', ping.raw)
 
   // ② RSA 公钥下发
   const pk = await req('GET', '/v1/auth/pubkey')
