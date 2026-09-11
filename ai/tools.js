@@ -1882,10 +1882,12 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       let win = null
       try {
         // 离屏渲染：物理窗口 = CSS 尺寸 × scale，zoomFactor = scale → capturePage 输出高清 PNG，
-        // HTML 内 CSS 始终按 w×h 的 CSS 尺寸写（设计画布与输出分辨率解耦）
+        // HTML 内 CSS 始终按 w×h 的 CSS 尺寸写（设计画布与输出分辨率解耦）。
+        // ⚠ 构造函数里的宽高会被屏幕工作区钳制（如 1440 屏→高最多 1392，A4 竖版必被砍），
+        //   必须先小窗创建、再 setContentSize 才能突破（Electron 22 实测，见 test/render-clamp-exp.js）
         win = new el.BrowserWindow({
-          width: w * scale,
-          height: h * scale,
+          width: Math.min(w * scale, 800),
+          height: Math.min(h * scale, 600),
           useContentSize: true,
           show: false,
           frame: false,
@@ -1893,6 +1895,8 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
         })
         try { win.webContents.setAudioMuted(true) } catch {}
         try { win.webContents.setZoomFactor(scale) } catch {}
+        // 创建后 setContentSize 突破屏幕工作区钳制，保证 capturePage 全画布出图
+        win.setContentSize(w * scale, h * scale)
         await win.loadFile(htmlPath)
         // 等字体 + 图片就绪（轮询最长 ~6s，防漏图）
         await win.webContents.executeJavaScript(

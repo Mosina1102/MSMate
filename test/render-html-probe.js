@@ -16,15 +16,18 @@ body{margin:0;width:${CSS_W}px;height:${CSS_H}px;background:#6d5ae0;position:rel
 .center{position:absolute;top:200px;left:0;width:100%;text-align:center;font-size:72px;font-weight:900}
 </style></head><body><div class="badge">MSMATE</div><div class="center">渲染探针</div></body></html>`
 
-async function render(scale) {
-  const tmpHtml = path.join(os.tmpdir(), `msm-render-probe-${scale}.html`)
-  fs.writeFileSync(tmpHtml, html)
-  const outPng = path.join(os.tmpdir(), `msm-render-probe-${scale}.png`)
+async function render(scale, tallH) {
+  const H = tallH || CSS_H
+  const tmpHtml = path.join(os.tmpdir(), `msm-render-probe-${scale}-${H}.html`)
+  fs.writeFileSync(tmpHtml, tallH ? html.replace(/height:600px/, `height:${tallH}px`).replace(/top:200px/, 'top:40%') : html)
+  const outPng = path.join(os.tmpdir(), `msm-render-probe-${scale}-${H}.png`)
+  // 防工作区钳制套路与 render_html 工具一致：小窗创建 → setContentSize 给足尺寸
   const win = new BrowserWindow({
-    width: CSS_W * scale, height: CSS_H * scale, useContentSize: true, show: false, frame: false,
+    width: Math.min(CSS_W * scale, 800), height: Math.min(H * scale, 600), useContentSize: true, show: false, frame: false,
     webPreferences: { offscreen: true, contextIsolation: true, nodeIntegration: false, sandbox: true }
   })
   try {
+    win.setContentSize(CSS_W * scale, H * scale)
     win.webContents.setZoomFactor(scale)
     await win.loadFile(tmpHtml)
     await win.webContents.executeJavaScript(
@@ -54,7 +57,13 @@ app.whenReady().then(async () => {
     const r2 = await render(2)
     ok(`scale=2 输出尺寸 ${CSS_W * 2}×${CSS_H * 2}`, r2.size.width === CSS_W * 2 && r2.size.height === CSS_H * 2, JSON.stringify(r2.size))
 
-    // ③ 内容非空白：PNG 尺寸合理且文件非空（像素级验证用 toBitmap 采样）
+    // ③ A4 高画布（1754 > 常见屏幕工作区高度）不受工作区钳制——防回归：构造函数直给会被砍到 1392
+    await new Promise((r) => setTimeout(r, 400))
+    const A4_H = 1754
+    const r3 = await render(1, A4_H)
+    ok(`A4 高画布防钳制 输出 ${CSS_W}×${A4_H}`, r3.size.width === CSS_W && r3.size.height === A4_H, JSON.stringify(r3.size))
+
+    // ④ 内容非空白：PNG 尺寸合理且文件非空（像素级验证用 toBitmap 采样）
     const buf = fs.readFileSync(r1.outPng)
     ok('PNG 文件非空', buf.length > 3000, buf.length + 'B')
     // PNG 头验证

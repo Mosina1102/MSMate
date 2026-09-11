@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  width:1240px; height:1754px; overflow:hidden; position:relative;
+  background:linear-gradient(165deg,#6e1010 0%,#9c1a1a 38%,#c0392b 68%,#e0703a 100%);
+  font-family:"Microsoft YaHei","PingFang SC",sans-serif; color:#fdf6ec;
+}
+/* 装饰：右上锅形大圆 */
+.ring { position:absolute; border-radius:50%; }
+.r1 { width:620px; height:620px; right:-180px; top:-160px;
+      background:radial-gradient(circle at 38% 38%, #f2b134 0%, #d9541e 45%, #8a1f1f 100%);
+      box-shadow:0 24px 80px rgba(0,0,0,.35); }
+.r2 { width:620px; height:620px; right:-180px; top:-160px;
+      border:2px solid rgba(253,246,236,.35); transform:translate(26px,26px); }
+.r3 { width:180px; height:180px; right:120px; top:330px;
+      border:1.5px solid rgba(253,246,236,.4); }
+.dot { position:absolute; width:14px; height:14px; border-radius:50%; background:#f2b134; }
+
+.page { position:absolute; inset:0; padding:96px 100px; display:flex; flex-direction:column; }
+.kicker { display:flex; align-items:center; gap:18px; letter-spacing:6px; font-size:22px; opacity:.85; }
+.kicker .line { width:64px; height:2px; background:#f2b134; }
+
+.title-wrap { margin-top:110px; }
+.title { font-size:172px; font-weight:900; line-height:1.06; letter-spacing:10px;
+         text-shadow:0 10px 34px rgba(0,0,0,.28); }
+.title .accent { color:#f2b134; }
+.subtitle-en { margin-top:26px; font-size:24px; letter-spacing:12px; opacity:.72; }
+
+.slogan { margin-top:68px; border-left:5px solid #f2b134; padding-left:30px;
+          font-size:34px; line-height:1.7; opacity:.94; }
+.slogan small { display:block; font-size:20px; opacity:.7; margin-top:8px; letter-spacing:3px; }
+
+.hotpot { margin:auto 0; display:grid; grid-template-columns:repeat(3,118px); gap:14px; width:max-content; }
+.hotpot i { width:118px; height:118px; border:2px solid rgba(242,177,52,.5); border-radius:26px; }
+.hotpot i.f { background:rgba(242,177,52,.3); border-color:transparent; }
+
+.info { margin-top:auto; }
+.info-grid { display:grid; grid-template-columns:1fr 1fr; gap:36px 60px; }
+.info-item .lab { font-size:19px; letter-spacing:5px; opacity:.68; margin-bottom:10px; }
+.info-item .val { font-size:40px; font-weight:700; letter-spacing:2px; }
+
+.footer { margin-top:64px; padding-top:30px; border-top:1px solid rgba(253,246,236,.3);
+          display:flex; justify-content:space-between; font-size:19px; letter-spacing:3px; opacity:.75; }
+</style></head><body>
+  <div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div>
+  <div class="dot" style="right:340px; top:560px;"></div>
+  <div class="dot" style="right:80px;  top:640px; width:9px; height:9px;"></div>
+
+  <div class="page">
+    <div class="kicker"><span class="line"></span>CHONGQING FOOD SEASON · 2026</div>
+
+    <div class="title-wrap">
+      <div class="title">重庆<span class="accent">火锅节</span></div>
+      <div class="subtitle-en">HOT &nbsp;POT &nbsp;FESTIVAL</div>
+    </div>
+
+    <div class="slogan">
+      一锅煮山城，毛肚鸭肠在三秒里起落
+      <small>牛油九宫格 × 长江边的晚风 × 万人辣度挑战</small>
+    </div>
+
+    <div class="hotpot">
+      <i class="f"></i><i></i><i></i>
+      <i></i><i class="f"></i><i></i>
+      <i></i><i></i><i class="f"></i>
+    </div>
+
+    <div class="info">
+      <div class="info-grid">
+        <div class="info-item"><div class="lab">时 间</div><div class="val">10.01 — 10.08</div></div>
+        <div class="info-item"><div class="lab">地 点</div><div class="val">洪崖洞 · 江岸广场</div></div>
+        <div class="info-item"><div class="lab">票 务</div><div class="val">免费入场的嗷</div></div>
+        <div class="info-item"><div class="lab">主 题</div><div class="val">辣，是山城方言</div></div>
+      </div>
+      <div class="footer">
+        <span>主办 · 重庆市火锅产业协会</span>
+        <span>咨询 · 023-1234-5678</span>
+      </div>
+    </div>
+  </div>
+</body></html>
