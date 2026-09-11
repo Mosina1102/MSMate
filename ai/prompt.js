@@ -49,6 +49,7 @@ function manualsIndexSection(manualsDir) {
 - 表格.md —— Excel 与 Word 表格十件（create_table/format_word_table/edit_word_table/fix_paper_paging 等）
 - ppt文档.md —— PPT 演示文稿三件（create_pptx/read_pptx/edit_pptx），含大纲写法/配色清单/页型规划铁律
 - 图片视频.md —— 识图/截图/SVG转PNG/生图/生视频（view_image/screenshot/svg_to_png/generate_image/generate_video）
+- 设计.md —— 海报/封面/卡片视觉设计（render_html），HTML→PNG 工作流/画布预设/双设计系统/自检清单
 - 网络下载.md —— 搜索/抓网页/下载文件（web_search/web_fetch/download_file），含扒图标准流程
 - 跨设备协作.md —— transfer_file 细节 + 跨设备创建三步套路全套
 **使用规则**：①首次使用手册内工具、参数拿不准、工具报错时，**必须先 read_file 对应手册再动手**——手册含完整参数文档、踩坑经验和标准工作流，比本规则的目录行详细得多；②同类任务一次会话读一次即可，不必反复读；③可用工具目录行末尾的"→ 手册：ai_manuals/xxx.md"就是该读手册的提醒。`

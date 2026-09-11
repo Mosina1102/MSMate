@@ -104,7 +104,8 @@ const TOOL_DEFS = [
   { name: 'ask_user', params: 'questions(问题数组 [{question:问题, header:短标签(≤8字), options:[{label:选项, description:说明}], multiSelect:是否多选}])', desc: '中途向用户提问：关键信息不齐、方案分歧大时用，用户在卡片上点选/输入后你自动继续。一次问全（1~3 题），每题 2~4 个选项；开放题可不带 options 让用户直接打字。用户取消或超时你会收到"按最合理方案继续"的提示。能自己推断的别问，纯闲聊别问' },
   { name: 'generate_image', params: 'prompt(画面描述/修改指令,越具体越好:主体/风格/构图/光线/色调), image(可选,要编辑/参考的图:本地路径或URL,数组1-3张多图合成), size(可选,仅生新图,"宽x高"如1024x1024), batch(可选,张数1-4), steps(可选,1-100默认30), save_path(可选,默认工作区「MSMate生成/图片」)', desc: 'AI 生图+编辑：不传 image=文生图；传 image=按指令改图保构图；2-3张=多图合成。画幅换算/对话式反复修改循环/遮罩黑区规则详见手册', manual: '图片视频' },
   { name: 'generate_video', params: 'prompt(视频内容描述,一句话说清主体+动作+场景+镜头感), save_path(可选,默认工作区「MSMate生成/视频」)', desc: 'AI 文生视频（模型在设置里配置）：约5秒短视频，耗时2-10分钟勿重复调用；多数模型可能产生费用，调用前先告知用户', manual: '图片视频' },
-  { name: 'task_plan', params: 'items(建立/替换清单:字符串数组，每项一个具体动作), doing(标记进行中:序号或序号数组), done(标记完成:序号或序号数组)', desc: '任务清单（≥3步任务必用）：开工前建清单，每完成一项立刻打勾并标记下一项进行中；系统会把进度附在每步结果里，照着"下一步"提示继续干，全部打勾再收尾。⚠️ 打勾=该步实际验证成功；工具报错/失败=没完成，严禁打勾，如实汇报失败；也严禁跳步（第2步没完成不许先勾第2步）' }
+  { name: 'task_plan', params: 'items(建立/替换清单:字符串数组，每项一个具体动作), doing(标记进行中:序号或序号数组), done(标记完成:序号或序号数组)', desc: '任务清单（≥3步任务必用）：开工前建清单，每完成一项立刻打勾并标记下一项进行中；系统会把进度附在每步结果里，照着"下一步"提示继续干，全部打勾再收尾。⚠️ 打勾=该步实际验证成功；工具报错/失败=没完成，严禁打勾，如实汇报失败；也严禁跳步（第2步没完成不许先勾第2步）' },
+  { name: 'render_html', params: 'path(HTML完整路径), out(可选,输出png路径,默认同名.png), preset(可选画布:xhs=1080x1440小红书3:4/square=1080x1080微信分享/a4=1240x1754竖版海报/wide=2100x900横幅/wechat-cover=900x383公众号封面,默认a4), width/height(可选,像素,覆盖preset), scale(可选,1-4倍高清出图,默认1;高清用2且HTML按CSS尺寸写)', desc: 'HTML 渲染成 PNG（离屏窗口截图，中文/渐变/阴影完美）。设计工作流：write_file 写单文件 HTML（内嵌CSS按CSS尺寸写死）→ render_html → view_image 自检溢出/配色 → 改了重渲。海报/公众号封面/小红书卡片/简历/邀请函全靠它，设计原则详见手册', manual: '设计' }
 ]
 
 function buildToolPromptSection() {
@@ -737,6 +738,11 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
         note: exists ? `覆盖已有 Word 文档 ${args.path}（原文件会先备份）` : '新建 Word 文档',
         paths: target === 'local' ? [args.path] : []
       }
+    }
+    if (name === 'render_html') {
+      const outP = args.out ? path.resolve(String(args.out)) : path.resolve(String(args.path)).replace(/\.html?$/i, '.png')
+      const outExists = fs.existsSync(outP)
+      return { destructive: outExists, note: outExists ? `覆盖已有图片 ${outP}` : '渲染新图片', paths: [] }
     }
     if (name === 'create_pptx') {
       const exists = await targetExists(args.path, target)
@@ -1850,6 +1856,64 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
         return { ok: true, message: `SVG 已渲染为 PNG（${r.width}×${r.height}，${Math.round(r.size / 1024)}KB）→ ${out}。可用 view_image 检查效果，或 modify_word 插入文档`, path: out }
       } catch (err) {
         return { ok: false, message: `SVG 转图片失败: ${err.message}` }
+      }
+    },
+
+    async render_html(args) {
+      if (!args.path) return { ok: false, message: '缺少 path（HTML 完整路径）' }
+      const el = shotElectron()
+      if (!el) return { ok: false, message: 'render_html 需在应用内使用（当前环境无 Electron）' }
+      const htmlPath = path.resolve(String(args.path))
+      if (!fs.existsSync(htmlPath)) return { ok: false, message: 'HTML 文件不存在，先用 write_file 写出单文件 HTML（内嵌 CSS）' }
+      // 画布预设（学 guizang-social-card-skill：小红书/微信/海报场景全覆盖）
+      const PRESETS = {
+        'xhs': [1080, 1440],
+        'square': [1080, 1080],
+        'a4': [1240, 1754],
+        'wide': [2100, 900],
+        'wechat-cover': [900, 383]
+      }
+      let w = 1240, h = 1754
+      if (args.preset && PRESETS[String(args.preset).toLowerCase()]) [w, h] = PRESETS[String(args.preset).toLowerCase()]
+      if (+args.width > 0) w = Math.round(+args.width)
+      if (+args.height > 0) h = Math.round(+args.height)
+      const scale = Math.max(1, Math.min(4, Math.round(+args.scale || 1)))
+      const out = args.out ? path.resolve(String(args.out)) : htmlPath.replace(/\.html?$/i, '.png')
+      let win = null
+      try {
+        // 离屏渲染：物理窗口 = CSS 尺寸 × scale，zoomFactor = scale → capturePage 输出高清 PNG，
+        // HTML 内 CSS 始终按 w×h 的 CSS 尺寸写（设计画布与输出分辨率解耦）
+        win = new el.BrowserWindow({
+          width: w * scale,
+          height: h * scale,
+          useContentSize: true,
+          show: false,
+          frame: false,
+          webPreferences: { offscreen: true, contextIsolation: true, nodeIntegration: false, sandbox: true }
+        })
+        try { win.webContents.setAudioMuted(true) } catch {}
+        try { win.webContents.setZoomFactor(scale) } catch {}
+        await win.loadFile(htmlPath)
+        // 等字体 + 图片就绪（轮询最长 ~6s，防漏图）
+        await win.webContents.executeJavaScript(
+          "(function(){return new Promise(function(res){var n=0;(function tick(){var fontsOk=true,imgsOk=true;try{fontsOk=document.fonts.status==='loaded'}catch(e){}try{imgsOk=[].every.call(document.images,function(i){return i.complete})}catch(e){}if((fontsOk&&imgsOk)||n>55){setTimeout(function(){res(1)},100)}else{n++;setTimeout(tick,100)}})()})})()",
+          true
+        ).catch(() => {})
+        const img = await win.webContents.capturePage()
+        if (!img || img.isEmpty()) return { ok: false, message: '渲染结果为空：HTML 可能没有可见内容（检查 body 高度/背景）' }
+        const buf = img.toPNG()
+        fs.mkdirSync(path.dirname(out), { recursive: true })
+        fs.writeFileSync(out, buf)
+        const sz = img.getSize()
+        return {
+          ok: true,
+          message: `已渲染 PNG（${sz.width}×${sz.height} 物理像素 = CSS ${w}×${h}${scale > 1 ? ` × ${scale}` : ''}，${Math.round(buf.length / 1024)}KB）→ ${out}。下一步必须 view_image 自检：文字溢出/对比度/空洞/对齐，有问题改 HTML 重渲`,
+          path: out
+        }
+      } catch (err) {
+        return { ok: false, message: `渲染失败: ${err.message}` }
+      } finally {
+        try { if (win && !win.isDestroyed()) win.destroy() } catch {}
       }
     },
 
@@ -3261,6 +3325,7 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
         return `${t}替换 PPT 文字 ${args.path}${n}`
       }
       case 'create_table': return `${t}创建 Excel 表格 ${args.path}`
+      case 'render_html': return `${t}渲染 ${args.path} 为图片`
       case 'read_table': return `${t}读取 Excel 表格 ${args.path}`
       case 'append_table_rows': return `${t}向 ${args.path} 追加表格行`
       case 'modify_table': return args.cells
