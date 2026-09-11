@@ -1975,7 +1975,7 @@ const server = http.createServer(async (req, res) => {
   try {
     // 健康检查与版本
     if (req.method === 'GET' && pathname === '/ping') {
-      return json(res, 200, { ok: true, service: 'msmate-api', version: '0.6.0', time: new Date().toISOString() })
+      return json(res, 200, { ok: true, service: 'msmate-api', version: '0.7.0', time: new Date().toISOString() })
     }
     if (req.method === 'GET' && pathname === '/v1/latest') return json(res, 200, { ok: true, data: LATEST })
     // v0.7：收款码（MSMate App 充值扫码用；公开——收款码本身就是给付款人看的）
