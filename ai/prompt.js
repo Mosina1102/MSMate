@@ -19,7 +19,7 @@ const fs = require('fs')
 const path = require('path')
 
 // ===== 工具手册（渐进式披露：主规则只留目录简述，深度说明按需 read_file；对标 Agent Skills 三层加载） =====
-const MANUAL_FILES = ['word文档.md', '论文排版.md', '表格.md', 'ppt文档.md', '图片视频.md', '网络下载.md', '跨设备协作.md']
+const MANUAL_FILES = ['word文档.md', '论文排版.md', '表格.md', 'ppt文档.md', '图片视频.md', '设计.md', '网络下载.md', '跨设备协作.md']
 function manualsSourceDir() { return path.join(__dirname, 'manuals') }
 // 启动释放：把 asar/源码里的手册复制到工作区 ai_manuals/（每次启动覆盖，升级即更新）；失败不抛出，由调用方容错
 function releaseManualsTo(workspaceDir) {
