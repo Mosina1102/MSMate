@@ -1330,8 +1330,9 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
         (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[8] === 0x57)    // webp(RIFF...WEBP)
       if (!magicOk) return { ok: false, message: `这个文件不是有效图片（内容与扩展名 ${ext} 不符，可能是改名文件/下载失败的网页/损坏文件）。建议：重新截图或重新下载后再试` }
       let mime = MIME[ext]
-      // 大图自动压缩：>8MB 用 Electron 自带 nativeImage 缩到长边 2048 转 JPEG（不加依赖；plain node 测试环境没有 nativeImage，自动跳过用原图）
-      if (buf.length > 8 * 1024 * 1024) {
+      // 大图自动压缩：>1MB 就用 Electron 自带 nativeImage 缩到长边 1800 转 JPEG（不加依赖；plain node 测试环境没有 nativeImage，自动跳过用原图）。
+      // 识图不需要原始分辨率：桌面原图 PNG 常 2-5MB/几千 px，直发上游处理上万 tokens 轻松超 60s（实测踩雷），压后几百 KB 秒级返回
+      if (buf.length > 1024 * 1024) {
         try {
           const electron = require('electron')
           const nativeImage = electron && electron.nativeImage
@@ -1340,10 +1341,10 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
             if (!img.isEmpty()) {
               const size = img.getSize()
               const long = Math.max(size.width, size.height)
-              const resized = long > 2048
-                ? img.resize({ width: Math.round(size.width * 2048 / long), height: Math.round(size.height * 2048 / long) })
+              const resized = long > 1800
+                ? img.resize({ width: Math.round(size.width * 1800 / long), height: Math.round(size.height * 1800 / long) })
                 : img
-              const jpeg = resized.toJPEG(85)
+              const jpeg = resized.toJPEG(82)
               if (jpeg && jpeg.length > 0 && jpeg.length < buf.length) { buf = jpeg; mime = 'image/jpeg' }
             }
           }

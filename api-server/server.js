@@ -1136,8 +1136,13 @@ function multipartField(buf, name) {
 }
 
 async function proxyChatCompletions(req, res, user) {
+  let raw
+  try { raw = await readRaw(req, 2 * 1024 * 1024) } catch (e) {
+    if (e && /too large/i.test(e.message)) return json(res, 413, { ok: false, error: '请求体超过 2MB：图片太大，请压缩图片后再识图' })
+    return json(res, 400, { ok: false, error: '请求读取失败' })
+  }
   let body
-  try { body = JSON.parse((await readRaw(req, 2 * 1024 * 1024)).toString('utf8') || '{}') } catch { return json(res, 400, { ok: false, error: '请求体不是有效 JSON' }) }
+  try { body = JSON.parse(raw.toString('utf8') || '{}') } catch { return json(res, 400, { ok: false, error: '请求体不是有效 JSON' }) }
   const model = String(body.model || '')
   const meta = AI_CHAT_MODELS.find(m => m.id === model)
   if (!meta) return json(res, 400, { ok: false, error: `模型不在内置清单：${model || '(空)'}` })
@@ -1996,9 +2001,9 @@ function readBody(req, maxBytes) {
 // ─────────────────── 服务器 ───────────────────
 
 const LATEST = {
-  version: '2.7.19',
+  version: '2.7.20',
   url: 'https://github.com/Mosina1102/MSMate/releases/latest',
-  notes: '识图升级：内置看图换 Qwen3.8-27B（原生视觉，不再动不动网络错误）；改 Word 更稳：C 盘文档自动转工作台副本改稿，原文件全程保留作对比，改完一键写回；批款后台手机竖屏适配+操作修复',
+  notes: '识图提速修复：大图自动压缩（原图直发上游易超时，现压至轻量尺寸秒级返回）；识图 502 参数修复；改 Word 改稿工作流',
   publishedAt: '2026-09-12'
 }
 
