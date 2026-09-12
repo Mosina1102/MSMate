@@ -6,22 +6,21 @@ const fs = require('fs')
 const https = require('https')
 
 const REPO = 'Mosina1102/MSMate'
-// 用法不变时默认发 2.7.19；后续版本：node test/upload-release-2718.js <exe> <blockmap> <版本号如 2.7.20>
-const VER = process.argv[4] || '2.7.19'
+// 用法：node test/upload-release-2718.js <exe路径> <blockmap路径> <版本号如 2.7.23>
+const VER = process.argv[4] || '2.7.23'
 const TAG = 'v' + VER
-const NAME = `MSMate ${TAG} · 识图升级+改稿工作流`
-const NOTES = `## 识图升级
-- 内置看图模型换 **Qwen3.8-27B**（原生视觉，稳定）——此前 PaddleOCR 免费档上游限流，识图经常网络错误
-- 计费透明：约 1~3 积分/次（450/1800 积分每百万 tokens）
+const NAME = `MSMate ${TAG} · 大文件传输修复`
+const NOTES = `## 修复大文件互传"假成功"
+- 修复传输超 10 秒会中途误报"上传完成"的问题（表现为读条到一半弹成功，对方收到的文件残缺且打不开）
+- 现在上传会等对方**真正写完盘**才提示成功，完整性端到端测试覆盖（128MB 校验和比对）
 
-## 改 Word 更稳（改稿工作流）
-- 改 C 盘文档（论文/报告等）不再原地覆盖：**自动转工作台「改稿」副本**，原文件全程不动留作对比参考
-- 副本上免审批多轮修改+自检，满意后一键写回原位（写回弹一次审批确认）
-- 多轮修改智能沿用同一副本，不丢进度
+## 新增接收端断流保护
+- 对方传输中途退出/断网时，本机 60 秒收不到数据会自动结束写入、解锁文件并提示失败
+- 此前这种情况文件会被系统锁死"点不开"，只能重启应用
 
-## 批款后台（服务端）
-- 手机竖屏适配修复 + 侧栏页签/按钮操作修复
-- 充值提醒加邮件兜底（ntfy 不通也通知到位）`
+## 其他
+- 已完成/失败的传输条目不再被迟到的进度帧打回中途百分比
+- 对方磁盘满/写入失败时立刻报错，不再假成功`
 
 const exePath = process.argv[2]
 const blockPath = process.argv[3]
