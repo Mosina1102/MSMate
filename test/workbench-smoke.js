@@ -2175,7 +2175,7 @@ console.log('— v2.4.82：钩子半残中毒修复（第二句话起永久瞎�
     ok(/sec\.paras = kept[\s\S]{0,400}sec\.kind = classifyTplSection\(sec\.paras, prevKind\)/.test(officeJs), '清洗后重判节类型（kind 重算）')
     ok(officeJs.includes('/^注\\s*意\\s*事\\s*项/') && officeJs.includes('本科毕业论文.{0,8}(原创性声明|版权使用授权书)'), '注意事项剔除（"定稿删除此页"不进产出，声明标题段才解禁）')
     ok(/题\\s\*目/.test(toolsJs) === false && toolsJs.includes('改论文格式禁用本工具'), 'apply_word_format desc 论文场景警示（防拿另一篇论文当参考）')
-    ok(readManual('论文排版.md').includes('校徽等封面图片、原创性声明/授权页自动迁入') && readManual('论文排版.md').includes('改论文格式必须走本工具'), 'apply_word_template desc 固化正确工作流 → 手册 论文排版.md')
+    ok(readManual('Word排版.md').includes('校徽等封面图片、原创性声明/授权页自动迁入') && readManual('Word排版.md').includes('改论文格式必须走本工具'), 'apply_word_template desc 固化正确工作流 → 手册 Word排版.md')
     // 真跑套模板测试（含真素材全链路；素材缺失 SKIP）
     const { execSync } = require('child_process')
     try {
@@ -2196,10 +2196,10 @@ console.log('— v2.4.82：钩子半残中毒修复（第二句话起永久瞎�
     ok(officeJs.includes('secOf') && officeJs.includes('secDefs'), 'issue 按板块归类（封面/摘要/关键词/目录/正文/参考文献）')
     // 板块存在性判定与 classifyTplSection 内容特征对齐（说明书式模板无排头不再漏检）
     ok(officeJs.includes('hasTocSection: tplTexts.some') && officeJs.includes("abstract: tplTexts.some((t) => /^摘\\s*要/.test(t) || /^关键词[:：]/.test(t))") && officeJs.includes('refs: tplTexts.some'), '模板板块判定内容特征对齐（摘要=排头 OR 关键词行；目录=排头 OR 条目≥3；refs=排头 OR [1][2]≥2）')
-    // 工作流 desc 固化（三个工具都写死分段循环）→ 手册 论文排版.md
-    ok(readManual('论文排版.md').includes('宁可多步不可做错') && readManual('论文排版.md').includes('六节全 ✓ 才算完成'), 'check_paper_format desc 分段循环工作流（正确 > 速度）→ 手册 论文排版.md')
-    ok(readManual('论文排版.md').includes('修一个板块复查一次') && readManual('论文排版.md').includes('禁止套完不验就交差'), 'apply_word_template desc 分段循环工作流 → 手册 论文排版.md')
-    ok(readManual('论文排版.md').includes('逐段提取模板格式') && readManual('论文排版.md').includes('✓ 才进下一段'), 'read_paper_spec desc 规范书=逐段格式依据 → 手册 论文排版.md')
+    // 工作流 desc 固化（三个工具都写死分段循环）→ 手册 Word排版.md
+    ok(readManual('Word排版.md').includes('宁可多步不可做错') && readManual('Word排版.md').includes('六节全 ✓ 才算完成'), 'check_paper_format desc 分段循环工作流（正确 > 速度）→ 手册 Word排版.md')
+    ok(readManual('Word排版.md').includes('修一个板块复查一次') && readManual('Word排版.md').includes('禁止套完不验就交差'), 'apply_word_template desc 分段循环工作流 → 手册 Word排版.md')
+    ok(readManual('Word排版.md').includes('逐段提取模板格式') && readManual('Word排版.md').includes('✓ 才进下一段'), 'read_paper_spec desc 规范书=逐段格式依据 → 手册 Word排版.md')
     const { execSync } = require('child_process')
     try {
       const out = execSync(`node "${path.join(ROOT, 'test', 'tpl-graft-test.js')}"`, { stdio: 'pipe', timeout: 300000, encoding: 'utf8', cwd: ROOT })
@@ -2207,7 +2207,7 @@ console.log('— v2.4.82：钩子半残中毒修复（第二句话起永久瞎�
     } catch (e) {
       ok(false, `套模板测试失败: ${(e.stdout || e.message).toString().slice(-150)}`)
     }
-    ok(pkg.version === '2.7.22', `package.json 版本 2.7.22（实际 ${pkg.version}）`)
+    ok(pkg.version === '2.7.23', `package.json 版本 2.7.23（实际 ${pkg.version}）`)
   }
 
   // ===== v2.6.0：工具手册化（渐进式披露：主规则瘦身，深度说明迁 ai/manuals 六册）=====
@@ -2219,7 +2219,7 @@ console.log('— v2.4.82：钩子半残中毒修复（第二句话起永久瞎�
     const mainjs2 = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8')
     // ① 手册七册落盘且非空
     const manualDir = path.join(ROOT, 'ai', 'manuals')
-    const manualNames = ['word文档.md', '论文排版.md', '表格.md', 'ppt文档.md', '图片视频.md', '设计.md', '网络下载.md', '跨设备协作.md']
+    const manualNames = ['word文档.md', 'Word排版.md', '表格.md', 'ppt文档.md', '图片视频.md', '设计.md', '网络下载.md', '跨设备协作.md']
     ok(manualNames.every((n) => { try { return fs.statSync(path.join(manualDir, n)).size > 2000 } catch { return false } }), '手册八册落盘且非空（>2KB，含 ppt文档/设计）')
     // ② TOOL_DEFS manual 字段计数（brief 瘦身 + 手册指向；行尾手册路径=双轨渲染）
     const manualCount = (toolsDef.match(/manual: '/g) || []).length

@@ -47,7 +47,7 @@
 ## 本册标准流程（原主规则 SOP 条目）
 
 - **写文档/报告/论文**：思考里先列内容大纲 → create_word（markdown 原样传 content；行内重点用 **加粗**/*斜体*/__下划线__/==高亮== 等写法；需要插图写 ![图注](图片路径) 行；**数据/对比/清单型信息必须写 markdown 表格行**（| 日期 | 天气 | 气温 |），会自动转成带主题底色的 Word 表格；关键结论用 callout 信息卡 {style:"callout",tone:...}；有主题色的传 theme:{accent:...}，正式的配 cover 封面；论文/正式报告加 toc:true + pageNumbers:true + header）→ 汇报完整路径和内容概要。**成品排版必须对齐你聊天回复的水准**：层级标题、加粗重点、列表引用一个不少，**大段数据不许裸奔**。
-- **论文/公文排版标准件**：用户要求论文格式、公文格式、双面打印规范时 → create_word 全套传：fonts:{heading:"黑体",body:"仿宋",western:"Times New Roman"}（或用户指定的字体）+ lineSpacing:1.5 + firstLine:true + cover:{title,subtitle,org,author,date} 封面页 + toc:true + pageNumbers:true。红头公文直接 theme:"gov"。字体参数用户没指定就按此默认，不必问。（按学校模板改论文格式另有专用闭环，见 论文排版.md）
+- **论文/公文排版标准件**：用户要求论文格式、公文格式、双面打印规范时 → create_word 全套传：fonts:{heading:"黑体",body:"仿宋",western:"Times New Roman"}（或用户指定的字体）+ lineSpacing:1.5 + firstLine:true + cover:{title,subtitle,org,author,date} 封面页 + toc:true + pageNumbers:true。红头公文直接 theme:"gov"。字体参数用户没指定就按此默认，不必问。（按学校模板改论文格式另有专用闭环，见 Word排版.md）
 - **文档排版**：用户要求排版/美化 Word 时 → read_word 读全文 → modify_word(mode=replace) 重写，段落用样式对象：{"text":"标题","style":"h1"}（支持 h1/h2/h3/bold/center/quote，普通段用字符串或 {"text":"..."}；单段可加 align/color/size/font 覆盖；表格用 markdown 行）。
 - **修改 C 盘已有文档（改稿闭环）**：modify_word 直接管原路径（工具自动转工作台「改稿」副本，原文件不动）→ read_word 自检副本 → 不满意继续改同一副本（禁止反复对原路径空转，会重复建副本丢进度）→ 满意后 copy_path(源=副本路径, 目标=原路径) 回写（弹一次审批，提前跟用户说"改好了，确认写回原文件"）→ 汇报：原文件路径 + 改了什么。全文对比参考 = 原文件一直在原位。
 

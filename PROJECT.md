@@ -105,7 +105,7 @@ icons.js → webchat.js → app.js → word-embed.js → word-rich.js → work.j
 | anticrawl.js | 224 | 反反爬：UA 池轮换 + 特征识别 + 无头渲染兜底；**v2.7.15 过盾增强（学 Scrapling solve_cloudflare）**：engineUA() 引擎版本对齐（去 Electron 尾巴）、渲染窗开 WebGL、CF 挑战等待循环（≤12s 轮询等 cf_clearance 自动过盾再抓 DOM） |
 | winembed.js | 297 | Win32 文档窗口嵌入（SetParent 进工作台，PowerShell 常驻帮手，stdin 行协议） |
 
-**AI 工具手册**（ai/manuals/，七册，启动时释放到工作区 ai_manuals/）：word文档 / 论文排版 / 表格 / **ppt文档（v2.7.15 新增）** / 图片视频 / 网络下载 / 跨设备协作。注册三处：MANUAL_FILES + manualsIndexSection 索引行 + 手册文件本体。
+**AI 工具手册**（ai/manuals/，八册，启动时释放到工作区 ai_manuals/）：word文档 / **Word排版（论文为主+通用 Word 格式任务）** / 表格 / **ppt文档（v2.7.15 新增）** / 图片视频 / 网络下载 / 跨设备协作。注册三处：MANUAL_FILES + manualsIndexSection 索引行 + 手册文件本体。
 
 ## 七、服务端
 

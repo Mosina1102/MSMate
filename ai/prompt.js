@@ -19,7 +19,7 @@ const fs = require('fs')
 const path = require('path')
 
 // ===== 工具手册（渐进式披露：主规则只留目录简述，深度说明按需 read_file；对标 Agent Skills 三层加载） =====
-const MANUAL_FILES = ['word文档.md', '论文排版.md', '表格.md', 'ppt文档.md', '图片视频.md', '设计.md', '网络下载.md', '跨设备协作.md']
+const MANUAL_FILES = ['word文档.md', 'Word排版.md', '表格.md', 'ppt文档.md', '图片视频.md', '设计.md', '网络下载.md', '跨设备协作.md']
 function manualsSourceDir() { return path.join(__dirname, 'manuals') }
 // 启动释放：把 asar/源码里的手册复制到工作区 ai_manuals/（每次启动覆盖，升级即更新）；失败不抛出，由调用方容错
 function releaseManualsTo(workspaceDir) {
@@ -45,7 +45,7 @@ function manualsIndexSection(manualsDir) {
   return `# 工具手册（按需详读，渐进式披露）
 手册目录：${manualsDir}（read_file 时拼成完整路径，如 ${manualsDir}\\word文档.md）
 - word文档.md —— 写/改/读 Word 与 PDF（create_word/read_word/modify_word/read_pdf/pdf_to_image），含排版铁律与版式蓝图
-- 论文排版.md —— 论文套学校模板闭环（read_paper_spec/apply_word_template/check_paper_format/apply_word_format/read_word_format）
+- Word排版.md —— Word 格式与论文排版总册（任务路由：纯改文字/纯改格式/双改/半成品修复/无模板场景；论文套学校模板闭环 read_paper_spec/apply_word_template/check_paper_format/apply_word_format/read_word_format；三级自检）
 - 表格.md —— Excel 与 Word 表格十件（create_table/format_word_table/edit_word_table/fix_paper_paging 等）
 - ppt文档.md —— PPT 演示文稿三件（create_pptx/read_pptx/edit_pptx），含大纲写法/配色清单/页型规划铁律
 - 图片视频.md —— 识图/截图/SVG转PNG/生图/生视频（view_image/screenshot/svg_to_png/generate_image/generate_video）
