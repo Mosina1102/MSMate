@@ -1012,10 +1012,39 @@ class TCPAgent extends EventEmitter {
       socket
     }
     this.transfers.set(transferId, transfer)
+    this._armReceiveStall(transfer)
 
     this.sendMsg(socket, 'file-upload-response', {
       success: true, destPath, offset
     }, requestId)
+  }
+
+  // 接收中断流保护：（重新）武装定时器。发送方进程暴毙/旧版 bug 中途掐流时分片会永远停，
+  // 写入句柄不关 → 文件被系统锁死"点不开"+ transfers 条目泄漏。
+  // 收不到任何新分片持续 60 秒（MSC_RECEIVE_STALL_MS 可调，测试用）即关流解锁：
+  // 已收到的分片保留（重传走断点续传），并回报发送方失败
+  _armReceiveStall(transfer) {
+    if (!transfer || transfer.type !== 'server-receive') return
+    const stallMs = parseInt(process.env.MSC_RECEIVE_STALL_MS || '60000', 10)
+    clearTimeout(transfer.stallTimer)
+    transfer.stallTimer = setTimeout(() => {
+      if (this.transfers.get(transfer.transferId) !== transfer) return
+      this.transfers.delete(transfer.transferId)
+      const logClosed = () => this.emit('log', `[接收] ${path.basename(transfer.destPath)} 传输中断（${Math.round(stallMs / 1000)} 秒无数据），已关闭写入并解锁文件，文件可能不完整`)
+      if (transfer.writeStream && !transfer.writeStream.destroyed) {
+        transfer.writeStream.end(logClosed)
+      } else {
+        logClosed()
+      }
+      try { this.sendMsg(transfer.socket, 'file-transfer-error', { transferId: transfer.transferId, error: '对方传输中断（长时间无数据），文件可能不完整' }) } catch {}
+    }, stallMs)
+  }
+
+  _clearReceiveStall(transfer) {
+    if (transfer && transfer.stallTimer) {
+      clearTimeout(transfer.stallTimer)
+      transfer.stallTimer = null
+    }
   }
 
   onTransferChunk(data) {
@@ -1038,10 +1067,12 @@ class TCPAgent extends EventEmitter {
           try {
             this.sendMsg(transfer.socket, 'file-transfer-error', { transferId, error: `对方写盘失败: ${err.message}` })
           } catch {}
+          this._clearReceiveStall(transfer)
           try { transfer.writeStream.destroy() } catch {}
           this.transfers.delete(transferId)
         })
       }
+      this._armReceiveStall(transfer)
       transfer.writeStream.write(chunkData)
       transfer.received += chunkData.length
 
@@ -1075,6 +1106,7 @@ class TCPAgent extends EventEmitter {
 
     if (transfer.type === 'server-receive') {
       // 等待文件写入磁盘完毕后再通知发送方，避免发送方刷新时文件尚未落盘
+      this._clearReceiveStall(transfer)
       const finishUpload = () => {
         if (transfer.socket) {
           this.sendMsg(transfer.socket, 'file-transfer-complete-ack', { transferId, success: true })
@@ -1109,6 +1141,7 @@ class TCPAgent extends EventEmitter {
   onTransferError(data) {
     this.emit('file-transfer-error', data)
     if (data.transferId) {
+      this._clearReceiveStall(this.transfers.get(data.transferId))
       this.transfers.delete(data.transferId)
     }
   }
@@ -1784,10 +1817,20 @@ class TCPAgent extends EventEmitter {
           done = true
           clearTimeout(ackTimeout)
           clearTimeout(hangTimeout)
+          this.removeListener('transfer-ack', onAck)
+          this.removeListener('file-transfer-error', onPeerError)
           try { readStream.destroy() } catch {}
           this.transfers.delete(transferId)
           fn()
         }
+
+        // 接收方写盘失败（磁盘满/权限/中断）的即时回报：立刻报错，绝不假装成功
+        const onPeerError = (d) => {
+          if (d && d.transferId === transferId) {
+            finish(() => reject(new Error(d.error || '对方接收失败')))
+          }
+        }
+        this.on('file-transfer-error', onPeerError)
 
         readStream.on('data', (chunk) => {
           const ok = this.sendMsgRaw(socket, 'file-transfer-chunk', chunk, transferId)
@@ -1809,7 +1852,14 @@ class TCPAgent extends EventEmitter {
 
         readStream.on('end', () => {
           this.sendMsg(socket, 'file-transfer-complete', { transferId, size: stats.size })
-          // 不立即 resolve，等待接收方写入完毕后回 ack，确保刷新时文件已落盘
+          // ⚠ 文件流全部发完才开始等 ack（此前定时器在上传一开始就启动，大文件传输超 10 秒
+          // 会在中途误报成功并掐断读取流 → 对方拿到残缺文件且写入句柄被锁死打不开，
+          // 实锤事故：2.7.22→2.7.11 传 188MB 安装包，进度 71% 弹"上传成功"）
+          // 对方是老版本不回 ack 时 10 秒兜底放行，不阻塞用户
+          ackTimeout = setTimeout(() => {
+            this.removeListener('transfer-ack', onAck)
+            finish(() => resolve({ success: true }))
+          }, 10000)
         })
 
         // 接收方写入完毕的 ack
@@ -1820,11 +1870,6 @@ class TCPAgent extends EventEmitter {
           }
         }
         this.on('transfer-ack', onAck)
-        // 超时兜底：10秒未收到 ack 仍然 resolve（不阻塞用户）
-        ackTimeout = setTimeout(() => {
-          this.removeListener('transfer-ack', onAck)
-          finish(() => resolve({ success: true }))
-        }, 10000)
 
         readStream.on('error', (err) => {
           finish(() => reject(err))

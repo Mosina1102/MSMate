@@ -2762,6 +2762,11 @@ function updateTransferProgress(data) {
   transfer.sent = data.sent
   transfer.total = data.total
   if (transfer.size === 0 && data.total) transfer.size = data.total
+  // 已完成/已失败的条目忽略迟到的进度帧，防止 100% 被传输中途的旧帧打回去（如 71%）
+  if (transfer.status === 'complete' || transfer.status === 'error') {
+    transfer.progress = transfer.status === 'complete' ? 100 : transfer.progress
+    return
+  }
   renderTransfers()
 }
 
