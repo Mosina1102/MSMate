@@ -1991,10 +1991,10 @@ function readBody(req, maxBytes) {
 // ─────────────────── 服务器 ───────────────────
 
 const LATEST = {
-  version: '2.7.18',
+  version: '2.7.19',
   url: 'https://github.com/Mosina1102/MSMate/releases/latest',
-  notes: 'AI 设计板块上线：海报/公众号封面/小红书卡片/简历邀请函，AI 写 HTML 排版渲染出图，中文文字零乱码可改稿；修复高画布渲染被屏幕裁切问题',
-  publishedAt: '2026-09-11'
+  notes: '识图升级：内置看图换 Qwen3.8-27B（原生视觉，不再动不动网络错误）；改 Word 更稳：C 盘文档自动转工作台副本改稿，原文件全程保留作对比，改完一键写回；批款后台手机竖屏适配+操作修复',
+  publishedAt: '2026-09-12'
 }
 
 const server = http.createServer(async (req, res) => {
