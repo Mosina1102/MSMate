@@ -6,21 +6,21 @@ const fs = require('fs')
 const https = require('https')
 
 const REPO = 'Mosina1102/MSMate'
-// 用法：node test/upload-release-2718.js <exe路径> <blockmap路径> <版本号如 2.7.24>
-const VER = process.argv[4] || '2.7.24'
+// 用法：node test/upload-release-2718.js <exe路径> <blockmap路径> <版本号如 2.7.25>
+const VER = process.argv[4] || '2.7.25'
 const TAG = 'v' + VER
-const NAME = `MSMate ${TAG} · PDF 合并拆分 + 素材零准备`
-const NOTES = `## 新增 PDF 合并 / 拆分
-- **merge_pdf**：多份 PDF 按顺序拼成一份（合同+附件、发票归档常用）
-- **split_pdf**：抽取指定页（支持 "3" / "2-5" / "1,3,5-7"）或整本逐页拆
-- 都不动源文件，输出已存在自动备份
+const NAME = `MSMate ${TAG} · 海报审美升级 + 下载修复`
+const NOTES = `## 海报审美大升级
+- 学官方 canvas-design / frontend-design 设计哲学：**先立美学方向再动手**，禁模板答案
+- 三种美学配方：玩梗**新丑风大字报**（满大撞+贴纸感）/ Editorial 编辑风 / Swiss 网格风
+- **AI 味黑名单**：圆头像+小框列表、四卡片堆数据、Word 思维居中对称——命中即重做
+- 自检加**审美关**：第一眼焦点 / 风格配对内容 / 敢不敢发朋友圈
 
-## 表格更可靠
-- 吸收官方 Excel 技能经验：**零公式错误**交付门槛、合计/占比**用公式不硬编码**（改输入自动重算）、改既有表格**惯例优先**不乱套样式
+## 下载修复
+- 修复下载图片"内容与扩展名不符"（镜像站 AVIF 伪装 .jpg 导致识图全拒）：落盘后按文件魔数自动校正扩展名，并明确提示换源
 
-## 素材零准备（核心卖点强化）
-- 做海报/卡片/PPT 时**不用再自己准备素材**：AI 自己上网找图、下载实景、生成插画、本地抠图去背景，一条龙合成
-- 设计手册明确"找图 → 抠图 → 排版渲染"全自动管线`
+## 更聪明
+- 陌生名词**先查后做**：梗/品牌/网络用语先搜清是什么再动手，不再望文生义`
 
 const exePath = process.argv[2]
 const blockPath = process.argv[3]
