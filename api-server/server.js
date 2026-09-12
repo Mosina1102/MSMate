@@ -1143,8 +1143,13 @@ async function proxyChatCompletions(req, res, user) {
   if (!meta) return json(res, 400, { ok: false, error: `模型不在内置清单：${model || '(空)'}` })
   const maxTokens = Math.min(8192, Math.max(1, +body.max_tokens || 8192))
   body.max_tokens = maxTokens
-  const stream = body.stream !== false
-  if (stream) body.stream_options = { include_usage: true }
+  // 只有显式 stream:true 才走流式（主对话客户端显式传了；view_image 等工具不传=非流式，
+  // 不能默认流式强转——老客户端拿到 SSE 解析不了，且只加 stream_options 不设 stream 会被上游 502）
+  const stream = body.stream === true
+  if (stream) {
+    body.stream = true
+    body.stream_options = { include_usage: true }
+  }
   const payload = JSON.stringify(body)
 
   // 预检：余额需覆盖"最坏全额输出"积分与 20 积分门槛的较小者

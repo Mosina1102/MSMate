@@ -1385,6 +1385,8 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
           ]
         }],
         max_tokens: 2048,
+        // 显式非流式：解析要整段 JSON（不传的话内置代理默认按流式强转，view_image 拿到的是 SSE 无法解析）
+        stream: false,
         // Qwen3.8 系默认开思考模式：识图不需要推理链，关掉省积分提速；上游不认该参数会忽略
         ...( /^Qwen\/Qwen3\.8/i.test(model) ? { enable_thinking: false } : {})
       })
