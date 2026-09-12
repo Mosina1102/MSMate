@@ -578,6 +578,23 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
     return true
   }
 
+  // 保护区（C 盘非工作台/桌面）文档改稿：把原文件复制到工作台「改稿」区，在副本上改。
+  // 工作流：原文件全程不动（对比参考+防改坏），副本免审批随便折腾，自检满意后再 copy_path 回原位。
+  // 副本智能复用：副本比原文件新 = 上次改稿会话的延续，直接沿用（多轮修改不丢进度）；
+  // 原文件更新 = 用户外部改过或上次已回写，重拷新起点。
+  function draftPathOf(p) { return path.join(workspaceDir, '改稿', path.basename(p)) }
+  function protectedDraftTarget(p) { try { return !!(isProtectedLocal(p) && fs.existsSync(p)) } catch { return false } }
+  function protectedDraftCopy(p) {
+    try {
+      if (!protectedDraftTarget(p)) return null
+      const draftPath = draftPathOf(p)
+      fs.mkdirSync(path.dirname(draftPath), { recursive: true })
+      if (fs.existsSync(draftPath) && fs.statSync(draftPath).mtimeMs >= fs.statSync(p).mtimeMs) return draftPath
+      fs.copyFileSync(p, draftPath)
+      return draftPath
+    } catch { return null }
+  }
+
   // 防自包含：目标与源相同，或目标在源目录内部（复制/移动会导致无限递归）
   function selfContainError(src, destPath) {
     const norm = (x) => path.normalize(String(x)).toLowerCase().replace(/[\\/]+$/, '')
@@ -762,10 +779,15 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
     }
     if (name === 'modify_word' || name === 'append_table_rows' || name === 'modify_table' || name === 'format_table') {
       const exists = await targetExists(args.path, target)
+      // C 盘保护区目标（仅 modify_word 已实现自动转工作台改稿副本）：审批按副本路径算——不再弹保护区审批
+      const draftMode = name === 'modify_word' && target === 'local' && exists && protectedDraftTarget(args.path)
+      const effPath = draftMode ? draftPathOf(args.path) : args.path
       return {
         destructive: exists,
-        note: exists ? `修改已有文件 ${args.path}（原文件会先备份）` : '目标文件不存在',
-        paths: target === 'local' ? [args.path] : []
+        note: draftMode
+          ? `修改 C 盘文档：自动转工作台改稿副本（${effPath}），原文件不动留作对比`
+          : (exists ? `修改已有文件 ${args.path}（原文件会先备份）` : '目标文件不存在'),
+        paths: target === 'local' ? [effPath] : []
       }
     }
     if (name === 'create_table') {
@@ -2009,6 +2031,24 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
           if (!fs.existsSync(args.path)) return { ok: false, message: `文件不存在：${args.path}。先用 create_word 创建，或用 search_files 找到它` }
           const blk = legacyDocWriteBlock(args.path)
           if (blk) return { ok: false, message: blk }
+          // C 盘保护区（用户文档区等）：不在原地改——自动转工作台「改稿」副本，原文件全程不动留作对比参考，
+          // 副本免审批随便改+自检；AI 确认无误后再 copy_path 回写原位（那一跳写用户目录，弹一次审批合理）
+          const draft = protectedDraftCopy(args.path)
+          if (draft) {
+            const snap = snapshots.backupLocal(draft)
+            if (!snap.ok) return { ok: false, message: `已取消修改：副本备份失败（${snap.reason}）` }
+            const result = await modifyDocx(draft, content, mode)
+            if (mode === 'edit' && !result.replaced) {
+              return { ok: false, message: `${describeEdit(result)}，副本未改动。可先 read_word 副本确认原文措辞` }
+            }
+            const what = mode === 'edit' ? describeEdit(result) : (mode === 'replace' ? '重写' : '追加')
+            return {
+              ok: true,
+              message: `原文件未动（留作对比参考）。已在工作台副本上完成${what}：${draft}（原文件：${args.path}）。流程：先 read_word 自检副本 → 有问题继续在副本上改 → 满意后用 copy_path 把 ${draft} 复制回 ${args.path}（写回用户目录会弹一次审批，向用户说明即可）`,
+              path: draft,
+              undo: { type: 'restore_snap', snapId: snap.id }
+            }
+          }
           const snap = snapshots.backupLocal(args.path)
           if (!snap.ok) return { ok: false, message: `已取消修改：原文件备份失败（${snap.reason}）` }
           const result = await modifyDocx(args.path, content, mode)

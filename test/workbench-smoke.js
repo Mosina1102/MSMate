@@ -2226,6 +2226,8 @@ console.log('— v2.4.82：钩子半残中毒修复（第二句话起永久瞎�
     ok(manualCount === 33, `TOOL_DEFS manual 字段计数 = 33（实际 ${manualCount}）`)
     ok(toolsDef.includes("manual: 'ppt文档'") && toolsDef.includes("name: 'create_pptx'") && toolsDef.includes("name: 'read_pptx'") && toolsDef.includes("name: 'edit_pptx'"), 'PPT 三件套注册（create_pptx/read_pptx/edit_pptx → 手册：ppt文档）')
     ok(toolsDef.includes('→ 手册：ai_manuals/'), 'buildToolPromptSection 双轨渲染（manual 工具行尾带手册路径）')
+    // ⑤ C 盘文档改稿工作流（modify_word 自动转工作台副本，原文件留作对比；classify 同步按副本路径免保护区审批）
+    ok(toolsDef.includes('protectedDraftCopy') && toolsDef.includes('draftPathOf') && toolsDef.includes("'改稿'") && toolsDef.includes('protectedDraftTarget'), 'modify_word C 盘改稿自动转工作台副本（helper+classify 双注册）')
     // ③ releaseManualsTo 真跑：释放到临时目录，6 册非空
     try {
       const { releaseManualsTo } = require(path.join(ROOT, 'ai/prompt.js'))
