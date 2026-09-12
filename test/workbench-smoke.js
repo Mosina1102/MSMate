@@ -670,7 +670,7 @@ console.log('— v2.4.76→77：工作台 AI 图片编辑器（画笔遮罩打�
   ok(mainjs.includes("ipcMain.handle('fs:read-file-base64'"), '主进程 IPC：base64 读取')
   ok(!mainjs.includes("ipcMain.handle('ai:image-edit'"), '旧 ai:image-edit 直连已删（v2.4.77：指令移对话框，AI 走 generate_image 编辑链路）')
   const tools = fs.readFileSync(path.join(ROOT, 'ai/tools.js'), 'utf8')
-  ok(tools.includes('module.exports = { createTools, resolveModelProvider, httpJson, httpDownload, extractArticleText, httpGet }'), 'tools 导出 httpJson/httpDownload 供主进程复用')
+  ok(tools.includes('module.exports = { createTools, resolveModelProvider, httpJson, httpDownload, extractArticleText, httpGet, sniffMagic }'), 'tools 导出 httpJson/httpDownload/sniffMagic 供主进程复用')
 }
 
 console.log('— v2.4.75：图片编辑模型（Qwen-Image-Edit，老大：改一张图+对话中反复修改） —')

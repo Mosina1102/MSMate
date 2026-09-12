@@ -111,7 +111,7 @@ const TOOL_DEFS = [
   { name: 'generate_image', params: 'prompt(画面描述/修改指令,越具体越好:主体/风格/构图/光线/色调), image(可选,要编辑/参考的图:本地路径或URL,数组1-3张多图合成), size(可选,仅生新图,"宽x高"如1024x1024), batch(可选,张数1-4), steps(可选,1-100默认30), save_path(可选,默认工作区「MSMate生成/图片」)', desc: 'AI 生图+编辑：不传 image=文生图；传 image=按指令改图保构图；2-3张=多图合成。画幅换算/对话式反复修改循环/遮罩黑区规则详见手册', manual: '图片视频' },
   { name: 'generate_video', params: 'prompt(视频内容描述,一句话说清主体+动作+场景+镜头感), save_path(可选,默认工作区「MSMate生成/视频」)', desc: 'AI 文生视频（模型在设置里配置）：约5秒短视频，耗时2-10分钟勿重复调用；多数模型可能产生费用，调用前先告知用户', manual: '图片视频' },
   { name: 'task_plan', params: 'items(建立/替换清单:字符串数组，每项一个具体动作), doing(标记进行中:序号或序号数组), done(标记完成:序号或序号数组)', desc: '任务清单（≥3步任务必用）：开工前建清单，每完成一项立刻打勾并标记下一项进行中；系统会把进度附在每步结果里，照着"下一步"提示继续干，全部打勾再收尾。⚠️ 打勾=该步实际验证成功；工具报错/失败=没完成，严禁打勾，如实汇报失败；也严禁跳步（第2步没完成不许先勾第2步）' },
-  { name: 'render_html', params: 'path(HTML完整路径), out(可选,输出png路径,默认同名.png), preset(可选画布:xhs=1080x1440小红书3:4/square=1080x1080微信分享/a4=1240x1754竖版海报/wide=2100x900横幅/wechat-cover=900x383公众号封面,默认a4), width/height(可选,像素,覆盖preset), scale(可选,1-4倍高清出图,默认1;高清用2且HTML按CSS尺寸写)', desc: 'HTML 渲染成 PNG（离屏窗口截图，中文/渐变/阴影完美）。设计工作流：write_file 写单文件 HTML（内嵌CSS按CSS尺寸写死）→ render_html → view_image 自检溢出/配色 → 改了重渲。海报/公众号封面/小红书卡片/简历/邀请函全靠它，设计原则详见手册', manual: '设计' }
+  { name: 'render_html', params: 'path(HTML完整路径), out(可选,输出png路径,默认同名.png), preset(可选画布:xhs=1080x1440小红书3:4/square=1080x1080微信分享/a4=1240x1754竖版海报/wide=2100x900横幅/wechat-cover=900x383公众号封面,默认a4), width/height(可选,像素,覆盖preset), scale(可选,1-4倍高清出图,默认1;高清用2且HTML按CSS尺寸写)', desc: 'HTML 渲染成 PNG（离屏窗口截图，中文/渐变/阴影完美）。⚠首次使用必须先 read_file 手册（设计.md）：先定美学方向+备素材三路再写 HTML，禁模板答案。设计工作流：定方向 → 备素材 → write_file 写单文件 HTML（内嵌CSS按CSS尺寸写死）→ render_html → view_image 过功能关+审美关 → 改了重渲。海报/公众号封面/小红书卡片/简历/邀请函全靠它', manual: '设计' }
 ]
 
 function buildToolPromptSection() {
@@ -324,6 +324,26 @@ function fileNameFromUrl(u) {
     if (base && /\.[A-Za-z0-9]{1,8}$/.test(base)) return base.replace(/[\\/:*?"<>|]/g, '_')
   } catch {}
   return ''
+}
+
+// 文件魔数 → 真实扩展名（download_file 落盘后校正"AVIF 伪装 .jpg"之类的骗术，防识图/读取全拒）
+function sniffMagic(file) {
+  try {
+    const fd = fs.openSync(file, 'r')
+    const buf = Buffer.alloc(16)
+    fs.readSync(fd, buf, 0, 16, 0)
+    fs.closeSync(fd)
+    const s = (i, str) => str.split('').every((ch, k) => buf[i + k] === ch.charCodeAt(0))
+    if (buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) return { ext: 'jpg' }
+    if (buf[0] === 0x89 && s(1, 'PNG')) return { ext: 'png' }
+    if (s(0, 'GIF8')) return { ext: 'gif' }
+    if (buf.length >= 12 && s(8, 'WEBP')) return { ext: 'webp' }
+    if (buf.length >= 12 && s(4, 'ftypavif')) return { ext: 'avif' }
+    if (buf.length >= 12 && s(4, 'ftyp')) return { ext: 'mp4' }
+    if (s(0, '%PDF')) return { ext: 'pdf' }
+    if (buf[0] === 0x50 && buf[1] === 0x4B) return { ext: 'zip' }
+  } catch {}
+  return null
 }
 
 // 模型抠链接常把 markdown 反引号/引号/尖括号带进来，统一剥掉
@@ -2990,6 +3010,18 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
             try { if (fs.existsSync(renamed)) fs.unlinkSync(renamed); fs.renameSync(outPath, renamed); finalPath = renamed } catch {}
           }
         }
+        // 魔数嗅探：内容与扩展名不符时按真实格式改名（镜像站常把 AVIF 伪装成 .jpg，导致识图/读取全拒）
+        let magicNote = ''
+        try {
+          const sniff = sniffMagic(finalPath)
+          if (sniff && !finalPath.toLowerCase().endsWith('.' + sniff.ext)) {
+            const fixed = finalPath.replace(/\.[^.\\/]*$/, '') + '.' + sniff.ext
+            try { if (fs.existsSync(fixed)) fs.unlinkSync(fixed); fs.renameSync(finalPath, fixed); finalPath = fixed } catch {}
+            magicNote = sniff.ext === 'avif'
+              ? '。⚠ 文件实际是 AVIF 格式（扩展名已按内容修正），识图工具不支持 AVIF——建议换 jpg/png 图源重新下载，或用 generate_image 生成'
+              : `。⚠ 文件实际是 ${sniff.ext.toUpperCase()} 格式，扩展名已按内容修正`
+          }
+        } catch {}
         const size = fs.statSync(finalPath).size
         const sizeText = size > 1048576 ? `${(size / 1048576).toFixed(1)} MB` : `${(size / 1024).toFixed(1)} KB`
         const warn = isExec ? '。可执行文件已下载，运行前建议用户自行确认安全性' : ''
@@ -2997,7 +3029,7 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
         emitDownload({ type: 'end', id: dlId, ok: true, fileName: path.basename(finalPath), size })
         return {
           ok: true,
-          message: `已下载 ${path.basename(finalPath)}（${sizeText}，类型 ${contentType.split(';')[0] || '未知'}）→ ${finalPath}${warn}`,
+          message: `已下载 ${path.basename(finalPath)}（${sizeText}，类型 ${contentType.split(';')[0] || '未知'}）→ ${finalPath}${magicNote}${warn}`,
           undo: snap && snap.ok ? { type: 'restore_snap', snapId: snap.id } : { type: 'delete_local', path: finalPath }
         }
       } catch (err) {
@@ -3690,4 +3722,4 @@ function resolveMsmateProvider(getSetting) {
   } catch { return null }
 }
 
-module.exports = { createTools, resolveModelProvider, httpJson, httpDownload, extractArticleText, httpGet }
+module.exports = { createTools, resolveModelProvider, httpJson, httpDownload, extractArticleText, httpGet, sniffMagic }
