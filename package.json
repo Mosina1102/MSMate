@@ -3,8 +3,74 @@
   "version": "2.7.19",
   "description": "MSMate - 局域网互联 + 内置 AI 电脑助手",
   "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder --win nsis",
+    "build:dir": "electron-builder --win dir",
+    "build:installer": "electron-builder --win nsis"
+  },
   "author": "LAN Transfer Team",
   "license": "MIT",
+  "devDependencies": {
+    "electron": "^22.3.27",
+    "electron-builder": "^24.9.1",
+    "jsdom": "^30.0.1",
+    "lucide-static": "^1.42.0"
+  },
+  "build": {
+    "appId": "com.ms.interconnect",
+    "productName": "MSMate",
+    "copyright": "Copyright © 2026",
+    "directories": {
+      "output": "release_build_v2715",
+      "buildResources": "assets"
+    },
+    "artifactName": "${productName}.Setup.${version}.${ext}",
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "server/**/*",
+      "ai/**/*",
+      "assets/**/*"
+    ],
+    "asarUnpack": [
+      "preload.js"
+    ],
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "include": "assets/installer.nsh",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "MSMate",
+      "menuCategory": true,
+      "perMachine": false,
+      "allowElevation": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "extraMetadata": {
+      "main": "main.js"
+    },
+    "electronDownload": {
+      "mirror": "https://cdn.npmmirror.com/binaries/electron/"
+    }
+  },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
     "docx": "^9.7.1",
