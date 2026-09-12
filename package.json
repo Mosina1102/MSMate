@@ -1,6 +1,6 @@
 {
   "name": "ms-interconnect",
-  "version": "2.7.23",
+  "version": "2.7.24",
   "description": "MSMate - 局域网互联 + 内置 AI 电脑助手",
   "main": "main.js",
   "scripts": {
@@ -82,6 +82,7 @@
     "linkedom": "^0.18.13",
     "mammoth": "^1.12.2",
     "onnxruntime-node": "^1.29.0",
+    "pdf-lib": "^1.17.1",
     "pdf-parse": "^1.1.1",
     "pptxgenjs": "^4.0.1",
     "selfsigned": "^5.5.0"

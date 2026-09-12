@@ -2001,10 +2001,10 @@ function readBody(req, maxBytes) {
 // ─────────────────── 服务器 ───────────────────
 
 const LATEST = {
-  version: '2.7.23',
+  version: '2.7.24',
   url: 'https://github.com/Mosina1102/MSMate/releases/latest',
-  notes: '修复大文件互传假成功：传输超 10 秒会中途误报"上传完成"导致对方文件残缺且打不开（读条 71% 弹成功事故）；新增接收端断流保护，发送方中断后自动解锁文件；传输完整性端到端测试覆盖',
-  publishedAt: '2026-09-12'
+  notes: '新增 PDF 合并/拆分工具（merge_pdf/split_pdf，抽页拆章节不动源文件）；表格手册吸收官方 Excel 技能经验（零公式错误门槛/用公式不硬编码/既有格式惯例优先）；设计手册与组合手册强化"素材零准备"一体化：找图/生图/抠图全自动，用户无需自备素材',
+  publishedAt: '2026-09-13'
 }
 
 const server = http.createServer(async (req, res) => {

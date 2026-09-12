@@ -12,6 +12,9 @@ const { createDocx, readDocxText, readPdfText, parseWordComments, parseWordForma
 let JSZip
 try { JSZip = require('jszip') } catch {}
 
+let PDFLib
+try { PDFLib = require('pdf-lib') } catch {}
+
 const READ_LIMIT = 64 * 1024          // read_file 单段最大返回字节数（大文件自动分段）
 
 // 旧版对端提示：未上报 appVersion = 旧版本（接收端缺少稳定性修复，可能卡死/崩溃）
@@ -72,6 +75,8 @@ const TOOL_DEFS = [
   { name: 'read_word', params: 'path(docx完整路径), seg(可选,第几段,长文档分段逐段读), target(可选)', desc: '读 Word 文字内容，自动带出批注。超5000字自动分段防幻觉，逐段传 seg 读，禁止一次读完长文档', manual: 'word文档' },
   { name: 'read_pdf', params: 'path(pdf完整路径), target(可选)', desc: '读 PDF 文字内容（文本层提取）。返回"没有文本层"=扫描件/图片型，改用 pdf_to_image 转图后逐张 view_image 读', manual: 'word文档' },
   { name: 'pdf_to_image', params: 'path(pdf完整路径), pages(可选,默认前10页), target(可选)', desc: '把 PDF 每页渲染成 PNG 存工作区返回路径清单。扫描件 PDF 转图后逐张 view_image 读；也用于看 PDF 版面/表格结构', manual: 'word文档' },
+  { name: 'merge_pdf', params: 'paths(多个pdf完整路径,数组或分号分隔,按此顺序合并), out(可选,输出路径,默认第一个文件旁"原名-合并.pdf")', desc: '合并多个 PDF 为一个（保持页序）。合同/发票/报告拼接收尾常用', manual: 'word文档' },
+  { name: 'split_pdf', params: 'path(pdf完整路径), pages(可选:"3"单页/"2-5"范围/"1,3,5-7"组合/留空=逐页拆), out(可选:提取模式=输出文件路径;逐页模式=输出文件夹,默认源文件旁)', desc: '从 PDF 提取指定页生成新 PDF，或整本逐页拆成多个单页 PDF。抽发票页/拆章节常用', manual: 'word文档' },
   { name: 'read_word_format', params: 'path(docx完整路径), mode(可选,默认fingerprint格式指纹;full=逐段全量)', desc: '解析 Word 完整格式（字体/字号/行距/缩进/页边距等），样式级联已折算成每段实际生效格式。参考 A 改 B 的工作流详见手册', manual: 'Word排版' },
   { name: 'read_paper_spec', params: 'path(格式模板docx完整路径), target(可选)', desc: '把学校论文格式模板蒸馏成几百字"格式规范书"（页面设置/各角色格式/批注规则/红字原文）。论文套模板闭环第一步，禁止 read_word 模板全文', manual: 'Word排版' },
   { name: 'check_paper_format', params: 'path(套模板后的产出docx完整路径), templatePath(格式模板docx完整路径), target(可选)', desc: '论文产出体检：对照模板规范书逐项检查，返回逐节对照进度表（六节 ✓/✗）+ issue 清单。分段循环：一节 ✓ 才进下一节，禁止套完不验就交差', manual: 'Word排版' },
@@ -783,6 +788,21 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       const outP = args.out ? path.resolve(String(args.out)) : String(args.path || '').replace(/\.[^.]+$/, '') + '-抠图.png'
       const exists = outP && fs.existsSync(outP)
       return { destructive: exists, note: exists ? `覆盖已有抠图 ${outP}` : '生成透明底抠图（新文件）', paths: [outP] }
+    }
+    if (name === 'merge_pdf' || name === 'split_pdf') {
+      let out = String(args.out || '').trim()
+      const isDirMode = name === 'split_pdf' && !String(args.pages || '').trim()
+      if (!out && name === 'merge_pdf') {
+        const first = Array.isArray(args.paths) ? args.paths[0] : String(args.paths || '').split(/[;；]/)[0]
+        out = String(first || '').trim().replace(/\.pdf$/i, '') + '-合并.pdf'
+      }
+      if (!out && name === 'split_pdf' && args.path) out = String(args.path).replace(/\.pdf$/i, '') + '-页.pdf'
+      const exists = out ? fs.existsSync(out) : false
+      return {
+        destructive: exists,
+        note: isDirMode ? '逐页拆分到新文件夹（不改原文件）' : (exists ? `覆盖已有 PDF ${out}（原文件会先备份）` : '生成新 PDF（不改原文件）'),
+        paths: []
+      }
     }
     if (name === 'modify_word' || name === 'append_table_rows' || name === 'modify_table' || name === 'format_table') {
       const exists = await targetExists(args.path, target)
@@ -2989,6 +3009,116 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
     },
 
     // ===== 压缩/解压（本地）=====
+    async merge_pdf(args) {
+      if (!PDFLib) return { ok: false, message: 'PDF 组件不可用（pdf-lib 未安装完整），请重装应用' }
+      let paths = Array.isArray(args.paths) ? args.paths : String(args.paths || '').split(/[;；]/)
+      paths = paths.map((p) => String(p || '').trim()).filter(Boolean)
+      if (paths.length < 2) return { ok: false, message: '至少需要 2 个 PDF（paths 传数组或分号分隔）' }
+      for (const p of paths) {
+        if (!/\.pdf$/i.test(p)) return { ok: false, message: `不是 PDF 文件: ${p}` }
+        if (!fs.existsSync(p)) return { ok: false, message: `文件不存在: ${p}` }
+        if (isProtectedLocal(p)) return { ok: false, message: `拒绝：${p} 在 C 盘保护区` }
+      }
+      let out = String(args.out || '').trim() || paths[0].replace(/\.pdf$/i, '') + '-合并.pdf'
+      if (!/\.pdf$/i.test(out)) out += '.pdf'
+      if (isProtectedLocal(out)) return { ok: false, message: '拒绝：输出路径在 C 盘保护区' }
+      try {
+        const merged = await PDFLib.PDFDocument.create()
+        let srcPages = 0
+        for (const p of paths) {
+          const src = await PDFLib.PDFDocument.load(fs.readFileSync(p), { ignoreEncryption: true })
+          const pages = await merged.copyPages(src, src.getPageIndices())
+          pages.forEach((pg) => merged.addPage(pg))
+          srcPages += pages.length
+        }
+        const bytes = await merged.save()
+        const existed = fs.existsSync(out)
+        let snapId = null
+        if (existed) {
+          const snap = snapshots.backupLocal(out)
+          if (!snap.ok) return { ok: false, message: `输出文件已存在且备份失败（${snap.reason}），已取消` }
+          snapId = snap.id
+        }
+        fs.mkdirSync(path.dirname(out), { recursive: true })
+        fs.writeFileSync(out, bytes)
+        return {
+          ok: true,
+          message: `已合并 ${paths.length} 个 PDF（共 ${srcPages} 页，按传入顺序）→ ${out}（${fmtSize(bytes.length)}）`,
+          undo: existed ? { type: 'restore_snap', snapId } : { type: 'delete_local', path: out }
+        }
+      } catch (err) {
+        return { ok: false, message: `合并失败: ${err.message}${/encrypt/i.test(err.message) ? '（PDF 已加密，需先解密后再合并）' : ''}` }
+      }
+    },
+
+    async split_pdf(args) {
+      if (!PDFLib) return { ok: false, message: 'PDF 组件不可用（pdf-lib 未安装完整），请重装应用' }
+      const srcPath = String(args.path || '')
+      if (!srcPath) return { ok: false, message: '缺少 path（pdf 完整路径）' }
+      if (!/\.pdf$/i.test(srcPath)) return { ok: false, message: '不是 PDF 文件' }
+      if (!fs.existsSync(srcPath)) return { ok: false, message: '文件不存在' }
+      if (isProtectedLocal(srcPath)) return { ok: false, message: '拒绝：源在 C 盘保护区' }
+      try {
+        const srcDoc = await PDFLib.PDFDocument.load(fs.readFileSync(srcPath), { ignoreEncryption: true })
+        const total = srcDoc.getPageCount()
+        const base = path.basename(srcPath, '.pdf')
+        const pagesSpec = String(args.pages || '').trim()
+        if (!pagesSpec) {
+          // 逐页拆：out 作为输出文件夹（默认源文件旁 base-逐页/）
+          const outDir = String(args.out || '').trim() || path.join(path.dirname(srcPath), base + '-逐页')
+          if (isProtectedLocal(outDir)) return { ok: false, message: '拒绝：输出目录在 C 盘保护区' }
+          fs.mkdirSync(outDir, { recursive: true })
+          const files = []
+          for (let i = 1; i <= total; i++) {
+            const single = await PDFLib.PDFDocument.create()
+            const [pg] = await single.copyPages(srcDoc, [i - 1])
+            single.addPage(pg)
+            const fp = path.join(outDir, `${base}-第${i}页.pdf`)
+            fs.writeFileSync(fp, await single.save())
+            files.push(fp)
+          }
+          return { ok: true, message: `已逐页拆分 ${total} 页 → ${outDir}（${base}-第1页.pdf ~ 第${total}页.pdf）`, paths: files }
+        }
+        // 提取模式：解析页码 "3" / "2-5" / "1,3,5-7"（1 起）
+        const sel = new Set()
+        for (const part of pagesSpec.split(/[,，]/)) {
+          const t = part.trim()
+          if (!t) continue
+          const m = t.match(/^(\d+)\s*[-—~]\s*(\d+)$/)
+          if (m) { for (let i = +m[1]; i <= +m[2]; i++) sel.add(i) }
+          else if (/^\d+$/.test(t)) sel.add(+t)
+          else return { ok: false, message: `页码写法不认识: "${t}"（支持 3 / 2-5 / 1,3,5-7）` }
+        }
+        const list = [...sel].sort((a, b) => a - b)
+        if (!list.length) return { ok: false, message: '没解析出任何页码' }
+        const over = list.filter((n) => n > total)
+        if (over.length) return { ok: false, message: `页码超出范围（本文档共 ${total} 页）: ${over.join(',')}` }
+        let out = String(args.out || '').trim() || srcPath.replace(/\.pdf$/i, '') + `-第${list[0]}${list.length > 1 ? '-' + list[list.length - 1] : ''}页.pdf`
+        if (!/\.pdf$/i.test(out)) out += '.pdf'
+        if (isProtectedLocal(out)) return { ok: false, message: '拒绝：输出路径在 C 盘保护区' }
+        const single = await PDFLib.PDFDocument.create()
+        const pgs = await single.copyPages(srcDoc, list.map((n) => n - 1))
+        pgs.forEach((pg) => single.addPage(pg))
+        const bytes = await single.save()
+        const existed = fs.existsSync(out)
+        let snapId = null
+        if (existed) {
+          const snap = snapshots.backupLocal(out)
+          if (!snap.ok) return { ok: false, message: `输出文件已存在且备份失败（${snap.reason}），已取消` }
+          snapId = snap.id
+        }
+        fs.mkdirSync(path.dirname(out), { recursive: true })
+        fs.writeFileSync(out, bytes)
+        return {
+          ok: true,
+          message: `已提取 ${list.length} 页（第 ${list.join(',')} 页，源共 ${total} 页）→ ${out}（${fmtSize(bytes.length)}）`,
+          undo: existed ? { type: 'restore_snap', snapId } : { type: 'delete_local', path: out }
+        }
+      } catch (err) {
+        return { ok: false, message: `拆分失败: ${err.message}${/encrypt/i.test(err.message) ? '（PDF 已加密，需先解密后再拆）' : ''}` }
+      }
+    },
+
     async zip_compress(args) {
       if (!JSZip) return { ok: false, message: '压缩组件不可用' }
       let srcs = Array.isArray(args.src) ? args.src : [args.src]
@@ -3345,7 +3475,7 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
   }
 
   // 结构化数组参数白名单：这些参数本来就是数组语义（批量/表格行/样式组），不受"参数别传数组"护栏拦截
-  const STRUCTURAL_ARRAY_PARAMS = new Set(['src', 'headers', 'rows', 'styles', 'merges', 'sheets', 'paragraphs', 'replacements', 'cells', 'questions'])
+  const STRUCTURAL_ARRAY_PARAMS = new Set(['src', 'headers', 'rows', 'styles', 'merges', 'sheets', 'paragraphs', 'replacements', 'cells', 'questions', 'paths'])
 
   async function execute(name, args) {
     const fn = impl[name]
@@ -3501,6 +3631,8 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       case 'open_path': return `打开 ${args.path}`
       case 'zip_compress': return `压缩打包 → ${args.zip_path}`
       case 'zip_extract': return `解压 ${args.zip_path}`
+      case 'merge_pdf': return `合并 PDF（${Array.isArray(args.paths) ? args.paths.length : String(args.paths || '').split(/[;；]/).length} 个）`
+      case 'split_pdf': return args.pages ? `提取 PDF 第 ${args.pages} 页` : '逐页拆分 PDF'
       case 'delegate': return `委派子任务：${args.title || String(args.task || '').slice(0, 30)}`
       case 'ask_user': return `向用户提问：${String((args.questions && args.questions[0] && args.questions[0].question) || '').slice(0, 40)}`
       default: return `${t}${name}`
