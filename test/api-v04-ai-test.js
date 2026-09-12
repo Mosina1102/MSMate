@@ -43,8 +43,9 @@ async function main() {
   const models = await jreq('/v1/ai/models')
   check('模型清单 6 对话(含 2 个 visionOnly) + 2 生图 + TTS + ASR',
     models.code === 200 && models.j.chat.length === 6 && models.j.chat.filter(c => c.visionOnly).length === 2 && models.j.image.length === 2 && models.j.tts.id && models.j.asr.id, models.j)
-  check('识图默认 Qwen3.8-27B（450/1800 积分每百万 tokens）',
-    models.j.chat.some(c => c.id === 'Qwen/Qwen3.8-27B' && c.vision && c.visionOnly && c.creditsPerMTokIn === 450 && c.creditsPerMTokOut === 1800), models.j.chat)
+  check('识图模型：Qwen3.6-35B-A3B 带视觉标记（MoE 秒级默认）+ Qwen3.8-27B 高清备选',
+    models.j.chat.some(c => c.id === 'Qwen/Qwen3.6-35B-A3B' && c.vision && c.creditsPerMTokIn === 270 && c.creditsPerMTokOut === 1620)
+    && models.j.chat.some(c => c.id === 'Qwen/Qwen3.8-27B' && c.vision && c.visionOnly), models.j.chat)
 
   // 2. 未登录 401
   const noAuth = await jreq('/v1/ai/openai/chat/completions', { method: 'POST', body: { model: 'x' } })

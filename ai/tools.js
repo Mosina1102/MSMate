@@ -64,7 +64,7 @@ const TOOL_DEFS = [
   { name: 'rename_path', params: 'path(原路径), new_name(新名称,仅文件名), target(可选)', desc: '重命名文件/文件夹' },
   { name: 'delete_path', params: 'path(路径), target(可选)', desc: '删除文件或文件夹。会先自动备份到快照缓存槽' },
   { name: 'search_files', params: 'dir(搜索起始目录), keyword(关键词), target(可选)', desc: '按名称搜索文件：本机含全部子目录递归搜；远程设备仅搜该目录一层，子目录需先 list_dir 再逐层搜' },
-  { name: 'view_image', params: 'path(图片完整路径), question(可选,按用户意图写:想知道画面内容写"描述图片内容",要文字写"完整转录图中文字")', desc: '看图识图：分析本机图片（截图/照片/文档/表格），返回内容描述或文字转录。png/jpg/jpeg/webp/gif/bmp，≤20MB。远程图片先 transfer_file 拉到本机再看', manual: '图片视频' },
+  { name: 'view_image', params: 'path(单图完整路径) 或 paths(多图路径数组,一次识多张更快,最多6张), question(可选,按用户意图写:想知道画面内容写"描述图片内容",要文字写"完整转录图中文字")', desc: '看图识图：分析本机图片（截图/照片/文档/表格），返回内容描述或文字转录。**多张图验证/对比场景必用 paths 一次传**（单请求总耗时≈单张，逐张调会慢好几倍）。png/jpg/jpeg/webp/gif/bmp，≤20MB 自动压缩。默认 Qwen3.6-35B-A3B（MoE 秒级）。远程图片先 transfer_file 拉到本机再看', manual: '图片视频' },
   { name: 'screenshot', params: 'scope(可选,默认webview:webview=工作台网页视图/app=应用窗口/screen=整屏), path(可选,保存路径), minimizeSelf(可选,bool,仅screen生效,默认true)', desc: '截图本机，**只截图不分析**——返回保存路径，要看内容再调 view_image。用户问"看看我屏幕/桌面上有啥"先 scope:"screen" 截全屏再看，禁止空想回答', manual: '图片视频' },
   { name: 'update_notes', params: 'mode(append=追加一条记录(默认)/read=查看现在记了什么/replace=整本重写(慎用)), content(append/replace 时的内容，markdown，一行一条)', desc: '读写大记事本（工作台 NOTES.md，全局长期记忆，所有对话共享）：用户说"记住XX/以后都XX/我喜欢XX"就 append 一条（带日期前缀）；用户问"你记了什么"用 read；重要习惯/偏好/常用路径/项目背景都值得记，但只记长期有效的信息（一次性任务不要记）' },
   { name: 'create_word', params: 'path(docx完整路径), title(文档标题), content(markdown正文:标题/加粗/列表/插图/表格行自动排版), paragraphs(可选,段落数组替代content), header/footer/pageNumbers/toc/theme/fonts/lineSpacing/firstLine/cover/tocLevels(可选,详见手册), target(可选)', desc: '创建 Word 文档(.docx)，markdown 一键排版。排版铁律（数据必须表格化/结论用callout）、插图大小对齐控制、版式蓝图先行详见手册', manual: 'word文档' },
@@ -1313,43 +1313,53 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
     },
 
     async view_image(args) {
-      if (!args.path) return { ok: false, message: '缺少 path（图片完整路径）' }
-      const ext = path.extname(args.path).toLowerCase()
+      // 多图模式：paths 数组一次请求识多张（单请求总耗时≈单张，素材批量验证必用以省时）；兼容单图 path
+      const list = (Array.isArray(args.paths) ? args.paths : (typeof args.paths === 'string' ? args.paths.split(/[;\n]/) : [])).map((p) => String(p || '').trim()).filter(Boolean)
+      const files = [...new Set(list.length ? list : (args.path ? [String(args.path)] : []))]
+      if (!files.length) return { ok: false, message: '缺少 path（单图完整路径）或 paths（多图路径数组，一次识多张更快）' }
+      if (files.length > 6) return { ok: false, message: `一次最多 6 张（收到 ${files.length} 张，图太多 token 爆炸），分批来` }
       const MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp' }
-      if (!MIME[ext]) return { ok: false, message: `不支持的图片格式：${ext || '无扩展名'}（支持 png/jpg/jpeg/webp/gif/bmp）` }
-      let buf
-      try { buf = fs.readFileSync(args.path) } catch { return { ok: false, message: `图片不存在或无法读取：${args.path}` } }
-      if (buf.length > 20 * 1024 * 1024) return { ok: false, message: '图片超过 20MB，请先压缩或裁剪' }
-      if (buf.length < 100) return { ok: false, message: '文件太小，可能不是有效图片' }
-      // 图片魔数校验：扩展名对但内容不对（改名文件/损坏文件/网页另存失败）早点说清，别让视觉模型对着乱码幻觉
-      const magicOk =
-        (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) ||                    // jpeg
-        (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) || // png
-        (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) ||                    // gif
-        (buf[0] === 0x42 && buf[1] === 0x4d) ||                                       // bmp
-        (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[8] === 0x57)    // webp(RIFF...WEBP)
-      if (!magicOk) return { ok: false, message: `这个文件不是有效图片（内容与扩展名 ${ext} 不符，可能是改名文件/下载失败的网页/损坏文件）。建议：重新截图或重新下载后再试` }
-      let mime = MIME[ext]
-      // 大图自动压缩：>1MB 就用 Electron 自带 nativeImage 缩到长边 1800 转 JPEG（不加依赖；plain node 测试环境没有 nativeImage，自动跳过用原图）。
-      // 识图不需要原始分辨率：桌面原图 PNG 常 2-5MB/几千 px，直发上游处理上万 tokens 轻松超 60s（实测踩雷），压后几百 KB 秒级返回
-      if (buf.length > 1024 * 1024) {
-        try {
-          const electron = require('electron')
-          const nativeImage = electron && electron.nativeImage
-          if (nativeImage) {
-            const img = nativeImage.createFromBuffer(buf)
-            if (!img.isEmpty()) {
-              const size = img.getSize()
-              const long = Math.max(size.width, size.height)
-              const resized = long > 1800
-                ? img.resize({ width: Math.round(size.width * 1800 / long), height: Math.round(size.height * 1800 / long) })
-                : img
-              const jpeg = resized.toJPEG(82)
-              if (jpeg && jpeg.length > 0 && jpeg.length < buf.length) { buf = jpeg; mime = 'image/jpeg' }
+      const images = []
+      const skipped = []
+      for (const p of files) {
+        const ext = path.extname(p).toLowerCase()
+        if (!MIME[ext]) { skipped.push(`${path.basename(p)}（格式 ${ext || '无扩展名'} 不支持）`); continue }
+        let buf
+        try { buf = fs.readFileSync(p) } catch { skipped.push(`${path.basename(p)}（不存在或无法读取）`); continue }
+        if (buf.length > 20 * 1024 * 1024) { skipped.push(`${path.basename(p)}（超 20MB）`); continue }
+        if (buf.length < 100) { skipped.push(`${path.basename(p)}（文件太小，可能不是图片）`); continue }
+        // 图片魔数校验：扩展名对但内容不对（改名文件/损坏文件/网页另存失败）早点说清，别让视觉模型对着乱码幻觉
+        const magicOk =
+          (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) ||                    // jpeg
+          (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) || // png
+          (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) ||                    // gif
+          (buf[0] === 0x42 && buf[1] === 0x4d) ||                                       // bmp
+          (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[8] === 0x57)    // webp(RIFF...WEBP)
+        if (!magicOk) { skipped.push(`${path.basename(p)}（内容与扩展名不符，损坏或改名文件）`); continue }
+        let mime = MIME[ext]
+        // 大图自动压缩：>1MB 就用 Electron 自带 nativeImage 缩到长边 1800 转 JPEG（不加依赖；plain node 测试环境没有 nativeImage，自动跳过用原图）。
+        // 识图不需要原始分辨率：桌面原图 PNG 常 2-5MB/几千 px，直发上游处理上万 tokens 轻松超 60s（实测踩雷），压后几百 KB 秒级返回
+        if (buf.length > 1024 * 1024) {
+          try {
+            const electron = require('electron')
+            const nativeImage = electron && electron.nativeImage
+            if (nativeImage) {
+              const img = nativeImage.createFromBuffer(buf)
+              if (!img.isEmpty()) {
+                const size = img.getSize()
+                const long = Math.max(size.width, size.height)
+                const resized = long > 1800
+                  ? img.resize({ width: Math.round(size.width * 1800 / long), height: Math.round(size.height * 1800 / long) })
+                  : img
+                const jpeg = resized.toJPEG(82)
+                if (jpeg && jpeg.length > 0 && jpeg.length < buf.length) { buf = jpeg; mime = 'image/jpeg' }
+              }
             }
-          }
-        } catch { /* 压缩不可用就用原图直发 */ }
+          } catch { /* 压缩不可用就用原图直发 */ }
+        }
+        images.push({ name: path.basename(p), url: `data:${mime};base64,${buf.toString('base64')}` })
       }
+      if (!images.length) return { ok: false, message: '没有可用图片：' + skipped.join('；') }
       // 识图模型配置：默认硅基流动免费视觉模型，可在 AI 设置里改。
       // 优先级（v2.7.14）：显式视觉槽位服务商 > 主模型内置时走 MSMate 代理（扣积分）> 旧全局 Key > 未登录时回落内置代理
       const pv = resolveModelProvider(getSetting, 'vision')
@@ -1368,12 +1378,15 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       }
       if (!apiKey) return { ok: false, message: '未配置 API Key（AI 设置里设置后才能识图；登录 MSMate 账号可直接用内置看图）' }
       // 走内置代理时模型钳到内置视觉清单（旧存档里可能存着自定义视觉模型名，内置清单没有会 400）
-      // 默认 Qwen3.8-27B：原生视觉稳定（PaddleOCR-VL 上游免费但限流，经常网络错误，2026-09-11 换默认）
-      let model = getSetting('aiVisionModel') || 'Qwen/Qwen3.8-27B'
+      // 默认 Qwen3.6-35B-A3B：MoE 只激活 3B 参数，识图比 27B 稠密快 ~10 倍（实测 1.5s vs 15.5s）且同价，2026-09-12 换默认
+      let model = getSetting('aiVisionModel') || 'Qwen/Qwen3.6-35B-A3B'
       if (apiKey === ((resolveMsmateProvider(getSetting) || {}).apiKey)) {
-        if (!/zai-org\/GLM-4\.5V|PaddlePaddle\/PaddleOCR|Qwen\/Qwen3\.8/i.test(model)) model = 'Qwen/Qwen3.8-27B'
+        if (!/zai-org\/GLM-4\.5V|PaddlePaddle\/PaddleOCR|Qwen\/Qwen3\.[368]/i.test(model)) model = 'Qwen/Qwen3.6-35B-A3B'
       }
       let question = String(args.question || '').trim() || '请识别这张图片：先用一句话说明它整体是什么（照片/截图/文档/表格等），再描述画面主要内容（主体、场景、界面元素、图表结构）。图中如有文字（含水印、域名、版权行）请如实转录并注明位置；如果图中没有文字，直接说"图中无文字"并描述画面即可，不要硬凑或猜测文字内容。'
+      if (images.length > 1) {
+        question = `共 ${images.length} 张图（顺序：${images.map((im, i) => `${i + 1}.${im.name}`).join('、')}）。请按编号逐一说明每张图，不要混淆：\n${question}`
+      }
       // DeepSeek-OCR 官方要求文本以 <image> 标记开头，否则模型对不上图会幻觉输出
       if (/DeepSeek-OCR/i.test(model)) question = '<image>\n' + question
       const body = JSON.stringify({
@@ -1382,14 +1395,15 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
           role: 'user',
           content: [
             { type: 'text', text: question },
-            { type: 'image_url', image_url: { url: `data:${mime};base64,${buf.toString('base64')}` } }
+            ...images.map((im) => ({ type: 'image_url', image_url: { url: im.url } }))
           ]
         }],
-        max_tokens: 2048,
+        // 多图按张数放大输出预算（每张描述都需要空间）
+        max_tokens: Math.min(8192, 2048 * images.length),
         // 显式非流式：解析要整段 JSON（不传的话内置代理默认按流式强转，view_image 拿到的是 SSE 无法解析）
         stream: false,
-        // Qwen3.8 系默认开思考模式：识图不需要推理链，关掉省积分提速；上游不认该参数会忽略
-        ...( /^Qwen\/Qwen3\.8/i.test(model) ? { enable_thinking: false } : {})
+        // Qwen3 系（3.6/3.8）默认开思考模式：识图不需要推理链，关掉省积分提速；上游不认该参数会忽略
+        ...( /^Qwen\/Qwen3\./i.test(model) ? { enable_thinking: false } : {})
       })
       // 失败时带出具体原因（状态码/错误信息/超时），AI 才不会瞎猜"服务中断"
       const answer = await new Promise((resolve) => {
@@ -3344,7 +3358,7 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       case 'rename_path': return `${t}重命名 ${args.path} → ${args.new_name}`
       case 'delete_path': return `${t}删除 ${args.path}`
       case 'search_files': return `${t}搜索 ${args.dir} 中的 "${args.keyword}"`
-      case 'view_image': return `${t}识图：${args.path}${args.question ? `（${args.question}）` : ''}`
+      case 'view_image': return `${t}识图：${args.paths ? `${Array.isArray(args.paths) ? args.paths.length : String(args.paths).split(/[;\n]/).filter(Boolean).length} 张图` : args.path}${args.question ? `（${args.question}）` : ''}`
       case 'screenshot': return `${t}截图（${args.scope || 'webview'}）`
       case 'update_notes': return `${t}${args.mode === 'read' ? '读大记事本' : args.mode === 'replace' ? '重写大记事本' : '记大记事本'}`
       case 'generate_image': return args.image ? `AI 编辑图片：${String(args.prompt || '').slice(0, 40)}` : `AI 生图：${String(args.prompt || '').slice(0, 40)}`

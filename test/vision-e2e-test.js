@@ -25,11 +25,13 @@ async function main() {
 
   // ② 加积分（直接改临时数据目录 users.json）
   const dataDir = process.env.DATA_DIR
-  if (dataDir) {
-    const f = path.join(dataDir, 'users.json')
-    const db = JSON.parse(fs.readFileSync(f, 'utf8'))
-    const u = db.users.find((x) => x.email === email)
-    if (u) { u.credits = 1000; fs.writeFileSync(f, JSON.stringify(db)); console.log('积分已加到 1000') }
+  if (dataDir && fs.existsSync(path.join(dataDir, 'users.json'))) {
+    try {
+      const f = path.join(dataDir, 'users.json')
+      const db = JSON.parse(fs.readFileSync(f, 'utf8'))
+      const u = db.users.find((x) => x.email === email)
+      if (u) { u.credits = 1000; fs.writeFileSync(f, JSON.stringify(db)); console.log('积分已加到 1000') }
+    } catch (e) { console.log('加积分失败（不影响流程）:', e.message) }
   }
 
   // ③ 识图：真图 + Qwen3.8-27B + 不传 stream（老客户端姿态）

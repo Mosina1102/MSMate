@@ -1036,10 +1036,10 @@ const AI_USAGE_FILE = path.join(DATA_DIR, 'ai-usage.json')
 const AI_MARKUP = 1.5
 const AI_CHAT_MODELS = [
   { id: 'deepseek-ai/DeepSeek-V4-Flash', name: 'DeepSeek V4 Flash', desc: '日常对话主力，支持工具调用', costIn: 3, costOut: 9, costCache: 0.3 },
-  { id: 'Qwen/Qwen3.6-35B-A3B', name: 'Qwen3.6 35B A3B', desc: '超值档，轻量任务，支持工具调用', costIn: 1.8, costOut: 10.8 },
+  { id: 'Qwen/Qwen3.6-35B-A3B', name: 'Qwen3.6 35B A3B', desc: '超值档，轻量任务，MoE 秒级响应，支持视觉（识图默认）', costIn: 1.8, costOut: 10.8, vision: true },
   { id: 'zai-org/GLM-4.5V', name: 'GLM-4.5V 视觉', desc: '看图/截图理解', costIn: 1, costOut: 6, costCache: 0.1, vision: true },
   { id: 'zai-org/GLM-5.3', name: 'GLM-5.3 旗舰', desc: '深度思考，复杂任务', costIn: 8, costOut: 28, costCache: 2, premium: true },
-  { id: 'Qwen/Qwen3.8-27B', name: 'Qwen3.8 27B 视觉', desc: '原生视觉看图/OCR（识图默认，稳定）', costIn: 3, costOut: 12, vision: true, visionOnly: true },
+  { id: 'Qwen/Qwen3.8-27B', name: 'Qwen3.8 27B 视觉', desc: '原生视觉看图/OCR（稠密慢但细节强）', costIn: 3, costOut: 12, vision: true, visionOnly: true },
   { id: 'PaddlePaddle/PaddleOCR-VL-1.5', name: 'PaddleOCR 视觉', desc: '看图/OCR（免费备胎，上游免费但限流）', costIn: 0, costOut: 0, vision: true, visionOnly: true }
 ]
 const AI_IMAGE_MODELS = [
@@ -2001,9 +2001,9 @@ function readBody(req, maxBytes) {
 // ─────────────────── 服务器 ───────────────────
 
 const LATEST = {
-  version: '2.7.20',
+  version: '2.7.21',
   url: 'https://github.com/Mosina1102/MSMate/releases/latest',
-  notes: '识图提速修复：大图自动压缩（原图直发上游易超时，现压至轻量尺寸秒级返回）；识图 502 参数修复；改 Word 改稿工作流',
+  notes: '识图提速 10 倍：默认模型换 Qwen3.6-35B-A3B（MoE 秒级，实测 1.5s vs 15.5s）；新增多图一次识别（paths 一次传最多 6 张，批量素材验证不再逐张等）',
   publishedAt: '2026-09-12'
 }
 
