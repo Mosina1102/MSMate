@@ -6,17 +6,22 @@ const fs = require('fs')
 const https = require('https')
 
 const REPO = 'Mosina1102/MSMate'
-const TAG = 'v2.7.18'
-const NAME = 'MSMate v2.7.18 · AI 设计板块（海报/封面排版出图）'
-const NOTES = `## 新增：AI 设计板块
-- **render_html 工具**：AI 写 HTML 排版 → 高保真渲染 PNG。五种画布预设：A4 海报/简历/邀请函、小红书 3:4、微信方图 1:1、横幅 21:9、公众号封面，支持 2-4 倍高清出图
-- **设计手册**：Editorial 编辑风 / Swiss 网格风双设计系统、版式骨架速查、出图自检清单（文字溢出/对比度/空洞/对齐）
-- 文字全部为真实排版渲染，**中文零乱码**；改字改色改 HTML 重渲即可
+// 用法不变时默认发 2.7.19；后续版本：node test/upload-release-2718.js <exe> <blockmap> <版本号如 2.7.20>
+const VER = process.argv[4] || '2.7.19'
+const TAG = 'v' + VER
+const NAME = `MSMate ${TAG} · 识图升级+改稿工作流`
+const NOTES = `## 识图升级
+- 内置看图模型换 **Qwen3.8-27B**（原生视觉，稳定）——此前 PaddleOCR 免费档上游限流，识图经常网络错误
+- 计费透明：约 1~3 积分/次（450/1800 积分每百万 tokens）
 
-## 修复
-- 高画布（A4 竖版 1754px）离屏渲染被屏幕工作区裁切的问题
+## 改 Word 更稳（改稿工作流）
+- 改 C 盘文档（论文/报告等）不再原地覆盖：**自动转工作台「改稿」副本**，原文件全程不动留作对比参考
+- 副本上免审批多轮修改+自检，满意后一键写回原位（写回弹一次审批确认）
+- 多轮修改智能沿用同一副本，不丢进度
 
-> 示例见仓库 test/fixtures/design-demo.png（重庆火锅节海报，三版收敛全过程）`
+## 批款后台（服务端）
+- 手机竖屏适配修复 + 侧栏页签/按钮操作修复
+- 充值提醒加邮件兜底（ntfy 不通也通知到位）`
 
 const exePath = process.argv[2]
 const blockPath = process.argv[3]

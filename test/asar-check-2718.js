@@ -20,11 +20,13 @@ ok('ai/tools.js', exists('ai/tools.js'))
 ok('ai/prompt.js', exists('ai/prompt.js'))
 
 const pkg = read('package.json')
-ok('package.json 版本 2.7.18', pkg.includes('"version": "2.7.18"'))
+const VER = process.argv[3] || '2.7.18'
+ok('package.json 版本 ' + VER, pkg.includes(`"version": "${VER}"`))
 
 const tools = read('ai/tools.js')
 ok('tools.js 含 render_html', tools.includes('render_html'))
 ok('tools.js 含 setContentSize 钳制修复', tools.includes('setContentSize'))
+ok('tools.js 含 C 盘改稿工作流', tools.includes('protectedDraftCopy') && tools.includes('Qwen/Qwen3.8-27B'))
 
 const prompt = read('ai/prompt.js')
 ok('prompt.js 注册设计手册', prompt.includes("'设计.md'"))
