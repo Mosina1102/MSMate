@@ -2001,9 +2001,9 @@ function readBody(req, maxBytes) {
 // ─────────────────── 服务器 ───────────────────
 
 const LATEST = {
-  version: '2.7.21',
+  version: '2.7.22',
   url: 'https://github.com/Mosina1102/MSMate/releases/latest',
-  notes: '识图提速 10 倍：默认模型换 Qwen3.6-35B-A3B（MoE 秒级，实测 1.5s vs 15.5s）；新增多图一次识别（paths 一次传最多 6 张，批量素材验证不再逐张等）',
+  notes: '新增 AI 抠图（remove_bg）：本地模型抠图去背景，输出透明底 PNG，离线秒级零 API 费；海报合成素材全流程打通（找图→下载→抠图→排版合成）',
   publishedAt: '2026-09-12'
 }
 

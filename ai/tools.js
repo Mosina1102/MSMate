@@ -65,6 +65,7 @@ const TOOL_DEFS = [
   { name: 'delete_path', params: 'path(路径), target(可选)', desc: '删除文件或文件夹。会先自动备份到快照缓存槽' },
   { name: 'search_files', params: 'dir(搜索起始目录), keyword(关键词), target(可选)', desc: '按名称搜索文件：本机含全部子目录递归搜；远程设备仅搜该目录一层，子目录需先 list_dir 再逐层搜' },
   { name: 'view_image', params: 'path(单图完整路径) 或 paths(多图路径数组,一次识多张更快,最多6张), question(可选,按用户意图写:想知道画面内容写"描述图片内容",要文字写"完整转录图中文字")', desc: '看图识图：分析本机图片（截图/照片/文档/表格），返回内容描述或文字转录。**多张图验证/对比场景必用 paths 一次传**（单请求总耗时≈单张，逐张调会慢好几倍）。png/jpg/jpeg/webp/gif/bmp，≤20MB 自动压缩。默认 Qwen3.6-35B-A3B（MoE 秒级）。远程图片先 transfer_file 拉到本机再看', manual: '图片视频' },
+  { name: 'remove_bg', params: 'path(图片完整路径), out(可选,输出透明底PNG路径,默认原名-抠图.png 存原图旁)', desc: 'AI 抠图去背景：本地模型（首次自动下载 4.4MB 到应用数据，之后离线秒级）输出透明底 PNG。海报合成素材必备——抠完配 render_html（透明素材 <img> 直接叠加排版）。人像/宠物/产品/物体主体效果好；复杂发丝边缘偶有毛边，合成时加轻微阴影可弱化', manual: '图片视频' },
   { name: 'screenshot', params: 'scope(可选,默认webview:webview=工作台网页视图/app=应用窗口/screen=整屏), path(可选,保存路径), minimizeSelf(可选,bool,仅screen生效,默认true)', desc: '截图本机，**只截图不分析**——返回保存路径，要看内容再调 view_image。用户问"看看我屏幕/桌面上有啥"先 scope:"screen" 截全屏再看，禁止空想回答', manual: '图片视频' },
   { name: 'update_notes', params: 'mode(append=追加一条记录(默认)/read=查看现在记了什么/replace=整本重写(慎用)), content(append/replace 时的内容，markdown，一行一条)', desc: '读写大记事本（工作台 NOTES.md，全局长期记忆，所有对话共享）：用户说"记住XX/以后都XX/我喜欢XX"就 append 一条（带日期前缀）；用户问"你记了什么"用 read；重要习惯/偏好/常用路径/项目背景都值得记，但只记长期有效的信息（一次性任务不要记）' },
   { name: 'create_word', params: 'path(docx完整路径), title(文档标题), content(markdown正文:标题/加粗/列表/插图/表格行自动排版), paragraphs(可选,段落数组替代content), header/footer/pageNumbers/toc/theme/fonts/lineSpacing/firstLine/cover/tocLevels(可选,详见手册), target(可选)', desc: '创建 Word 文档(.docx)，markdown 一键排版。排版铁律（数据必须表格化/结论用callout）、插图大小对齐控制、版式蓝图先行详见手册', manual: 'word文档' },
@@ -123,6 +124,7 @@ const { browserHeaders, looksLikeAntiCrawl, renderPage } = require('./anticrawl'
 
 // ===== 截图引擎（v2.4.96：screenshot 工具——webview/app/screen 三级，主进程直通零 IPC）=====
 // 纯 Node 环境（冒烟/CLI）下 require('electron') 拿到的是路径字符串而非 API → shotElectron 返回 null，工具层给出明确报错
+let _removeBgSession = null // u2netp 推理会话缓存（跨实例共享无害：同模型同路径）
 function shotElectron() {
   try {
     const m = require('electron')
@@ -776,6 +778,11 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
         note: exists ? `修改已有 PPT ${args.path}（原文件会先备份）` : '目标文件不存在',
         paths: target === 'local' ? [args.path] : []
       }
+    }
+    if (name === 'remove_bg') {
+      const outP = args.out ? path.resolve(String(args.out)) : String(args.path || '').replace(/\.[^.]+$/, '') + '-抠图.png'
+      const exists = outP && fs.existsSync(outP)
+      return { destructive: exists, note: exists ? `覆盖已有抠图 ${outP}` : '生成透明底抠图（新文件）', paths: [outP] }
     }
     if (name === 'modify_word' || name === 'append_table_rows' || name === 'modify_table' || name === 'format_table') {
       const exists = await targetExists(args.path, target)
@@ -1435,7 +1442,94 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
         req.end()
       })
       if (!answer || answer.startsWith('【')) return { ok: false, message: `识图失败：${answer || '模型无响应'}（模型 ${model}）。请把【】里的真实原因原样告知用户，禁止编造成"服务中断"或"系统强制停止"；401/403=API Key 问题，404=模型名不存在，429=限流稍后再试，5xx=服务端问题。用户要求重试时应照做（可换更简短的问题措辞），不得拒绝` }
-      return { ok: true, message: `识图结果（${model}）：\n${answer}` }
+      const skipNote = skipped.length ? `\n（已跳过 ${skipped.length} 张不可用图片：${skipped.join('；')}）` : ''
+      return { ok: true, message: `识图结果（${model}${images.length > 1 ? `，${images.length} 张` : ''}）：\n${answer}${skipNote}` }
+    },
+
+    async remove_bg(args) {
+      if (!args.path) return { ok: false, message: '缺少 path（图片完整路径）' }
+      const el = shotElectron()
+      if (!el) return { ok: false, message: 'remove_bg 需在应用内使用（当前环境无 Electron）' }
+      let buf
+      try { buf = fs.readFileSync(args.path) } catch { return { ok: false, message: `图片不存在或无法读取：${args.path}` } }
+      const img = el.nativeImage.createFromBuffer(buf)
+      if (img.isEmpty()) return { ok: false, message: '不是有效图片（PNG/JPG，webp/gif/bmp 也支持）' }
+      const sz = img.getSize()
+      let ort
+      try { ort = require('onnxruntime-node') } catch { return { ok: false, message: '抠图引擎（onnxruntime-node）不可用，可能安装不完整，请重装应用' } }
+      const modelDir = path.join(el.app.getPath('userData'), 'ai-models')
+      fs.mkdirSync(modelDir, { recursive: true })
+      const modelPath = path.join(modelDir, 'u2netp.onnx')
+      // 模型按需下载（4.4MB，多源容错，下好终身离线用）
+      if (!fs.existsSync(modelPath) || fs.statSync(modelPath).size < 1000000) {
+        const urls = [
+          'https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx',
+          'https://gh-proxy.com/https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx',
+          'https://mirror.ghproxy.com/https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx',
+          'https://hf-mirror.com/tomjackson2023/rembg/resolve/main/u2netp.onnx',
+          'https://huggingface.co/tomjackson2023/rembg/resolve/main/u2netp.onnx'
+        ]
+        const dl = (u) => new Promise((resolve, reject) => {
+          const mod = u.startsWith('http:') ? http : https
+          const get = (u2, redirects) => mod.get(u2, (r2) => {
+            if (r2.statusCode >= 300 && r2.statusCode < 400 && r2.headers.location && redirects < 5) return get(r2.headers.location, redirects + 1)
+            if (r2.statusCode !== 200) return reject(new Error('HTTP ' + r2.statusCode))
+            const chunks = []
+            r2.on('data', (c) => chunks.push(c))
+            r2.on('end', () => resolve(Buffer.concat(chunks)))
+            r2.on('error', reject)
+          }).on('error', reject)
+          get(u, 0)
+        })
+        let got = null
+        for (const u of urls) {
+          try { const b = await dl(u); if (b.length > 1000000) { fs.writeFileSync(modelPath, b); got = b; break } } catch { /* 换下一个源 */ }
+        }
+        if (!got) return { ok: false, message: '抠图模型首次下载失败（4.4MB，多个源都不通）。请检查网络后重试；下载成功后即可离线使用' }
+      }
+      // 预处理：缩到模型输入 320×320，BGRA→RGB float + rembg 标准 normalize；推理（session 缓存）；mask 放大合成透明 PNG
+      try {
+        const IN = 320
+        const small = img.resize({ width: IN, height: IN })
+        const bmp = small.toBitmap() // BGRA
+        const px = IN * IN
+        const mean = [0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225]
+        const data = new Float32Array(3 * px)
+        for (let i = 0; i < px; i++) {
+          data[i] = (bmp[i * 4 + 2] / 255 - mean[0]) / std[0]
+          data[px + i] = (bmp[i * 4 + 1] / 255 - mean[1]) / std[1]
+          data[2 * px + i] = (bmp[i * 4 + 0] / 255 - mean[2]) / std[2]
+        }
+        if (!_removeBgSession) _removeBgSession = await ort.InferenceSession.create(modelPath)
+        const session = _removeBgSession
+        const tensor = new ort.Tensor('float32', data, [1, 3, IN, IN])
+        const feeds = {}
+        feeds[session.inputNames[0]] = tensor
+        const out = await session.run(feeds)
+        const mask = out[session.outputNames[0]].data
+        const mbuf = Buffer.alloc(px * 4)
+        for (let i = 0; i < px; i++) {
+          const v = Math.max(0, Math.min(255, Math.round(mask[i] * 255)))
+          mbuf[i * 4] = v; mbuf[i * 4 + 1] = v; mbuf[i * 4 + 2] = v; mbuf[i * 4 + 3] = 255
+        }
+        const maskBig = el.nativeImage.createFromBitmap(mbuf, { width: IN, height: IN }).resize({ width: sz.width, height: sz.height })
+        const mbmp = maskBig.toBitmap()
+        const origBmp = img.toBitmap()
+        const outBuf = Buffer.alloc(sz.width * sz.height * 4)
+        for (let i = 0; i < sz.width * sz.height; i++) {
+          outBuf[i * 4] = origBmp[i * 4]
+          outBuf[i * 4 + 1] = origBmp[i * 4 + 1]
+          outBuf[i * 4 + 2] = origBmp[i * 4 + 2]
+          outBuf[i * 4 + 3] = mbmp[i * 4 + 2] // mask 亮度作 alpha
+        }
+        const outImg = el.nativeImage.createFromBitmap(outBuf, { width: sz.width, height: sz.height })
+        const outPath = args.out ? path.resolve(String(args.out)) : args.path.replace(/\.[^.]+$/, '') + '-抠图.png'
+        fs.mkdirSync(path.dirname(outPath), { recursive: true })
+        fs.writeFileSync(outPath, outImg.toPNG())
+        return { ok: true, message: `抠图完成（透明底 PNG，${sz.width}×${sz.height}）→ ${outPath}。可直接用于 render_html 合成海报（<img> 叠加排版），或 view_image 查看效果`, path: outPath }
+      } catch (err) {
+        return { ok: false, message: `抠图失败：${err.message}` }
+      }
     },
 
     async screenshot(args) {
@@ -3359,6 +3453,7 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       case 'delete_path': return `${t}删除 ${args.path}`
       case 'search_files': return `${t}搜索 ${args.dir} 中的 "${args.keyword}"`
       case 'view_image': return `${t}识图：${args.paths ? `${Array.isArray(args.paths) ? args.paths.length : String(args.paths).split(/[;\n]/).filter(Boolean).length} 张图` : args.path}${args.question ? `（${args.question}）` : ''}`
+      case 'remove_bg': return `${t}抠图去背景：${args.path}`
       case 'screenshot': return `${t}截图（${args.scope || 'webview'}）`
       case 'update_notes': return `${t}${args.mode === 'read' ? '读大记事本' : args.mode === 'replace' ? '重写大记事本' : '记大记事本'}`
       case 'generate_image': return args.image ? `AI 编辑图片：${String(args.prompt || '').slice(0, 40)}` : `AI 生图：${String(args.prompt || '').slice(0, 40)}`

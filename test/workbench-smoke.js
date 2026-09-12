@@ -2207,7 +2207,7 @@ console.log('— v2.4.82：钩子半残中毒修复（第二句话起永久瞎�
     } catch (e) {
       ok(false, `套模板测试失败: ${(e.stdout || e.message).toString().slice(-150)}`)
     }
-    ok(pkg.version === '2.7.21', `package.json 版本 2.7.21（实际 ${pkg.version}）`)
+    ok(pkg.version === '2.7.22', `package.json 版本 2.7.22（实际 ${pkg.version}）`)
   }
 
   // ===== v2.6.0：工具手册化（渐进式披露：主规则瘦身，深度说明迁 ai/manuals 六册）=====
@@ -2223,7 +2223,8 @@ console.log('— v2.4.82：钩子半残中毒修复（第二句话起永久瞎�
     ok(manualNames.every((n) => { try { return fs.statSync(path.join(manualDir, n)).size > 2000 } catch { return false } }), '手册八册落盘且非空（>2KB，含 ppt文档/设计）')
     // ② TOOL_DEFS manual 字段计数（brief 瘦身 + 手册指向；行尾手册路径=双轨渲染）
     const manualCount = (toolsDef.match(/manual: '/g) || []).length
-    ok(manualCount === 33, `TOOL_DEFS manual 字段计数 = 33（实际 ${manualCount}）`)
+    ok(manualCount === 34, `TOOL_DEFS manual 字段计数 = 34（实际 ${manualCount}）`)
+    ok(toolsDef.includes("case 'remove_bg': return") && toolsDef.includes("'抠图引擎（onnxruntime-node）不可用"), 'remove_bg 实现+审批+describe 三处注册（本地 u2netp 抠图）')
     ok(toolsDef.includes("manual: 'ppt文档'") && toolsDef.includes("name: 'create_pptx'") && toolsDef.includes("name: 'read_pptx'") && toolsDef.includes("name: 'edit_pptx'"), 'PPT 三件套注册（create_pptx/read_pptx/edit_pptx → 手册：ppt文档）')
     ok(toolsDef.includes('→ 手册：ai_manuals/'), 'buildToolPromptSection 双轨渲染（manual 工具行尾带手册路径）')
     // ⑤ C 盘文档改稿工作流（modify_word 自动转工作台副本，原文件留作对比；classify 同步按副本路径免保护区审批）

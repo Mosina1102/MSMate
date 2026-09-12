@@ -1,6 +1,6 @@
 {
   "name": "ms-interconnect",
-  "version": "2.7.21",
+  "version": "2.7.22",
   "description": "MSMate - 局域网互联 + 内置 AI 电脑助手",
   "main": "main.js",
   "scripts": {
@@ -36,7 +36,9 @@
       "assets/**/*"
     ],
     "asarUnpack": [
-      "preload.js"
+      "preload.js",
+      "node_modules/onnxruntime-node/**",
+      "node_modules/onnxruntime-common/**"
     ],
     "win": {
       "icon": "assets/icon.ico",
@@ -79,12 +81,14 @@
     "jszip": "^3.10.1",
     "linkedom": "^0.18.13",
     "mammoth": "^1.12.2",
+    "onnxruntime-node": "^1.29.0",
     "pdf-parse": "^1.1.1",
     "pptxgenjs": "^4.0.1",
     "selfsigned": "^5.5.0"
   },
   "allowScripts": {
-    "electron@22.3.27": true
+    "electron@22.3.27": true,
+    "onnxruntime-node@1.29.0": true
   },
   "overrides": {
     "css-select": "5.2.2"
