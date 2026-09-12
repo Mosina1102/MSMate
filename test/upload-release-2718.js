@@ -6,21 +6,21 @@ const fs = require('fs')
 const https = require('https')
 
 const REPO = 'Mosina1102/MSMate'
-// 用法：node test/upload-release-2718.js <exe路径> <blockmap路径> <版本号如 2.7.23>
-const VER = process.argv[4] || '2.7.23'
+// 用法：node test/upload-release-2718.js <exe路径> <blockmap路径> <版本号如 2.7.24>
+const VER = process.argv[4] || '2.7.24'
 const TAG = 'v' + VER
-const NAME = `MSMate ${TAG} · 大文件传输修复`
-const NOTES = `## 修复大文件互传"假成功"
-- 修复传输超 10 秒会中途误报"上传完成"的问题（表现为读条到一半弹成功，对方收到的文件残缺且打不开）
-- 现在上传会等对方**真正写完盘**才提示成功，完整性端到端测试覆盖（128MB 校验和比对）
+const NAME = `MSMate ${TAG} · PDF 合并拆分 + 素材零准备`
+const NOTES = `## 新增 PDF 合并 / 拆分
+- **merge_pdf**：多份 PDF 按顺序拼成一份（合同+附件、发票归档常用）
+- **split_pdf**：抽取指定页（支持 "3" / "2-5" / "1,3,5-7"）或整本逐页拆
+- 都不动源文件，输出已存在自动备份
 
-## 新增接收端断流保护
-- 对方传输中途退出/断网时，本机 60 秒收不到数据会自动结束写入、解锁文件并提示失败
-- 此前这种情况文件会被系统锁死"点不开"，只能重启应用
+## 表格更可靠
+- 吸收官方 Excel 技能经验：**零公式错误**交付门槛、合计/占比**用公式不硬编码**（改输入自动重算）、改既有表格**惯例优先**不乱套样式
 
-## 其他
-- 已完成/失败的传输条目不再被迟到的进度帧打回中途百分比
-- 对方磁盘满/写入失败时立刻报错，不再假成功`
+## 素材零准备（核心卖点强化）
+- 做海报/卡片/PPT 时**不用再自己准备素材**：AI 自己上网找图、下载实景、生成插画、本地抠图去背景，一条龙合成
+- 设计手册明确"找图 → 抠图 → 排版渲染"全自动管线`
 
 const exePath = process.argv[2]
 const blockPath = process.argv[3]
