@@ -24,7 +24,20 @@
 
 **params**: path(docx完整路径), mode(append=追加到末尾/replace=全量重写/edit=精准替换,默认append), paragraphs/content(append/replace时的新内容,格式同create\_word,支持样式/插图/markdown表格), replacements(edit模式必填,替换数组 \[{find:"旧文字", replace:"新文字", all?}] ,all默认true), title(可选,仅replace时替换标题), header/footer/pageNumbers/toc/fonts/lineSpacing/firstLine/cover/theme(可选,仅replace时生效), target(可选)
 
-**desc**: 修改已有 Word 文档（自动备份原文件）。三种模式：append=追加内容（插图、表格也支持）；replace=全量重写；edit=只改几处文字时用精准替换 replacements:\[{find:"错别字", replace:"正确字"}]，不用重读重写全文，改几个词首选这个。**C 盘保护区文档自动转工作台改稿副本**：目标在 C:\Users 等保护区（工作台/桌面除外）时，工具自动把原文件复制到工作台「改稿」文件夹，在副本上修改，原文件全程不动留作对比参考——流程：改副本 → read\_word 自检副本 → 满意后 copy\_path 把副本复制回原路径（写回用户目录弹一次审批，属正常，向用户说明即可）；要多轮修改就继续操作同一副本（工具会智能沿用，不会丢进度），别反复对原路径空转
+**desc**: 修改已有 Word 文档（自动备份原文件）。三种模式：append=追加内容（插图、表格也支持）；replace=全量重写（⚠仅限用户明确说"整篇重写/重新生成"）；edit=精准替换 replacements:\[{find:"错别字", replace:"正确字"}]。**C 盘保护区文档自动转工作台改稿副本**：目标在 C:\Users 等保护区（工作台/桌面除外）时，工具自动把原文件复制到工作台「改稿」文件夹，在副本上修改，原文件全程不动留作对比参考——流程：改副本 → read\_word 自检副本 → 满意后 copy\_path 把副本复制回原路径（写回用户目录弹一次审批，属正常，向用户说明即可）；要多轮修改就继续操作同一副本（工具会智能沿用，不会丢进度），别反复对原路径空转
+
+### 改动量分级铁律（先选路再动手，防"格式全乱"事故）
+
+用户要"改/替换/调整/修改"一篇**已有**文档时，按此分级选路——**选错路的代价是用户的原格式（封面/页眉/分节/样式表）全部清零**：
+
+| 用户要干的 | 唯一正确方式 | 禁止 |
+|---|---|---|
+| 改文字（错别字/措辞/数字/增删句子，几处到几十处） | read\_word 定位 → modify\_word(mode:edit) 逐条 replacements | **禁止 create\_word 重建、禁止 modify\_word(replace) 重写**——改 10 处也逐条 edit，不嫌啰嗦 |
+| 加一段/补一节 | modify\_word(mode:append) 或 edit 在锚点文字处替换扩展 | 禁止重建 |
+| 换插图/改表格内容 | modify\_word(append 插图)/edit\_word\_table(setCell) | 禁止重建 |
+| 整篇重排/换主题样式 | 用户明确说"重写/重新生成"才允许 create\_word 重建（先声明"原格式会重置"） | — |
+
+**判断口诀：动的是"字"就用 edit，动的是"篇"才谈重建。** 重建出来的 docx 没有用户的页眉、分节页码、样式表和封面图片——哪怕你"照着格式重写一遍"也复刻不出样式级联，交付必是格式混乱。
 
 ### read\_pdf
 
