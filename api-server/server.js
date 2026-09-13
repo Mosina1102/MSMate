@@ -1233,13 +1233,17 @@ async function proxyChatCompletions(req, res, user) {
 
 async function proxyImageGen(req, res, user, isEdit) {
   const raw = await readRaw(req)
-  const ids = isEdit ? AI_IMAGE_EDIT_IDS : AI_IMAGE_GEN_IDS
   let model = '', n = 1
+  let bodyImg = false
+  let ids
   if (isEdit) {
     model = multipartField(raw, 'model')
     n = Math.max(1, Math.min(4, +multipartField(raw, 'n') || 1))
+    ids = AI_IMAGE_EDIT_IDS
   } else {
-    try { const b = JSON.parse(raw.toString('utf8') || '{}'); model = String(b.model || ''); n = Math.max(1, Math.min(4, +b.n || 1)) } catch { }
+    try { const b = JSON.parse(raw.toString('utf8') || '{}'); model = String(b.model || ''); n = Math.max(1, Math.min(4, +b.n || 1)); bodyImg = !!b.image } catch { }
+    // 客户端改图走 generations + image 字段（Qwen-Image-Edit 系，JSON dataURL）——带 image 即编辑语义，放行编辑清单
+    ids = bodyImg ? AI_IMAGE_MODELS.map(m => m.id) : AI_IMAGE_GEN_IDS
   }
   if (!ids.includes(model)) return json(res, 400, { ok: false, error: `模型不在内置清单：${model || '(空)'}` })
   const meta = AI_IMAGE_MODELS.find(m => m.id === model)
