@@ -2007,9 +2007,9 @@ function readBody(req, maxBytes) {
 // ─────────────────── 服务器 ───────────────────
 
 const LATEST = {
-  version: '2.7.26',
+  version: '2.7.27',
   url: 'https://github.com/Mosina1102/MSMate/releases/latest',
-  notes: '新增格式转换大全（convert_file）：图片互转、多图合成 PDF、docx→pdf（Word/WPS 导出+备用渲染双链）、html→pdf、md→docx/pdf、音视频转换+提音频+转 gif（FFmpeg 首次自动下载终身离线）；改图模型升级 Qwen-Image-Edit-2511（人物一致性增强，未上架自动回落 2509）；修复内置代理改图 400',
+  notes: '修复"改个文字却重写整篇导致格式全乱"：AI 行为矫正——改文字一律精准替换（edit），禁止图省事重建整篇（重建=封面/页眉/分节/样式全丢）；新增改动量分级铁律。另：WPS 文档转 PDF 加固防打扰（强制后台隐形，防个别版本带出主界面）',
   publishedAt: '2026-09-13'
 }
 
