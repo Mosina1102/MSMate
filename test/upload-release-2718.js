@@ -6,24 +6,21 @@ const fs = require('fs')
 const https = require('https')
 
 const REPO = 'Mosina1102/MSMate'
-// 用法：node test/upload-release-2718.js <exe路径> <blockmap路径> <版本号如 2.7.26>
-const VER = process.argv[4] || '2.7.26'
+// 用法：node test/upload-release-2718.js <exe路径> <blockmap路径> <版本号如 2.7.27>
+const VER = process.argv[4] || '2.7.27'
 const TAG = 'v' + VER
-const NAME = `MSMate ${TAG} · 格式转换大全 + 改图升级 2511`
-const NOTES = `## 新增：格式转换大全（convert_file）
-- **图片互转**：png/jpg/webp/gif/bmp/avif 随便转，批量支持
-- **多张图片合成 PDF**：截图/扫描件一册归档
-- **docx→pdf**：本机 Word/WPS 导出；没装也有备用渲染链保底
-- **html→pdf、md/txt→docx/pdf**
-- **音视频**：格式互转、提取音频（mp3/m4a/wav）、视频转 gif——转换引擎首次使用自动下载（约 80MB，一次下载终身离线）
-- 源文件永远不动，输出已存在自动备份
+const NAME = `MSMate ${TAG} · 改文字行为矫正 + WPS 转换防打扰`
+const NOTES = `## 修复：改个文字却"重新生成论文"导致格式全乱
+- AI 行为矫正：**改文字一律精准替换（edit），禁止图省事重建整篇**——重建的文档没有你的封面/页眉/分节页码/样式表，格式必乱
+- 新增「改动量分级铁律」：动的是"字"就用精准替换，动的是"篇"才谈重建
+- 改 10 处也逐条替换，不再偷懒重写
 
-## 改图模型升级
-- **Qwen-Image-Edit-2511**：人物一致性大幅增强（多人合影更自然）、集成社区 Lora（打光/多视角）、推理提速 15%
-- 上游未上架时自动回落 2509，体验无损
+## WPS 转 PDF 防打扰加固
+- 文档转 PDF 的 WPS 自动化强制后台隐形（Visible=false），防个别版本带出主界面/广告窗
 
-## 修复
-- 内置代理改图报"模型不在内置清单"的 400`
+## 上个版本（2.7.26）回顾
+- 格式转换大全 convert_file：图片互转 / 多图合成 PDF / docx→pdf / html→pdf / md 转 docx、pdf / 音视频转换（FFmpeg 自动下载）
+- 改图模型升级 Qwen-Image-Edit-2511（未上架自动回落 2509）`
 
 const exePath = process.argv[2]
 const blockPath = process.argv[3]
