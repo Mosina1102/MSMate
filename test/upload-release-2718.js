@@ -6,21 +6,24 @@ const fs = require('fs')
 const https = require('https')
 
 const REPO = 'Mosina1102/MSMate'
-// 用法：node test/upload-release-2718.js <exe路径> <blockmap路径> <版本号如 2.7.25>
-const VER = process.argv[4] || '2.7.25'
+// 用法：node test/upload-release-2718.js <exe路径> <blockmap路径> <版本号如 2.7.26>
+const VER = process.argv[4] || '2.7.26'
 const TAG = 'v' + VER
-const NAME = `MSMate ${TAG} · 海报审美升级 + 下载修复`
-const NOTES = `## 海报审美大升级
-- 学官方 canvas-design / frontend-design 设计哲学：**先立美学方向再动手**，禁模板答案
-- 三种美学配方：玩梗**新丑风大字报**（满大撞+贴纸感）/ Editorial 编辑风 / Swiss 网格风
-- **AI 味黑名单**：圆头像+小框列表、四卡片堆数据、Word 思维居中对称——命中即重做
-- 自检加**审美关**：第一眼焦点 / 风格配对内容 / 敢不敢发朋友圈
+const NAME = `MSMate ${TAG} · 格式转换大全 + 改图升级 2511`
+const NOTES = `## 新增：格式转换大全（convert_file）
+- **图片互转**：png/jpg/webp/gif/bmp/avif 随便转，批量支持
+- **多张图片合成 PDF**：截图/扫描件一册归档
+- **docx→pdf**：本机 Word/WPS 导出；没装也有备用渲染链保底
+- **html→pdf、md/txt→docx/pdf**
+- **音视频**：格式互转、提取音频（mp3/m4a/wav）、视频转 gif——转换引擎首次使用自动下载（约 80MB，一次下载终身离线）
+- 源文件永远不动，输出已存在自动备份
 
-## 下载修复
-- 修复下载图片"内容与扩展名不符"（镜像站 AVIF 伪装 .jpg 导致识图全拒）：落盘后按文件魔数自动校正扩展名，并明确提示换源
+## 改图模型升级
+- **Qwen-Image-Edit-2511**：人物一致性大幅增强（多人合影更自然）、集成社区 Lora（打光/多视角）、推理提速 15%
+- 上游未上架时自动回落 2509，体验无损
 
-## 更聪明
-- 陌生名词**先查后做**：梗/品牌/网络用语先搜清是什么再动手，不再望文生义`
+## 修复
+- 内置代理改图报"模型不在内置清单"的 400`
 
 const exePath = process.argv[2]
 const blockPath = process.argv[3]
