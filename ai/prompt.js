@@ -19,7 +19,7 @@ const fs = require('fs')
 const path = require('path')
 
 // ===== 工具手册（渐进式披露：主规则只留目录简述，深度说明按需 read_file；对标 Agent Skills 三层加载） =====
-const MANUAL_FILES = ['word文档.md', 'Word排版.md', '表格.md', 'ppt文档.md', '图片视频.md', '设计.md', '网络下载.md', '跨设备协作.md']
+const MANUAL_FILES = ['word文档.md', 'Word排版.md', '表格.md', 'ppt文档.md', '图片视频.md', '设计.md', '网络下载.md', '跨设备协作.md', '格式转换.md']
 function manualsSourceDir() { return path.join(__dirname, 'manuals') }
 // 启动释放：把 asar/源码里的手册复制到工作区 ai_manuals/（每次启动覆盖，升级即更新）；失败不抛出，由调用方容错
 function releaseManualsTo(workspaceDir) {
@@ -52,6 +52,7 @@ function manualsIndexSection(manualsDir) {
 - 设计.md —— 海报/封面/卡片视觉设计（render_html），HTML→PNG 工作流/画布预设/双设计系统/自检清单
 - 网络下载.md —— 搜索/抓网页/下载文件（web_search/web_fetch/download_file），含扒图标准流程
 - 跨设备协作.md —— transfer_file 细节 + 跨设备创建三步套路全套
+- 格式转换.md —— convert_file 一个入口转万物（图片互转/图片合成 PDF/docx→pdf/html→pdf/md 转 docx/音视频转换）
 **使用规则**：①首次使用手册内工具、参数拿不准、工具报错时，**必须先 read_file 对应手册再动手**——手册含完整参数文档、踩坑经验和标准工作流，比本规则的目录行详细得多；②同类任务一次会话读一次即可，不必反复读；③可用工具目录行末尾的"→ 手册：ai_manuals/xxx.md"就是该读手册的提醒。`
 }
 

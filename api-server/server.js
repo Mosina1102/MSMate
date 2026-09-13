@@ -1045,7 +1045,9 @@ const AI_CHAT_MODELS = [
 const AI_IMAGE_MODELS = [
   // 上游 0.3 元/张 → 0.3 × 100 × 1.5 = 45 积分/张（此前 6/8 积分严重倒挂亏本，2026-09-10 修正）
   { id: 'Tongyi-MAI/Z-Image-Turbo', name: 'Z-Image Turbo', desc: '文生图', creditsPerImage: 45 },
-  { id: 'Qwen/Qwen-Image-Edit-2509', name: 'Qwen 图片编辑', desc: '涂改/局部重绘', creditsPerImage: 45, edit: true }
+  { id: 'Qwen/Qwen-Image-Edit-2511', name: 'Qwen 图片编辑', desc: '涂改/局部重绘（2511：人物一致性+Lora 集成）', creditsPerImage: 45, edit: true },
+  // 2509 保留为回落备胎：2511 上游未上架时客户端自动回落此模型重试（tools.js generate_image 自愈逻辑）
+  { id: 'Qwen/Qwen-Image-Edit-2509', name: 'Qwen 图片编辑 2509', desc: '涂改/局部重绘（回落备胎）', creditsPerImage: 45, edit: true }
 ]
 const AI_TTS_MODEL = { id: 'FunAudioLLM/CosyVoice2-0.5B', name: 'CosyVoice2 语音合成', desc: '文本朗读', creditsPerKByte: 8 }
 // 上游 SenseVoiceSmall 免费 → 0 积分（语音输入免费体验）
@@ -2005,9 +2007,9 @@ function readBody(req, maxBytes) {
 // ─────────────────── 服务器 ───────────────────
 
 const LATEST = {
-  version: '2.7.25',
+  version: '2.7.26',
   url: 'https://github.com/Mosina1102/MSMate/releases/latest',
-  notes: '修复下载图片"内容与扩展名不符"（镜像站 AVIF 伪装 .jpg）：落盘后自动按文件魔数校正扩展名并提示换源；设计审美大升级——三种美学配方（新增玩梗新丑风大字报）、AI 味黑名单、审美自检关，海报不再"模板味"；陌生名词先查后做，梗类需求先懂梗再动手',
+  notes: '新增格式转换大全（convert_file）：图片互转、多图合成 PDF、docx→pdf（Word/WPS 导出+备用渲染双链）、html→pdf、md→docx/pdf、音视频转换+提音频+转 gif（FFmpeg 首次自动下载终身离线）；改图模型升级 Qwen-Image-Edit-2511（人物一致性增强，未上架自动回落 2509）；修复内置代理改图 400',
   publishedAt: '2026-09-13'
 }
 
