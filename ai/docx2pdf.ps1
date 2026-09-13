@@ -26,6 +26,8 @@ foreach ($id in $ids) {
 
     try {
       try { $app.DisplayAlerts = 0 } catch { }
+      # defensive: force invisible automation (no window stealing focus on the user's screen)
+      try { $app.Visible = $false } catch { }
       # try read-only 3-arg Open first; on COMException fall back to minimal 1-arg Open (max WPS compat)
       $doc = $null
       try { $doc = $app.Documents.Open($Src, $false, $true) } catch { $doc = $null }
