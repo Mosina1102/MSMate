@@ -331,6 +331,17 @@ try {
       ipcRenderer.on('ai:event', (_, data) => callback(data))
     },
 
+    // 桌宠"莫西"（src/pet.html 专用：事件接收 + 拖拽 + 点击唤起主窗口）
+    onPetEvent: (callback) => {
+      ipcRenderer.on('pet:event', (_, data) => callback(data))
+    },
+    petDragStart: (screenX, screenY) => ipcRenderer.send('pet:drag-start', { screenX, screenY }),
+    petDragMove: (screenX, screenY) => ipcRenderer.send('pet:drag-move', { screenX, screenY }),
+    petClick: () => ipcRenderer.send('pet:click'),
+    petFileDrop: (paths) => ipcRenderer.send('pet:file-drop', { paths }),
+    petGetEnabled: () => ipcRenderer.invoke('pet:get-enabled'),
+    petSetEnabled: (on) => ipcRenderer.invoke('pet:set-enabled', { on }),
+
     removeAllListeners: () => {
       ipcRenderer.removeAllListeners('tcp:log')
       ipcRenderer.removeAllListeners('device:found')

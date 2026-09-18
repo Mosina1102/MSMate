@@ -160,6 +160,98 @@
 
 /* 亮色主题下的细节修正（状态/徽章色已全部 token 化，跟随主题自动切换，无需散落修正） */
 
+/* ============================================
+   莫西主题（桌宠主题）：猫耳管家 · 淡紫
+   品牌紫浓度拉高 + 淡紫灰阶层 + 大圆角 + 紫调阴影
+   与执事风同架构：token 覆盖为主，少量组件级差异
+   ============================================ */
+:root.theme-light.theme-moxi {
+  --bg-darkest: #edeaf8;            /* 侧栏/窗口底：淡紫灰 */
+  --bg-dark: #f6f4fd;
+  --bg-panel: #ffffff;
+  --bg-hover: #f0edfa;
+  --bg-active: #e6e1f7;
+  --border: #e7e3f4;
+  --border-light: #ded9f0;
+  --accent: #7a5af5;                /* 莫西紫 */
+  --accent-hover: #6a48e8;
+  --accent-rgb: 122, 90, 245;
+  --accent-weak: rgba(122, 90, 245, 0.1);
+  --accent-mauve: #9a6cf0;
+  --accent-mauve-rgb: 154, 108, 240;
+  --shadow-sm: 0 1px 3px rgba(90, 70, 200, 0.07);
+  --shadow-md: 0 4px 16px rgba(90, 70, 200, 0.1);
+  --shadow-lg: 0 12px 40px rgba(90, 70, 200, 0.16);
+  --shadow-float: 0 10px 30px rgba(90, 70, 200, 0.14);
+  --radius-sm: 8px;
+  --radius: 12px;                   /* 圆角再大一档：猫耳管家的圆润感 */
+  --radius-lg: 14px;
+}
+
+/* 莫西主题 · 组件级差异（其余全部走 token 自动跟随） */
+/* 主按钮药丸化：莫西的圆润体感 */
+:root.theme-light.theme-moxi .btn-primary {
+  border-radius: var(--radius-pill);
+}
+/* 用户气泡：莫西紫弱底 */
+:root.theme-light.theme-moxi .chat-msg.user {
+  background: var(--accent-weak);
+  border-color: rgba(var(--accent-rgb), 0.22);
+}
+/* 输入框/搜索框：淡紫凹陷感 */
+:root.theme-light.theme-moxi .path-input,
+:root.theme-light.theme-moxi .search-input,
+:root.theme-light.theme-moxi .chat-input-box {
+  background: var(--bg-dark);
+}
+
+/* 莫西主题 · 形象层：侧栏/关于页 logo 换莫西头像，关于页亮海报 */
+:root .logo-icon-moxi { display: none; }
+:root.theme-moxi .logo-icon-moxi { display: inline-block; }
+:root.theme-moxi .brand .logo-icon:not(.logo-icon-moxi),
+:root.theme-moxi .gs-about-row .logo-icon:not(.logo-icon-moxi) { display: none; }
+.moxi-about-poster { display: none; width: 100%; border-radius: var(--radius-lg); margin-top: 10px; }
+:root.theme-moxi .moxi-about-poster { display: block; }
+
+/* Work 空状态 · 莫西形象（work.js emptyChatHtml 输出） */
+:root.theme-moxi .moxi-empty { text-align: center; }
+:root.theme-moxi .moxi-empty-img {
+  width: 180px;
+  height: auto;
+  margin-bottom: 8px;
+  filter: drop-shadow(0 8px 20px rgba(90, 70, 200, 0.25));
+}
+
+/* 莫西主题 · 主界面常驻立绘：右侧半透明水印式看板娘（红框方案），vh 随窗口缩放。
+   内容之上 + 低透明度：立绘一直在那里，界面文字仍可读 */
+.moxi-app-standee { display: none; }
+:root.theme-moxi .moxi-app-standee {
+  display: block;
+  position: fixed;
+  right: 10px;
+  bottom: 0;
+  height: 64vh;
+  width: auto;
+  pointer-events: none;
+  z-index: 5;
+  opacity: 0.32;
+  filter: drop-shadow(0 10px 26px rgba(90, 70, 200, 0.18));
+}
+:root.theme-moxi .top-bar { position: relative; z-index: 6; } /* 顶栏不透立绘，保清晰 */
+
+/* 莫西主题 · 充值弹窗立绘：站在弹窗右侧虚化遮罩区（vh 随窗口缩放，min() 防出屏） */
+.moxi-modal-standee { display: none; }
+:root.theme-moxi #creditsModal .moxi-modal-standee {
+  display: block;
+  position: absolute;
+  bottom: 10%;
+  left: min(calc(50% + 270px), calc(100% - 250px));
+  height: 52vh;
+  width: auto;
+  pointer-events: none;
+  filter: drop-shadow(0 10px 24px rgba(90, 70, 200, 0.28));
+}
+
 * {
   margin: 0;
   padding: 0;

@@ -12,16 +12,7 @@ const { createDocx, readDocxText, readPdfText, parseWordComments, parseWordForma
 let JSZip
 try { JSZip = require('jszip') } catch {}
 
-let PDFLib
-try { PDFLib = require('pdf-lib') } catch {}
-
 const READ_LIMIT = 64 * 1024          // read_file 单段最大返回字节数（大文件自动分段）
-
-// ===== 工具输出溢出治理（借鉴 mksglu/context-mode：原始大输出不进模型上下文，全量落盘归档，只回预览+路径，按需 read_file 回读）=====
-const TOOL_OUTPUT_CAP = 10 * 1024     // 单条工具结果超过该字符数触发归档（Readability 正文 9000 字上限不误伤）
-const OVERFLOW_HEAD = 3000            // 归档后保留的开头预览字符数
-const OVERFLOW_TAIL = 1500            // 归档后保留的末尾预览字符数（统计/报错常在末尾）
-const OVERFLOW_EXEMPT = new Set(['read_file']) // 自带分段协议的工具豁免（read_file 64KB 分段本身就是按需拉取）
 
 // 旧版对端提示：未上报 appVersion = 旧版本（接收端缺少稳定性修复，可能卡死/崩溃）
 function oldPeerNote(dev) {
@@ -73,23 +64,19 @@ const TOOL_DEFS = [
   { name: 'rename_path', params: 'path(原路径), new_name(新名称,仅文件名), target(可选)', desc: '重命名文件/文件夹' },
   { name: 'delete_path', params: 'path(路径), target(可选)', desc: '删除文件或文件夹。会先自动备份到快照缓存槽' },
   { name: 'search_files', params: 'dir(搜索起始目录), keyword(关键词), target(可选)', desc: '按名称搜索文件：本机含全部子目录递归搜；远程设备仅搜该目录一层，子目录需先 list_dir 再逐层搜' },
-  { name: 'view_image', params: 'path(单图完整路径) 或 paths(多图路径数组,一次识多张更快,最多6张), question(可选,按用户意图写:想知道画面内容写"描述图片内容",要文字写"完整转录图中文字")', desc: '看图识图：分析本机图片（截图/照片/文档/表格），返回内容描述或文字转录。**多张图验证/对比场景必用 paths 一次传**（单请求总耗时≈单张，逐张调会慢好几倍）。png/jpg/jpeg/webp/gif/bmp，≤20MB 自动压缩。默认 Qwen3.6-35B-A3B（MoE 秒级）。远程图片先 transfer_file 拉到本机再看', manual: '图片视频' },
-  { name: 'remove_bg', params: 'path(图片完整路径), out(可选,输出透明底PNG路径,默认原名-抠图.png 存原图旁)', desc: 'AI 抠图去背景：本地模型（首次自动下载 4.4MB 到应用数据，之后离线秒级）输出透明底 PNG。海报合成素材必备——抠完配 render_html（透明素材 <img> 直接叠加排版）。人像/宠物/产品/物体主体效果好；复杂发丝边缘偶有毛边，合成时加轻微阴影可弱化', manual: '图片视频' },
+  { name: 'view_image', params: 'path(图片完整路径), question(可选,按用户意图写:想知道画面内容写"描述图片内容",要文字写"完整转录图中文字")', desc: '看图识图：分析本机图片（截图/照片/文档/表格），返回内容描述或文字转录。png/jpg/jpeg/webp/gif/bmp，≤20MB。远程图片先 transfer_file 拉到本机再看', manual: '图片视频' },
   { name: 'screenshot', params: 'scope(可选,默认webview:webview=工作台网页视图/app=应用窗口/screen=整屏), path(可选,保存路径), minimizeSelf(可选,bool,仅screen生效,默认true)', desc: '截图本机，**只截图不分析**——返回保存路径，要看内容再调 view_image。用户问"看看我屏幕/桌面上有啥"先 scope:"screen" 截全屏再看，禁止空想回答', manual: '图片视频' },
   { name: 'update_notes', params: 'mode(append=追加一条记录(默认)/read=查看现在记了什么/replace=整本重写(慎用)), content(append/replace 时的内容，markdown，一行一条)', desc: '读写大记事本（工作台 NOTES.md，全局长期记忆，所有对话共享）：用户说"记住XX/以后都XX/我喜欢XX"就 append 一条（带日期前缀）；用户问"你记了什么"用 read；重要习惯/偏好/常用路径/项目背景都值得记，但只记长期有效的信息（一次性任务不要记）' },
-  { name: 'create_word', params: 'path(docx完整路径), title(文档标题), content(markdown正文:标题/加粗/列表/插图/表格行自动排版), paragraphs(可选,段落数组替代content), header/footer/pageNumbers/toc/theme/fonts/lineSpacing/firstLine/cover/tocLevels(可选,详见手册), target(可选)', desc: '创建 Word 文档(.docx)，markdown 一键排版。⚠仅限从零新建——修改已有文档禁用本工具（重建=用户的封面/页眉/分节/样式全丢，格式必乱），改文字一律 modify_word(edit)。排版铁律详见手册', manual: 'word文档' },
+  { name: 'create_word', params: 'path(docx完整路径), title(文档标题), content(markdown正文:标题/加粗/列表/插图/表格行自动排版), paragraphs(可选,段落数组替代content), header/footer/pageNumbers/toc/theme/fonts/lineSpacing/firstLine/cover/tocLevels(可选,详见手册), target(可选)', desc: '创建 Word 文档(.docx)，markdown 一键排版。排版铁律（数据必须表格化/结论用callout）、插图大小对齐控制、版式蓝图先行详见手册', manual: 'word文档' },
   { name: 'read_word', params: 'path(docx完整路径), seg(可选,第几段,长文档分段逐段读), target(可选)', desc: '读 Word 文字内容，自动带出批注。超5000字自动分段防幻觉，逐段传 seg 读，禁止一次读完长文档', manual: 'word文档' },
   { name: 'read_pdf', params: 'path(pdf完整路径), target(可选)', desc: '读 PDF 文字内容（文本层提取）。返回"没有文本层"=扫描件/图片型，改用 pdf_to_image 转图后逐张 view_image 读', manual: 'word文档' },
   { name: 'pdf_to_image', params: 'path(pdf完整路径), pages(可选,默认前10页), target(可选)', desc: '把 PDF 每页渲染成 PNG 存工作区返回路径清单。扫描件 PDF 转图后逐张 view_image 读；也用于看 PDF 版面/表格结构', manual: 'word文档' },
-  { name: 'merge_pdf', params: 'paths(多个pdf完整路径,数组或分号分隔,按此顺序合并), out(可选,输出路径,默认第一个文件旁"原名-合并.pdf")', desc: '合并多个 PDF 为一个（保持页序）。合同/发票/报告拼接收尾常用', manual: 'word文档' },
-  { name: 'split_pdf', params: 'path(pdf完整路径), pages(可选:"3"单页/"2-5"范围/"1,3,5-7"组合/留空=逐页拆), out(可选:提取模式=输出文件路径;逐页模式=输出文件夹,默认源文件旁)', desc: '从 PDF 提取指定页生成新 PDF，或整本逐页拆成多个单页 PDF。抽发票页/拆章节常用', manual: 'word文档' },
-  { name: 'convert_file', params: 'path(单个源文件完整路径)或paths(数组批量,同目标格式), to(目标格式:pdf/docx/png/jpg/mp3/m4a/wav/gif/mp4/webm/mkv/avi/mov/flv), out(可选,输出路径;多张图转pdf合成一册), extraArgs(可选,音视频转换附加ffmpeg参数数组)', desc: '格式转换大全：图片 png/jpg/webp/gif/bmp/avif 互转、多张图片合成 PDF、docx/doc→pdf（需本机 Word/WPS）、html→pdf、md/txt→docx、md→pdf、音视频互转+提音频+转gif（FFmpeg 首次自动下载终身离线）。源文件不动', manual: '格式转换' },
-  { name: 'read_word_format', params: 'path(docx完整路径), mode(可选,默认fingerprint格式指纹;full=逐段全量)', desc: '解析 Word 完整格式（字体/字号/行距/缩进/页边距等），样式级联已折算成每段实际生效格式。参考 A 改 B 的工作流详见手册', manual: 'Word排版' },
-  { name: 'read_paper_spec', params: 'path(格式模板docx完整路径), target(可选)', desc: '把学校论文格式模板蒸馏成几百字"格式规范书"（页面设置/各角色格式/批注规则/红字原文）。论文套模板闭环第一步，禁止 read_word 模板全文', manual: 'Word排版' },
-  { name: 'check_paper_format', params: 'path(套模板后的产出docx完整路径), templatePath(格式模板docx完整路径), target(可选)', desc: '论文产出体检：对照模板规范书逐项检查，返回逐节对照进度表（六节 ✓/✗）+ issue 清单。分段循环：一节 ✓ 才进下一节，禁止套完不验就交差', manual: 'Word排版' },
-  { name: 'apply_word_format', params: 'path(要改的docx完整路径), formatPath(格式参考A的docx,rules用"source"时必传), rules(套用规则:map角色批量套或picks单段精修), target(不支持远程)', desc: '内容一字不动只改格式。⚠改论文格式禁用本工具，必须走 apply_word_template 闭环。适合普通文档参考A改B、体检后picks精修。详见手册', manual: 'Word排版' },
-  { name: 'apply_word_template', params: 'path(论文docx完整路径), templatePath(学校格式模板docx完整路径), cover(可选封面字段对象:title题目/college学院/major专业/grade年级/studentId学号/name姓名/advisor指导教师/date日期), outputPath(可选输出路径,默认"论文名-套模板格式.docx"), target(不支持远程)', desc: '论文套学校格式模板：模板当骨架论文当血肉，封面校徽图片/页眉页脚/分节页码/目录域一步到位，产出零批注零红字。cover 建议必传。改论文格式必须走本工具，六节闭环详见手册', manual: 'Word排版' },
-  { name: 'modify_word', params: 'path(docx完整路径), mode(append=追加/edit=精准替换,默认append;replace=整篇重写⚠慎用), paragraphs/content(append时新内容,格式同create_word), replacements(edit必填:[{find:"旧文字",replace:"新文字",all?}]), title/header/toc/theme等(仅replace生效), target(可选)', desc: '修改已有 Word（自动备份）。**改文字一律 mode:edit 精准替换（唯一正确方式）**——改 10 处也逐条 replacements，禁止图省事用 replace 重写或 create_word 重建（那会丢掉原封面/页眉/分节/样式，格式必乱）；replace 仅限用户明确说"整篇重写/重新生成"时用', manual: 'word文档' },
+  { name: 'read_word_format', params: 'path(docx完整路径), mode(可选,默认fingerprint格式指纹;full=逐段全量)', desc: '解析 Word 完整格式（字体/字号/行距/缩进/页边距等），样式级联已折算成每段实际生效格式。参考 A 改 B 的工作流详见手册', manual: '论文排版' },
+  { name: 'read_paper_spec', params: 'path(格式模板docx完整路径), target(可选)', desc: '把学校论文格式模板蒸馏成几百字"格式规范书"（页面设置/各角色格式/批注规则/红字原文）。论文套模板闭环第一步，禁止 read_word 模板全文', manual: '论文排版' },
+  { name: 'check_paper_format', params: 'path(套模板后的产出docx完整路径), templatePath(格式模板docx完整路径), target(可选)', desc: '论文产出体检：对照模板规范书逐项检查，返回逐节对照进度表（六节 ✓/✗）+ issue 清单。分段循环：一节 ✓ 才进下一节，禁止套完不验就交差', manual: '论文排版' },
+  { name: 'apply_word_format', params: 'path(要改的docx完整路径), formatPath(格式参考A的docx,rules用"source"时必传), rules(套用规则:map角色批量套或picks单段精修), target(不支持远程)', desc: '内容一字不动只改格式。⚠改论文格式禁用本工具，必须走 apply_word_template 闭环。适合普通文档参考A改B、体检后picks精修。详见手册', manual: '论文排版' },
+  { name: 'apply_word_template', params: 'path(论文docx完整路径), templatePath(学校格式模板docx完整路径), cover(可选封面字段对象:title题目/college学院/major专业/grade年级/studentId学号/name姓名/advisor指导教师/date日期), outputPath(可选输出路径,默认"论文名-套模板格式.docx"), target(不支持远程)', desc: '论文套学校格式模板：模板当骨架论文当血肉，封面校徽图片/页眉页脚/分节页码/目录域一步到位，产出零批注零红字。cover 建议必传。改论文格式必须走本工具，六节闭环详见手册', manual: '论文排版' },
+  { name: 'modify_word', params: 'path(docx完整路径), mode(append=追加/replace=全量重写/edit=精准替换,默认append), paragraphs/content(append/replace时新内容,格式同create_word), replacements(edit必填:[{find:"旧文字",replace:"新文字",all?}]), title/header/toc/theme等(仅replace生效), target(可选)', desc: '修改已有 Word（自动备份）。append=追加；replace=重写；edit=精准替换改几处文字首选，不用重读重写全文', manual: 'word文档' },
   { name: 'read_word_tables', params: 'path(docx完整路径), target(可选)', desc: '列出 Word 里所有表格（行×列+前两行预览）。改表格前先看清单定位第几个表', manual: '表格' },
   { name: 'format_word_table', params: 'path(docx完整路径), index(第几个表格,1起)/near(附近文字), style(可选:threeline三线表/grid全边框/zebra斑马/light公文浅色/none无框线), colWidths/eastAsiaFont/sizePt/colAligns/colBold等按列参数(可选), headerRows/keepWithPrev/widthPct(可选), target(可选)', desc: 'Word 表格排版（内容不动只改格式）：五预设风格+按列参数（"金额列右对齐"传 colAligns 一步到位）。参数详见手册', manual: '表格' },
   { name: 'add_word_table', params: 'path(docx完整路径), rows(二维数组,第一行为表头), colWidths(可选,列宽cm数组), afterText(可选,插到该段文字之后,默认末尾), theme/eastAsiaFont/font/sizePt(可选), target(可选)', desc: '在 Word 文档里插入表格，afterText 定位段后插入。格式不满意可接着 format_word_table', manual: '表格' },
@@ -118,7 +105,7 @@ const TOOL_DEFS = [
   { name: 'generate_image', params: 'prompt(画面描述/修改指令,越具体越好:主体/风格/构图/光线/色调), image(可选,要编辑/参考的图:本地路径或URL,数组1-3张多图合成), size(可选,仅生新图,"宽x高"如1024x1024), batch(可选,张数1-4), steps(可选,1-100默认30), save_path(可选,默认工作区「MSMate生成/图片」)', desc: 'AI 生图+编辑：不传 image=文生图；传 image=按指令改图保构图；2-3张=多图合成。画幅换算/对话式反复修改循环/遮罩黑区规则详见手册', manual: '图片视频' },
   { name: 'generate_video', params: 'prompt(视频内容描述,一句话说清主体+动作+场景+镜头感), save_path(可选,默认工作区「MSMate生成/视频」)', desc: 'AI 文生视频（模型在设置里配置）：约5秒短视频，耗时2-10分钟勿重复调用；多数模型可能产生费用，调用前先告知用户', manual: '图片视频' },
   { name: 'task_plan', params: 'items(建立/替换清单:字符串数组，每项一个具体动作), doing(标记进行中:序号或序号数组), done(标记完成:序号或序号数组)', desc: '任务清单（≥3步任务必用）：开工前建清单，每完成一项立刻打勾并标记下一项进行中；系统会把进度附在每步结果里，照着"下一步"提示继续干，全部打勾再收尾。⚠️ 打勾=该步实际验证成功；工具报错/失败=没完成，严禁打勾，如实汇报失败；也严禁跳步（第2步没完成不许先勾第2步）' },
-  { name: 'render_html', params: 'path(HTML完整路径), out(可选,输出png路径,默认同名.png), preset(可选画布:xhs=1080x1440小红书3:4/square=1080x1080微信分享/a4=1240x1754竖版海报/wide=2100x900横幅/wechat-cover=900x383公众号封面,默认a4), width/height(可选,像素,覆盖preset), scale(可选,1-4倍高清出图,默认1;高清用2且HTML按CSS尺寸写)', desc: 'HTML 渲染成 PNG（离屏窗口截图，中文/渐变/阴影完美）。⚠首次使用必须先 read_file 手册（设计.md）：先定美学方向+备素材三路再写 HTML，禁模板答案。设计工作流：定方向 → 备素材 → write_file 写单文件 HTML（内嵌CSS按CSS尺寸写死）→ render_html → view_image 过功能关+审美关 → 改了重渲。海报/公众号封面/小红书卡片/简历/邀请函全靠它', manual: '设计' }
+  { name: 'render_html', params: 'path(HTML完整路径), out(可选,输出png路径,默认同名.png), preset(可选画布:xhs=1080x1440小红书3:4/square=1080x1080微信分享/a4=1240x1754竖版海报/wide=2100x900横幅/wechat-cover=900x383公众号封面,默认a4), width/height(可选,像素,覆盖preset), scale(可选,1-4倍高清出图,默认1;高清用2且HTML按CSS尺寸写)', desc: 'HTML 渲染成 PNG（离屏窗口截图，中文/渐变/阴影完美）。设计工作流：write_file 写单文件 HTML（内嵌CSS按CSS尺寸写死）→ render_html → view_image 自检溢出/配色 → 改了重渲。海报/公众号封面/小红书卡片/简历/邀请函全靠它，设计原则详见手册', manual: '设计' }
 ]
 
 function buildToolPromptSection() {
@@ -136,7 +123,6 @@ const { browserHeaders, looksLikeAntiCrawl, renderPage } = require('./anticrawl'
 
 // ===== 截图引擎（v2.4.96：screenshot 工具——webview/app/screen 三级，主进程直通零 IPC）=====
 // 纯 Node 环境（冒烟/CLI）下 require('electron') 拿到的是路径字符串而非 API → shotElectron 返回 null，工具层给出明确报错
-let _removeBgSession = null // u2netp 推理会话缓存（跨实例共享无害：同模型同路径）
 function shotElectron() {
   try {
     const m = require('electron')
@@ -331,26 +317,6 @@ function fileNameFromUrl(u) {
     if (base && /\.[A-Za-z0-9]{1,8}$/.test(base)) return base.replace(/[\\/:*?"<>|]/g, '_')
   } catch {}
   return ''
-}
-
-// 文件魔数 → 真实扩展名（download_file 落盘后校正"AVIF 伪装 .jpg"之类的骗术，防识图/读取全拒）
-function sniffMagic(file) {
-  try {
-    const fd = fs.openSync(file, 'r')
-    const buf = Buffer.alloc(16)
-    fs.readSync(fd, buf, 0, 16, 0)
-    fs.closeSync(fd)
-    const s = (i, str) => str.split('').every((ch, k) => buf[i + k] === ch.charCodeAt(0))
-    if (buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) return { ext: 'jpg' }
-    if (buf[0] === 0x89 && s(1, 'PNG')) return { ext: 'png' }
-    if (s(0, 'GIF8')) return { ext: 'gif' }
-    if (buf.length >= 12 && s(8, 'WEBP')) return { ext: 'webp' }
-    if (buf.length >= 12 && s(4, 'ftypavif')) return { ext: 'avif' }
-    if (buf.length >= 12 && s(4, 'ftyp')) return { ext: 'mp4' }
-    if (s(0, '%PDF')) return { ext: 'pdf' }
-    if (buf[0] === 0x50 && buf[1] === 0x4B) return { ext: 'zip' }
-  } catch {}
-  return null
 }
 
 // 模型抠链接常把 markdown 反引号/引号/尖括号带进来，统一剥掉
@@ -612,23 +578,6 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
     return true
   }
 
-  // 保护区（C 盘非工作台/桌面）文档改稿：把原文件复制到工作台「改稿」区，在副本上改。
-  // 工作流：原文件全程不动（对比参考+防改坏），副本免审批随便折腾，自检满意后再 copy_path 回原位。
-  // 副本智能复用：副本比原文件新 = 上次改稿会话的延续，直接沿用（多轮修改不丢进度）；
-  // 原文件更新 = 用户外部改过或上次已回写，重拷新起点。
-  function draftPathOf(p) { return path.join(workspaceDir, '改稿', path.basename(p)) }
-  function protectedDraftTarget(p) { try { return !!(isProtectedLocal(p) && fs.existsSync(p)) } catch { return false } }
-  function protectedDraftCopy(p) {
-    try {
-      if (!protectedDraftTarget(p)) return null
-      const draftPath = draftPathOf(p)
-      fs.mkdirSync(path.dirname(draftPath), { recursive: true })
-      if (fs.existsSync(draftPath) && fs.statSync(draftPath).mtimeMs >= fs.statSync(p).mtimeMs) return draftPath
-      fs.copyFileSync(p, draftPath)
-      return draftPath
-    } catch { return null }
-  }
-
   // 防自包含：目标与源相同，或目标在源目录内部（复制/移动会导致无限递归）
   function selfContainError(src, destPath) {
     const norm = (x) => path.normalize(String(x)).toLowerCase().replace(/[\\/]+$/, '')
@@ -811,48 +760,12 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
         paths: target === 'local' ? [args.path] : []
       }
     }
-    if (name === 'remove_bg') {
-      const outP = args.out ? path.resolve(String(args.out)) : String(args.path || '').replace(/\.[^.]+$/, '') + '-抠图.png'
-      const exists = outP && fs.existsSync(outP)
-      return { destructive: exists, note: exists ? `覆盖已有抠图 ${outP}` : '生成透明底抠图（新文件）', paths: [outP] }
-    }
-    if (name === 'merge_pdf' || name === 'split_pdf') {
-      let out = String(args.out || '').trim()
-      const isDirMode = name === 'split_pdf' && !String(args.pages || '').trim()
-      if (!out && name === 'merge_pdf') {
-        const first = Array.isArray(args.paths) ? args.paths[0] : String(args.paths || '').split(/[;；]/)[0]
-        out = String(first || '').trim().replace(/\.pdf$/i, '') + '-合并.pdf'
-      }
-      if (!out && name === 'split_pdf' && args.path) out = String(args.path).replace(/\.pdf$/i, '') + '-页.pdf'
-      const exists = out ? fs.existsSync(out) : false
-      return {
-        destructive: exists,
-        note: isDirMode ? '逐页拆分到新文件夹（不改原文件）' : (exists ? `覆盖已有 PDF ${out}（原文件会先备份）` : '生成新 PDF（不改原文件）'),
-        paths: []
-      }
-    }
-    if (name === 'convert_file') {
-      const to = String(args.to || '').trim().toLowerCase()
-      const firstSrc = Array.isArray(args.paths) ? args.paths[0] : (args.path || String(args.paths || '').split(/[;；]/)[0] || '')
-      const out = String(args.out || '').trim() || (firstSrc ? String(firstSrc).replace(/\.[^.]+$/, '') + '.' + to : '')
-      const exists = out ? fs.existsSync(out) : false
-      return {
-        destructive: exists,
-        note: exists ? `覆盖已有文件 ${out}（原文件会先备份）` : `转换生成 ${to.toUpperCase()}（新文件，不改源文件）`,
-        paths: []
-      }
-    }
     if (name === 'modify_word' || name === 'append_table_rows' || name === 'modify_table' || name === 'format_table') {
       const exists = await targetExists(args.path, target)
-      // C 盘保护区目标（仅 modify_word 已实现自动转工作台改稿副本）：审批按副本路径算——不再弹保护区审批
-      const draftMode = name === 'modify_word' && target === 'local' && exists && protectedDraftTarget(args.path)
-      const effPath = draftMode ? draftPathOf(args.path) : args.path
       return {
         destructive: exists,
-        note: draftMode
-          ? `修改 C 盘文档：自动转工作台改稿副本（${effPath}），原文件不动留作对比`
-          : (exists ? `修改已有文件 ${args.path}（原文件会先备份）` : '目标文件不存在'),
-        paths: target === 'local' ? [effPath] : []
+        note: exists ? `修改已有文件 ${args.path}（原文件会先备份）` : '目标文件不存在',
+        paths: target === 'local' ? [args.path] : []
       }
     }
     if (name === 'create_table') {
@@ -1378,53 +1291,42 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
     },
 
     async view_image(args) {
-      // 多图模式：paths 数组一次请求识多张（单请求总耗时≈单张，素材批量验证必用以省时）；兼容单图 path
-      const list = (Array.isArray(args.paths) ? args.paths : (typeof args.paths === 'string' ? args.paths.split(/[;\n]/) : [])).map((p) => String(p || '').trim()).filter(Boolean)
-      const files = [...new Set(list.length ? list : (args.path ? [String(args.path)] : []))]
-      if (!files.length) return { ok: false, message: '缺少 path（单图完整路径）或 paths（多图路径数组，一次识多张更快）' }
-      if (files.length > 6) return { ok: false, message: `一次最多 6 张（收到 ${files.length} 张，图太多 token 爆炸），分批来` }
+      if (!args.path) return { ok: false, message: '缺少 path（图片完整路径）' }
+      const ext = path.extname(args.path).toLowerCase()
       const MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp' }
-      const images = []
-      const skipped = []
-      for (const p of files) {
-        const ext = path.extname(p).toLowerCase()
-        if (!MIME[ext]) { skipped.push(`${path.basename(p)}（格式 ${ext || '无扩展名'} 不支持）`); continue }
-        let buf
-        try { buf = fs.readFileSync(p) } catch { skipped.push(`${path.basename(p)}（不存在或无法读取）`); continue }
-        if (buf.length > 20 * 1024 * 1024) { skipped.push(`${path.basename(p)}（超 20MB）`); continue }
-        if (buf.length < 100) { skipped.push(`${path.basename(p)}（文件太小，可能不是图片）`); continue }
-        // 图片魔数校验：扩展名对但内容不对（改名文件/损坏文件/网页另存失败）早点说清，别让视觉模型对着乱码幻觉
-        const magicOk =
-          (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) ||                    // jpeg
-          (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) || // png
-          (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) ||                    // gif
-          (buf[0] === 0x42 && buf[1] === 0x4d) ||                                       // bmp
-          (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[8] === 0x57)    // webp(RIFF...WEBP)
-        if (!magicOk) { skipped.push(`${path.basename(p)}（内容与扩展名不符，损坏或改名文件）`); continue }
-        let mime = MIME[ext]
-        // 大图自动压缩：>1MB 就用 Electron 自带 nativeImage 缩到长边 1800 转 JPEG（不加依赖；plain node 测试环境没有 nativeImage，自动跳过用原图）。
-        // 识图不需要原始分辨率：桌面原图 PNG 常 2-5MB/几千 px，直发上游处理上万 tokens 轻松超 60s（实测踩雷），压后几百 KB 秒级返回
-        if (buf.length > 1024 * 1024) {
-          try {
-            const electron = require('electron')
-            const nativeImage = electron && electron.nativeImage
-            if (nativeImage) {
-              const img = nativeImage.createFromBuffer(buf)
-              if (!img.isEmpty()) {
-                const size = img.getSize()
-                const long = Math.max(size.width, size.height)
-                const resized = long > 1800
-                  ? img.resize({ width: Math.round(size.width * 1800 / long), height: Math.round(size.height * 1800 / long) })
-                  : img
-                const jpeg = resized.toJPEG(82)
-                if (jpeg && jpeg.length > 0 && jpeg.length < buf.length) { buf = jpeg; mime = 'image/jpeg' }
-              }
+      if (!MIME[ext]) return { ok: false, message: `不支持的图片格式：${ext || '无扩展名'}（支持 png/jpg/jpeg/webp/gif/bmp）` }
+      let buf
+      try { buf = fs.readFileSync(args.path) } catch { return { ok: false, message: `图片不存在或无法读取：${args.path}` } }
+      if (buf.length > 20 * 1024 * 1024) return { ok: false, message: '图片超过 20MB，请先压缩或裁剪' }
+      if (buf.length < 100) return { ok: false, message: '文件太小，可能不是有效图片' }
+      // 图片魔数校验：扩展名对但内容不对（改名文件/损坏文件/网页另存失败）早点说清，别让视觉模型对着乱码幻觉
+      const magicOk =
+        (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) ||                    // jpeg
+        (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) || // png
+        (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) ||                    // gif
+        (buf[0] === 0x42 && buf[1] === 0x4d) ||                                       // bmp
+        (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[8] === 0x57)    // webp(RIFF...WEBP)
+      if (!magicOk) return { ok: false, message: `这个文件不是有效图片（内容与扩展名 ${ext} 不符，可能是改名文件/下载失败的网页/损坏文件）。建议：重新截图或重新下载后再试` }
+      let mime = MIME[ext]
+      // 大图自动压缩：>8MB 用 Electron 自带 nativeImage 缩到长边 2048 转 JPEG（不加依赖；plain node 测试环境没有 nativeImage，自动跳过用原图）
+      if (buf.length > 8 * 1024 * 1024) {
+        try {
+          const electron = require('electron')
+          const nativeImage = electron && electron.nativeImage
+          if (nativeImage) {
+            const img = nativeImage.createFromBuffer(buf)
+            if (!img.isEmpty()) {
+              const size = img.getSize()
+              const long = Math.max(size.width, size.height)
+              const resized = long > 2048
+                ? img.resize({ width: Math.round(size.width * 2048 / long), height: Math.round(size.height * 2048 / long) })
+                : img
+              const jpeg = resized.toJPEG(85)
+              if (jpeg && jpeg.length > 0 && jpeg.length < buf.length) { buf = jpeg; mime = 'image/jpeg' }
             }
-          } catch { /* 压缩不可用就用原图直发 */ }
-        }
-        images.push({ name: path.basename(p), url: `data:${mime};base64,${buf.toString('base64')}` })
+          }
+        } catch { /* 压缩不可用就用原图直发 */ }
       }
-      if (!images.length) return { ok: false, message: '没有可用图片：' + skipped.join('；') }
       // 识图模型配置：默认硅基流动免费视觉模型，可在 AI 设置里改。
       // 优先级（v2.7.14）：显式视觉槽位服务商 > 主模型内置时走 MSMate 代理（扣积分）> 旧全局 Key > 未登录时回落内置代理
       const pv = resolveModelProvider(getSetting, 'vision')
@@ -1443,15 +1345,11 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       }
       if (!apiKey) return { ok: false, message: '未配置 API Key（AI 设置里设置后才能识图；登录 MSMate 账号可直接用内置看图）' }
       // 走内置代理时模型钳到内置视觉清单（旧存档里可能存着自定义视觉模型名，内置清单没有会 400）
-      // 默认 Qwen3.6-35B-A3B：MoE 只激活 3B 参数，识图比 27B 稠密快 ~10 倍（实测 1.5s vs 15.5s）且同价，2026-09-12 换默认
-      let model = getSetting('aiVisionModel') || 'Qwen/Qwen3.6-35B-A3B'
+      let model = getSetting('aiVisionModel') || 'PaddlePaddle/PaddleOCR-VL-1.5'
       if (apiKey === ((resolveMsmateProvider(getSetting) || {}).apiKey)) {
-        if (!/zai-org\/GLM-4\.5V|PaddlePaddle\/PaddleOCR|Qwen\/Qwen3\.[368]/i.test(model)) model = 'Qwen/Qwen3.6-35B-A3B'
+        if (!/zai-org\/GLM-4\.5V|PaddlePaddle\/PaddleOCR/i.test(model)) model = 'PaddlePaddle/PaddleOCR-VL-1.5'
       }
       let question = String(args.question || '').trim() || '请识别这张图片：先用一句话说明它整体是什么（照片/截图/文档/表格等），再描述画面主要内容（主体、场景、界面元素、图表结构）。图中如有文字（含水印、域名、版权行）请如实转录并注明位置；如果图中没有文字，直接说"图中无文字"并描述画面即可，不要硬凑或猜测文字内容。'
-      if (images.length > 1) {
-        question = `共 ${images.length} 张图（顺序：${images.map((im, i) => `${i + 1}.${im.name}`).join('、')}）。请按编号逐一说明每张图，不要混淆：\n${question}`
-      }
       // DeepSeek-OCR 官方要求文本以 <image> 标记开头，否则模型对不上图会幻觉输出
       if (/DeepSeek-OCR/i.test(model)) question = '<image>\n' + question
       const body = JSON.stringify({
@@ -1460,15 +1358,10 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
           role: 'user',
           content: [
             { type: 'text', text: question },
-            ...images.map((im) => ({ type: 'image_url', image_url: { url: im.url } }))
+            { type: 'image_url', image_url: { url: `data:${mime};base64,${buf.toString('base64')}` } }
           ]
         }],
-        // 多图按张数放大输出预算（每张描述都需要空间）
-        max_tokens: Math.min(8192, 2048 * images.length),
-        // 显式非流式：解析要整段 JSON（不传的话内置代理默认按流式强转，view_image 拿到的是 SSE 无法解析）
-        stream: false,
-        // Qwen3 系（3.6/3.8）默认开思考模式：识图不需要推理链，关掉省积分提速；上游不认该参数会忽略
-        ...( /^Qwen\/Qwen3\./i.test(model) ? { enable_thinking: false } : {})
+        max_tokens: 2048
       })
       // 失败时带出具体原因（状态码/错误信息/超时），AI 才不会瞎猜"服务中断"
       const answer = await new Promise((resolve) => {
@@ -1486,8 +1379,7 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
             try {
               const j = JSON.parse(text)
               const msg = j.choices && j.choices[0] && j.choices[0].message
-              // reasoning 系模型兜底：content 为空时取 reasoning_content（思考型模型偶尔把描述写进思考区）
-              if (msg && (msg.content || msg.reasoning_content)) return resolve(String(msg.content || msg.reasoning_content))
+              if (msg && msg.content) return resolve(String(msg.content))
               const apiMsg = j.error && (j.error.message || j.error.code)
               resolve(`【HTTP ${res.statusCode}】${apiMsg || text.slice(0, 200)}`)
             } catch { resolve(`【HTTP ${res.statusCode}】响应非 JSON：${text.slice(0, 200)}`) }
@@ -1500,94 +1392,7 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
         req.end()
       })
       if (!answer || answer.startsWith('【')) return { ok: false, message: `识图失败：${answer || '模型无响应'}（模型 ${model}）。请把【】里的真实原因原样告知用户，禁止编造成"服务中断"或"系统强制停止"；401/403=API Key 问题，404=模型名不存在，429=限流稍后再试，5xx=服务端问题。用户要求重试时应照做（可换更简短的问题措辞），不得拒绝` }
-      const skipNote = skipped.length ? `\n（已跳过 ${skipped.length} 张不可用图片：${skipped.join('；')}）` : ''
-      return { ok: true, message: `识图结果（${model}${images.length > 1 ? `，${images.length} 张` : ''}）：\n${answer}${skipNote}` }
-    },
-
-    async remove_bg(args) {
-      if (!args.path) return { ok: false, message: '缺少 path（图片完整路径）' }
-      const el = shotElectron()
-      if (!el) return { ok: false, message: 'remove_bg 需在应用内使用（当前环境无 Electron）' }
-      let buf
-      try { buf = fs.readFileSync(args.path) } catch { return { ok: false, message: `图片不存在或无法读取：${args.path}` } }
-      const img = el.nativeImage.createFromBuffer(buf)
-      if (img.isEmpty()) return { ok: false, message: '不是有效图片（PNG/JPG，webp/gif/bmp 也支持）' }
-      const sz = img.getSize()
-      let ort
-      try { ort = require('onnxruntime-node') } catch { return { ok: false, message: '抠图引擎（onnxruntime-node）不可用，可能安装不完整，请重装应用' } }
-      const modelDir = path.join(el.app.getPath('userData'), 'ai-models')
-      fs.mkdirSync(modelDir, { recursive: true })
-      const modelPath = path.join(modelDir, 'u2netp.onnx')
-      // 模型按需下载（4.4MB，多源容错，下好终身离线用）
-      if (!fs.existsSync(modelPath) || fs.statSync(modelPath).size < 1000000) {
-        const urls = [
-          'https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx',
-          'https://gh-proxy.com/https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx',
-          'https://mirror.ghproxy.com/https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx',
-          'https://hf-mirror.com/tomjackson2023/rembg/resolve/main/u2netp.onnx',
-          'https://huggingface.co/tomjackson2023/rembg/resolve/main/u2netp.onnx'
-        ]
-        const dl = (u) => new Promise((resolve, reject) => {
-          const mod = u.startsWith('http:') ? http : https
-          const get = (u2, redirects) => mod.get(u2, (r2) => {
-            if (r2.statusCode >= 300 && r2.statusCode < 400 && r2.headers.location && redirects < 5) return get(r2.headers.location, redirects + 1)
-            if (r2.statusCode !== 200) return reject(new Error('HTTP ' + r2.statusCode))
-            const chunks = []
-            r2.on('data', (c) => chunks.push(c))
-            r2.on('end', () => resolve(Buffer.concat(chunks)))
-            r2.on('error', reject)
-          }).on('error', reject)
-          get(u, 0)
-        })
-        let got = null
-        for (const u of urls) {
-          try { const b = await dl(u); if (b.length > 1000000) { fs.writeFileSync(modelPath, b); got = b; break } } catch { /* 换下一个源 */ }
-        }
-        if (!got) return { ok: false, message: '抠图模型首次下载失败（4.4MB，多个源都不通）。请检查网络后重试；下载成功后即可离线使用' }
-      }
-      // 预处理：缩到模型输入 320×320，BGRA→RGB float + rembg 标准 normalize；推理（session 缓存）；mask 放大合成透明 PNG
-      try {
-        const IN = 320
-        const small = img.resize({ width: IN, height: IN })
-        const bmp = small.toBitmap() // BGRA
-        const px = IN * IN
-        const mean = [0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225]
-        const data = new Float32Array(3 * px)
-        for (let i = 0; i < px; i++) {
-          data[i] = (bmp[i * 4 + 2] / 255 - mean[0]) / std[0]
-          data[px + i] = (bmp[i * 4 + 1] / 255 - mean[1]) / std[1]
-          data[2 * px + i] = (bmp[i * 4 + 0] / 255 - mean[2]) / std[2]
-        }
-        if (!_removeBgSession) _removeBgSession = await ort.InferenceSession.create(modelPath)
-        const session = _removeBgSession
-        const tensor = new ort.Tensor('float32', data, [1, 3, IN, IN])
-        const feeds = {}
-        feeds[session.inputNames[0]] = tensor
-        const out = await session.run(feeds)
-        const mask = out[session.outputNames[0]].data
-        const mbuf = Buffer.alloc(px * 4)
-        for (let i = 0; i < px; i++) {
-          const v = Math.max(0, Math.min(255, Math.round(mask[i] * 255)))
-          mbuf[i * 4] = v; mbuf[i * 4 + 1] = v; mbuf[i * 4 + 2] = v; mbuf[i * 4 + 3] = 255
-        }
-        const maskBig = el.nativeImage.createFromBitmap(mbuf, { width: IN, height: IN }).resize({ width: sz.width, height: sz.height })
-        const mbmp = maskBig.toBitmap()
-        const origBmp = img.toBitmap()
-        const outBuf = Buffer.alloc(sz.width * sz.height * 4)
-        for (let i = 0; i < sz.width * sz.height; i++) {
-          outBuf[i * 4] = origBmp[i * 4]
-          outBuf[i * 4 + 1] = origBmp[i * 4 + 1]
-          outBuf[i * 4 + 2] = origBmp[i * 4 + 2]
-          outBuf[i * 4 + 3] = mbmp[i * 4 + 2] // mask 亮度作 alpha
-        }
-        const outImg = el.nativeImage.createFromBitmap(outBuf, { width: sz.width, height: sz.height })
-        const outPath = args.out ? path.resolve(String(args.out)) : args.path.replace(/\.[^.]+$/, '') + '-抠图.png'
-        fs.mkdirSync(path.dirname(outPath), { recursive: true })
-        fs.writeFileSync(outPath, outImg.toPNG())
-        return { ok: true, message: `抠图完成（透明底 PNG，${sz.width}×${sz.height}）→ ${outPath}。可直接用于 render_html 合成海报（<img> 叠加排版），或 view_image 查看效果`, path: outPath }
-      } catch (err) {
-        return { ok: false, message: `抠图失败：${err.message}` }
-      }
+      return { ok: true, message: `识图结果（${model}）：\n${answer}` }
     },
 
     async screenshot(args) {
@@ -2200,24 +2005,6 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
           if (!fs.existsSync(args.path)) return { ok: false, message: `文件不存在：${args.path}。先用 create_word 创建，或用 search_files 找到它` }
           const blk = legacyDocWriteBlock(args.path)
           if (blk) return { ok: false, message: blk }
-          // C 盘保护区（用户文档区等）：不在原地改——自动转工作台「改稿」副本，原文件全程不动留作对比参考，
-          // 副本免审批随便改+自检；AI 确认无误后再 copy_path 回写原位（那一跳写用户目录，弹一次审批合理）
-          const draft = protectedDraftCopy(args.path)
-          if (draft) {
-            const snap = snapshots.backupLocal(draft)
-            if (!snap.ok) return { ok: false, message: `已取消修改：副本备份失败（${snap.reason}）` }
-            const result = await modifyDocx(draft, content, mode)
-            if (mode === 'edit' && !result.replaced) {
-              return { ok: false, message: `${describeEdit(result)}，副本未改动。可先 read_word 副本确认原文措辞` }
-            }
-            const what = mode === 'edit' ? describeEdit(result) : (mode === 'replace' ? '重写' : '追加')
-            return {
-              ok: true,
-              message: `原文件未动（留作对比参考）。已在工作台副本上完成${what}：${draft}（原文件：${args.path}）。流程：先 read_word 自检副本 → 有问题继续在副本上改 → 满意后用 copy_path 把 ${draft} 复制回 ${args.path}（写回用户目录会弹一次审批，向用户说明即可）`,
-              path: draft,
-              undo: { type: 'restore_snap', snapId: snap.id }
-            }
-          }
           const snap = snapshots.backupLocal(args.path)
           if (!snap.ok) return { ok: false, message: `已取消修改：原文件备份失败（${snap.reason}）` }
           const result = await modifyDocx(args.path, content, mode)
@@ -3028,18 +2815,6 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
             try { if (fs.existsSync(renamed)) fs.unlinkSync(renamed); fs.renameSync(outPath, renamed); finalPath = renamed } catch {}
           }
         }
-        // 魔数嗅探：内容与扩展名不符时按真实格式改名（镜像站常把 AVIF 伪装成 .jpg，导致识图/读取全拒）
-        let magicNote = ''
-        try {
-          const sniff = sniffMagic(finalPath)
-          if (sniff && !finalPath.toLowerCase().endsWith('.' + sniff.ext)) {
-            const fixed = finalPath.replace(/\.[^.\\/]*$/, '') + '.' + sniff.ext
-            try { if (fs.existsSync(fixed)) fs.unlinkSync(fixed); fs.renameSync(finalPath, fixed); finalPath = fixed } catch {}
-            magicNote = sniff.ext === 'avif'
-              ? '。⚠ 文件实际是 AVIF 格式（扩展名已按内容修正），识图工具不支持 AVIF——建议换 jpg/png 图源重新下载，或用 generate_image 生成'
-              : `。⚠ 文件实际是 ${sniff.ext.toUpperCase()} 格式，扩展名已按内容修正`
-          }
-        } catch {}
         const size = fs.statSync(finalPath).size
         const sizeText = size > 1048576 ? `${(size / 1048576).toFixed(1)} MB` : `${(size / 1024).toFixed(1)} KB`
         const warn = isExec ? '。可执行文件已下载，运行前建议用户自行确认安全性' : ''
@@ -3047,7 +2822,7 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
         emitDownload({ type: 'end', id: dlId, ok: true, fileName: path.basename(finalPath), size })
         return {
           ok: true,
-          message: `已下载 ${path.basename(finalPath)}（${sizeText}，类型 ${contentType.split(';')[0] || '未知'}）→ ${finalPath}${magicNote}${warn}`,
+          message: `已下载 ${path.basename(finalPath)}（${sizeText}，类型 ${contentType.split(';')[0] || '未知'}）→ ${finalPath}${warn}`,
           undo: snap && snap.ok ? { type: 'restore_snap', snapId: snap.id } : { type: 'delete_local', path: finalPath }
         }
       } catch (err) {
@@ -3058,323 +2833,7 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       }
     },
 
-    // ===== 格式转换大全（本地）=====
-    // FFmpeg 按需下载（音视频转换用，学 u2netp 模型先例：首次自动下载终身离线）
-    async ensureFfmpeg(prog) {
-      const el = shotElectron()
-      const userData = el && el.app && el.app.getPath ? el.app.getPath('userData') : null
-      const binDir = userData ? path.join(userData, 'ffmpeg', 'bin') : path.join(tmpDir, 'ffmpeg', 'bin')
-      const exe = path.join(binDir, 'ffmpeg.exe')
-      if (fs.existsSync(exe) && fs.statSync(exe).size > 30 * 1024 * 1024) return exe
-      const zipUrl = path.join(binDir, '..', 'ffmpeg.zip')
-      const urls = [
-        'https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-essentials.zip',
-        'https://gh-proxy.com/https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-essentials.zip',
-        'https://mirror.ghproxy.com/https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-essentials.zip'
-      ]
-      let got = false
-      for (const u of urls) {
-        try {
-          prog(`\n⏳ 首次使用音视频转换，下载转换引擎（约 80MB，一次下载终身离线）…\n`)
-          fs.mkdirSync(binDir, { recursive: true })
-          await httpDownload(u, zipUrl, null, 0, browserHeaders(0), { onProgress: () => {} })
-          if (!JSZip) throw new Error('解压组件不可用')
-          const zip = await JSZip.loadAsync(fs.readFileSync(zipUrl))
-          let ffEntry = null
-          zip.forEach((rp, f) => { if (!ffEntry && /ffmpeg\.exe$/i.test(rp) && !f.dir) ffEntry = f })
-          if (!ffEntry) throw new Error('压缩包里没找到 ffmpeg.exe')
-          const data = await ffEntry.async('nodebuffer')
-          fs.writeFileSync(exe, data)
-          got = true
-          break
-        } catch (e) { try { fs.unlinkSync(zipUrl) } catch {} }
-      }
-      if (!got) throw new Error('FFmpeg 引擎下载失败（多个源都不通）。请检查网络后重试；下载成功后即可离线使用')
-      return exe
-    },
-
-    async convert_file(args) {
-      let srcs = Array.isArray(args.paths) ? args.paths : (args.path ? [args.path] : String(args.paths || '').split(/[;；]/))
-      srcs = srcs.map((s) => String(s || '').trim()).filter(Boolean)
-      if (!srcs.length) return { ok: false, message: '缺少 path（源文件完整路径；批量传 paths 数组）' }
-      const to = String(args.to || '').trim().toLowerCase().replace(/^\./, '')
-      if (!to) return { ok: false, message: '缺少 to（目标格式：pdf/docx/png/jpg/mp3/m4a/gif/mp4/webm/mkv/avi/mov/flv）' }
-      for (const s of srcs) {
-        if (!fs.existsSync(s)) return { ok: false, message: `源不存在: ${s}` }
-        if (isProtectedLocal(s)) return { ok: false, message: `拒绝：${s} 在 C 盘保护区` }
-      }
-      const firstOut = String(args.out || '').trim()
-      if (firstOut && isProtectedLocal(firstOut)) return { ok: false, message: '拒绝：输出路径在 C 盘保护区' }
-      const ext = (p) => (p.match(/\.([A-Za-z0-9]+)$/) || [])[1] || ''
-      const prog = (msg) => { if (typeof args.progress === 'function') args.progress(msg) }
-      const convertOne = async (src) => {
-        const base = path.basename(src).replace(/\.[^.]+$/, '')
-        const defOut = firstOut && srcs.length === 1 ? firstOut : path.join(path.dirname(src), `${base}.${to}`)
-        return { base, out: defOut }
-      }
-      try {
-        const results = []
-        // === 目标 PDF ===
-        if (to === 'pdf') {
-          if (!PDFLib) return { ok: false, message: 'PDF 组件不可用（pdf-lib 未安装完整），请重装应用' }
-          const exts = srcs.map(ext)
-          if (srcs.every((s) => /\.(png|jpe?g)$/i.test(s))) {
-            // 图片合成 PDF（pdf-lib 原生嵌 PNG/JPG，多图多页一册）
-            const doc = await PDFLib.PDFDocument.create()
-            for (const s of srcs) {
-              const bytes = fs.readFileSync(s)
-              const img = /\.png$/i.test(s) ? await doc.embedPng(bytes) : await doc.embedJpg(bytes)
-              const page = doc.addPage([img.width, img.height])
-              page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height })
-            }
-            const out = firstOut && srcs.length >= 1 ? firstOut : srcs[0].replace(/\.[^.]+$/, '') + '.pdf'
-            const existed = fs.existsSync(out)
-            let snapId = null
-            if (existed) { const snap = snapshots.backupLocal(out); if (!snap.ok) return { ok: false, message: `输出已存在且备份失败，已取消` }; snapId = snap.id }
-            const bytes = await doc.save()
-            fs.mkdirSync(path.dirname(out), { recursive: true })
-            fs.writeFileSync(out, bytes)
-            return { ok: true, message: `已把 ${srcs.length} 张图片合成 PDF（${srcs.length} 页）→ ${out}（${fmtSize(bytes.length)}）`, undo: existed ? { type: 'restore_snap', snapId } : { type: 'delete_local', path: out } }
-          }
-          // 文档/网页 → PDF：html 走打印；docx/doc 走 COM（KWPS→Word→WPS 三引擎）；md/txt 先转 docx；COM 不可用回落 mammoth 渲染
-          const htmlToPdf = async (htmlPath, out) => {
-            const el = shotElectron()
-            if (!el) return { ok: false, message: 'html→pdf 需在应用内使用（当前环境无 Electron）' }
-            let win = null
-            try {
-              win = new el.BrowserWindow({ width: 900, height: 700, show: false, frame: false, webPreferences: { offscreen: true, contextIsolation: true, nodeIntegration: false, sandbox: true } })
-              await win.loadFile(path.resolve(htmlPath))
-              await new Promise((r2) => setTimeout(r2, 400))
-              const buf = await win.webContents.printToPDF({ printBackground: true, pageSize: 'A4' })
-              const existed = fs.existsSync(out)
-              let snapId = null
-              if (existed) { const snap = snapshots.backupLocal(out); if (!snap.ok) return { ok: false, message: '输出已存在且备份失败，已取消' }; snapId = snap.id }
-              fs.mkdirSync(path.dirname(out), { recursive: true })
-              fs.writeFileSync(out, buf)
-              return { ok: true, undo: existed ? { type: 'restore_snap', snapId } : { type: 'delete_local', path: out } }
-            } catch (err) { return { ok: false, message: `html→pdf 失败: ${err.message}` } }
-            finally { try { if (win && !win.isDestroyed()) win.destroy() } catch {} }
-          }
-          for (const src of srcs) {
-            const { base, out } = await convertOne(src)
-            const e = ext(src).toLowerCase()
-            fs.mkdirSync(path.dirname(out), { recursive: true })
-            if (e === 'html' || e === 'htm') {
-              const r = await htmlToPdf(path.resolve(src), out)
-              if (!r.ok) return r
-              results.push(out)
-              continue
-            }
-            if (!/\.(docx?|md|txt)$/i.test(src)) return { ok: false, message: `${path.basename(src)}：不支持转 PDF 的类型（支持 图片/docx/doc/html/md/txt）` }
-            let docxSrc = src
-            if (/\.(md|txt)$/i.test(src)) {
-              docxSrc = path.join(tmpDir, `cvt_${Date.now()}_${base}.docx`)
-              await createDocx(docxSrc, fs.readFileSync(src, 'utf8'))
-            }
-            // COM 主链（docx2pdf.ps1 三引擎 + 产物 %PDF 魔数自校验，WPS 假成功写 docx 会被识别）
-            let comErr = null
-            try {
-              const ps1Src = path.join(__dirname, 'docx2pdf.ps1')
-              const ps1 = path.join(tmpDir, 'docx2pdf.ps1')
-              fs.copyFileSync(ps1Src, ps1)
-              const stdout = await new Promise((resolve, reject) => {
-                const { execFile } = require('child_process')
-                execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1, '-Src', docxSrc, '-Dst', out], { timeout: 180000, windowsHide: true, encoding: 'utf8' }, (err, so) => {
-                  if (err) return reject(new Error(String(so || err.message).trim().split('\n')[0]))
-                  resolve(so)
-                })
-              })
-              if (!fs.existsSync(out)) comErr = new Error(stdout.trim() || '未产出')
-            } catch (err) { comErr = err }
-            // 备胎：mammoth docx→html → 离屏打印（版式简化但内容保全，零 COM 依赖）
-            if (comErr) {
-              prog(`\n⏳ 本机 Office 导出不可用（${String(comErr.message).slice(0, 60)}），切换备用渲染链…\n`)
-              try {
-                const mammoth = require('mammoth')
-                const htmlBody = (await mammoth.convertToHtml({ path: docxSrc })).value
-                const wrap = path.join(tmpDir, `cvt_${Date.now()}_${base}.html`)
-                fs.writeFileSync(wrap, `<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;padding:36px;line-height:1.7;color:#222}h1,h2,h3{line-height:1.3}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:5px 9px}img{max-width:100%}</style></head><body>${htmlBody}</body></html>`)
-                const r = await htmlToPdf(wrap, out)
-                if (!r.ok) return { ok: false, message: `${path.basename(src)} → PDF 失败：COM（${String(comErr.message).slice(0, 80)}）与备用渲染（${r.message}）均不可用` }
-              } catch (err) {
-                return { ok: false, message: `${path.basename(src)} → PDF 失败：COM（${String(comErr.message).slice(0, 80)}）与备用渲染（${err.message}）均不可用` }
-              }
-            }
-            results.push(out)
-          }
-          return { ok: true, message: `已转换 ${srcs.length} 个文件 → PDF\n${results.join('\n')}`, paths: results }
-        }
-        // === 目标 DOCX（md/txt）===
-        if (to === 'docx') {
-          for (const src of srcs) {
-            if (!/\.(md|txt)$/i.test(src)) return { ok: false, message: `${path.basename(src)}：→docx 支持 md/txt 源（docx 转 pdf 用 to:pdf）` }
-            const { out } = await convertOne(src)
-            const existed = fs.existsSync(out)
-            let snapId = null
-            if (existed) { const snap = snapshots.backupLocal(out); if (!snap.ok) return { ok: false, message: `输出已存在且备份失败，已取消` }; snapId = snap.id }
-            await createDocx(out, fs.readFileSync(src, 'utf8'))
-            results.push(out)
-          }
-          return { ok: true, message: `已转换 ${srcs.length} 个文件 → docx\n${results.join('\n')}`, paths: results }
-        }
-        // === 目标 PNG/JPG（图片互转，Chromium 解码器通吃 webp/gif/bmp/avif）===
-        if (to === 'png' || to === 'jpg' || to === 'jpeg') {
-          const el = shotElectron()
-          if (!el) return { ok: false, message: '图片转换需在应用内使用（当前环境无 Electron）' }
-          const targetExt = to === 'png' ? 'png' : 'jpg'
-          for (const src of srcs) {
-            const img = el.nativeImage.createFromBuffer(fs.readFileSync(src))
-            if (img.isEmpty()) return { ok: false, message: `${path.basename(src)}：不是可识别的图片（或格式解码失败）` }
-            const { out } = await convertOne(src)
-            const existed = fs.existsSync(out)
-            let snapId = null
-            if (existed) { const snap = snapshots.backupLocal(out); if (!snap.ok) return { ok: false, message: `输出已存在且备份失败，已取消` }; snapId = snap.id }
-            fs.mkdirSync(path.dirname(out), { recursive: true })
-            fs.writeFileSync(out, targetExt === 'png' ? img.toPNG() : img.toJPEG(92))
-            results.push(out)
-          }
-          return { ok: true, message: `已转换 ${srcs.length} 张图片 → ${targetExt.toUpperCase()}\n${results.join('\n')}`, paths: results }
-        }
-        // === 音视频（FFmpeg 按需下载）===
-        const AV_TARGETS = ['mp3', 'm4a', 'wav', 'aac', 'flac', 'gif', 'mp4', 'webm', 'mkv', 'avi', 'mov', 'flv']
-        if (AV_TARGETS.includes(to)) {
-          const ff = await this.ensureFfmpeg(prog)
-          for (const src of srcs) {
-            const { out } = await convertOne(src)
-            const existed = fs.existsSync(out)
-            let snapId = null
-            if (existed) { const snap = snapshots.backupLocal(out); if (!snap.ok) return { ok: false, message: `输出已存在且备份失败，已取消` }; snapId = snap.id }
-            const extra = Array.isArray(args.extraArgs) ? args.extraArgs.map(String) : []
-            const ffArgs = ['-y', '-i', src, ...(to === 'gif' ? ['-t', '10', '-r', '12'] : []), ...extra, out]
-            const { execFile } = require('child_process')
-            await new Promise((resolve, reject) => {
-              execFile(ff, ffArgs, { timeout: 600000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (err, so, se) => {
-                if (err && !fs.existsSync(out)) return reject(new Error(String(se || err.message).trim().split('\n').slice(-2).join(' ')))
-                resolve()
-              })
-            })
-            if (!fs.existsSync(out)) return { ok: false, message: `${path.basename(src)} → ${to} 转换未产出，请检查源文件是有效的音视频` }
-            results.push(out)
-          }
-          return { ok: true, message: `已转换 ${srcs.length} 个文件 → ${to.toUpperCase()}\n${results.join('\n')}`, paths: results }
-        }
-        return { ok: false, message: `不支持的目标格式 "${to}"。支持：pdf（图片/docx/doc/html/md/txt 源）、docx（md/txt 源）、png/jpg（图片互转）、mp3/m4a/wav/gif/mp4/webm/mkv/avi/mov/flv（音视频）` }
-      } catch (err) {
-        return { ok: false, message: `转换失败: ${err.message}` }
-      }
-    },
-
     // ===== 压缩/解压（本地）=====
-    async merge_pdf(args) {
-      if (!PDFLib) return { ok: false, message: 'PDF 组件不可用（pdf-lib 未安装完整），请重装应用' }
-      let paths = Array.isArray(args.paths) ? args.paths : String(args.paths || '').split(/[;；]/)
-      paths = paths.map((p) => String(p || '').trim()).filter(Boolean)
-      if (paths.length < 2) return { ok: false, message: '至少需要 2 个 PDF（paths 传数组或分号分隔）' }
-      for (const p of paths) {
-        if (!/\.pdf$/i.test(p)) return { ok: false, message: `不是 PDF 文件: ${p}` }
-        if (!fs.existsSync(p)) return { ok: false, message: `文件不存在: ${p}` }
-        if (isProtectedLocal(p)) return { ok: false, message: `拒绝：${p} 在 C 盘保护区` }
-      }
-      let out = String(args.out || '').trim() || paths[0].replace(/\.pdf$/i, '') + '-合并.pdf'
-      if (!/\.pdf$/i.test(out)) out += '.pdf'
-      if (isProtectedLocal(out)) return { ok: false, message: '拒绝：输出路径在 C 盘保护区' }
-      try {
-        const merged = await PDFLib.PDFDocument.create()
-        let srcPages = 0
-        for (const p of paths) {
-          const src = await PDFLib.PDFDocument.load(fs.readFileSync(p), { ignoreEncryption: true })
-          const pages = await merged.copyPages(src, src.getPageIndices())
-          pages.forEach((pg) => merged.addPage(pg))
-          srcPages += pages.length
-        }
-        const bytes = await merged.save()
-        const existed = fs.existsSync(out)
-        let snapId = null
-        if (existed) {
-          const snap = snapshots.backupLocal(out)
-          if (!snap.ok) return { ok: false, message: `输出文件已存在且备份失败（${snap.reason}），已取消` }
-          snapId = snap.id
-        }
-        fs.mkdirSync(path.dirname(out), { recursive: true })
-        fs.writeFileSync(out, bytes)
-        return {
-          ok: true,
-          message: `已合并 ${paths.length} 个 PDF（共 ${srcPages} 页，按传入顺序）→ ${out}（${fmtSize(bytes.length)}）`,
-          undo: existed ? { type: 'restore_snap', snapId } : { type: 'delete_local', path: out }
-        }
-      } catch (err) {
-        return { ok: false, message: `合并失败: ${err.message}${/encrypt/i.test(err.message) ? '（PDF 已加密，需先解密后再合并）' : ''}` }
-      }
-    },
-
-    async split_pdf(args) {
-      if (!PDFLib) return { ok: false, message: 'PDF 组件不可用（pdf-lib 未安装完整），请重装应用' }
-      const srcPath = String(args.path || '')
-      if (!srcPath) return { ok: false, message: '缺少 path（pdf 完整路径）' }
-      if (!/\.pdf$/i.test(srcPath)) return { ok: false, message: '不是 PDF 文件' }
-      if (!fs.existsSync(srcPath)) return { ok: false, message: '文件不存在' }
-      if (isProtectedLocal(srcPath)) return { ok: false, message: '拒绝：源在 C 盘保护区' }
-      try {
-        const srcDoc = await PDFLib.PDFDocument.load(fs.readFileSync(srcPath), { ignoreEncryption: true })
-        const total = srcDoc.getPageCount()
-        const base = path.basename(srcPath, '.pdf')
-        const pagesSpec = String(args.pages || '').trim()
-        if (!pagesSpec) {
-          // 逐页拆：out 作为输出文件夹（默认源文件旁 base-逐页/）
-          const outDir = String(args.out || '').trim() || path.join(path.dirname(srcPath), base + '-逐页')
-          if (isProtectedLocal(outDir)) return { ok: false, message: '拒绝：输出目录在 C 盘保护区' }
-          fs.mkdirSync(outDir, { recursive: true })
-          const files = []
-          for (let i = 1; i <= total; i++) {
-            const single = await PDFLib.PDFDocument.create()
-            const [pg] = await single.copyPages(srcDoc, [i - 1])
-            single.addPage(pg)
-            const fp = path.join(outDir, `${base}-第${i}页.pdf`)
-            fs.writeFileSync(fp, await single.save())
-            files.push(fp)
-          }
-          return { ok: true, message: `已逐页拆分 ${total} 页 → ${outDir}（${base}-第1页.pdf ~ 第${total}页.pdf）`, paths: files }
-        }
-        // 提取模式：解析页码 "3" / "2-5" / "1,3,5-7"（1 起）
-        const sel = new Set()
-        for (const part of pagesSpec.split(/[,，]/)) {
-          const t = part.trim()
-          if (!t) continue
-          const m = t.match(/^(\d+)\s*[-—~]\s*(\d+)$/)
-          if (m) { for (let i = +m[1]; i <= +m[2]; i++) sel.add(i) }
-          else if (/^\d+$/.test(t)) sel.add(+t)
-          else return { ok: false, message: `页码写法不认识: "${t}"（支持 3 / 2-5 / 1,3,5-7）` }
-        }
-        const list = [...sel].sort((a, b) => a - b)
-        if (!list.length) return { ok: false, message: '没解析出任何页码' }
-        const over = list.filter((n) => n > total)
-        if (over.length) return { ok: false, message: `页码超出范围（本文档共 ${total} 页）: ${over.join(',')}` }
-        let out = String(args.out || '').trim() || srcPath.replace(/\.pdf$/i, '') + `-第${list[0]}${list.length > 1 ? '-' + list[list.length - 1] : ''}页.pdf`
-        if (!/\.pdf$/i.test(out)) out += '.pdf'
-        if (isProtectedLocal(out)) return { ok: false, message: '拒绝：输出路径在 C 盘保护区' }
-        const single = await PDFLib.PDFDocument.create()
-        const pgs = await single.copyPages(srcDoc, list.map((n) => n - 1))
-        pgs.forEach((pg) => single.addPage(pg))
-        const bytes = await single.save()
-        const existed = fs.existsSync(out)
-        let snapId = null
-        if (existed) {
-          const snap = snapshots.backupLocal(out)
-          if (!snap.ok) return { ok: false, message: `输出文件已存在且备份失败（${snap.reason}），已取消` }
-          snapId = snap.id
-        }
-        fs.mkdirSync(path.dirname(out), { recursive: true })
-        fs.writeFileSync(out, bytes)
-        return {
-          ok: true,
-          message: `已提取 ${list.length} 页（第 ${list.join(',')} 页，源共 ${total} 页）→ ${out}（${fmtSize(bytes.length)}）`,
-          undo: existed ? { type: 'restore_snap', snapId } : { type: 'delete_local', path: out }
-        }
-      } catch (err) {
-        return { ok: false, message: `拆分失败: ${err.message}${/encrypt/i.test(err.message) ? '（PDF 已加密，需先解密后再拆）' : ''}` }
-      }
-    },
-
     async zip_compress(args) {
       if (!JSZip) return { ok: false, message: '压缩组件不可用' }
       let srcs = Array.isArray(args.src) ? args.src : [args.src]
@@ -3557,7 +3016,7 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       let apiKey = (pvI && pvI.apiKey) || getSetting('aiApiKey') || ''
       let baseUrl = (pvI && pvI.baseUrl) || (getSetting('aiBaseUrl') || 'https://api.siliconflow.cn/v1').replace(/\/+$/, '')
       let model = imgPayload
-        ? (getSetting('aiImageEditModel') || 'Qwen/Qwen-Image-Edit-2511')
+        ? (getSetting('aiImageEditModel') || 'Qwen/Qwen-Image-Edit-2509')
         : (getSetting('aiImageModel') || 'Kwai-Kolors/Kolors')
       // 主模型是内置 → 生图/改图默认走内置代理（扣积分，与主模型同口径），显式选了图片服务商才走自定义。
       // 内置模型参数固定为服务端内置清单里的生图/改图（自定义的 Kolors 等不经过我们代理）
@@ -3566,11 +3025,9 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
         if (m) {
           apiKey = m.apiKey
           baseUrl = m.baseUrl
-          model = imgPayload ? 'Qwen/Qwen-Image-Edit-2511' : 'Tongyi-MAI/Z-Image-Turbo'
+          model = imgPayload ? 'Qwen/Qwen-Image-Edit-2509' : 'Tongyi-MAI/Z-Image-Turbo'
         }
       }
-      // 2511 回落链：上游未上架 2511 时自动降级 2509 重试一次（体验无损，见服务端清单注释）
-      const EDIT_FALLBACK = { 'Qwen/Qwen-Image-Edit-2511': 'Qwen/Qwen-Image-Edit-2509' }
       if (!apiKey) return { ok: false, message: '未配置 API Key（AI 设置里设置后才能生图）' }
       // size 严格校验（真机变体：模型传了 size:1024 这种非法格式 → 硅基流动 50507 Unknown error）
       // 编辑模式不传 image_size（跟随原图尺寸，Qwen-Image-Edit 类模型要求）
@@ -3625,7 +3082,7 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       } catch (err) {
         return { ok: false, message: `${imgPayload ? '图片编辑' : '生图'}请求失败：${err.message}（模型 ${model}）` }
       }
-      let urls = (resp && Array.isArray(resp.images) ? resp.images : []).map((x) => x && x.url).filter(Boolean)
+      const urls = (resp && Array.isArray(resp.images) ? resp.images : []).map((x) => x && x.url).filter(Boolean)
       // 补齐循环（v2.4.90）：接口实回张数短于要求数（编辑模式固定单张 / batch_size 被静默忽略）→ 逐张补齐
       let extraFails = 0
       let guard = 0
@@ -3639,21 +3096,6 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
           else extraFails++
         } catch (err) { extraFails++ }
         if (urls.length >= wantCnt || extraFails >= 2) break // 补齐达标或连续失败 2 次止损（保留已出的）
-      }
-      // 2511→2509 回落（自愈）：上游未上架新编辑模型时（清单拦截/模型不存在类报错），自动降级 2509 重试一次
-      if (!urls.length && imgPayload && EDIT_FALLBACK[model]) {
-        const firstErr = JSON.stringify(resp || {}).slice(0, 300)
-        if (/不在内置清单|不存在|not\s*exist|invalid model|unknown model|no such model/i.test(firstErr)) {
-          prog(`\n⏳ 新编辑模型暂不可用，自动切换备用模型重试…\n`)
-          model = EDIT_FALLBACK[model]
-          Object.assign(editBody, { model }) // singleBody 同引用，补齐循环同步生效
-          try {
-            resp = await httpJson('POST', `${baseUrl}/images/generations`, apiKey, JSON.stringify(editBody))
-          } catch (err) {
-            return { ok: false, message: `图片编辑请求失败：${err.message}（模型 ${model}）` }
-          }
-          urls = (resp && Array.isArray(resp.images) ? resp.images : []).map((x) => x && x.url).filter(Boolean)
-        }
       }
       if (!urls.length) {
         const detail = JSON.stringify(resp || {}).slice(0, 260)
@@ -3748,32 +3190,7 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
   }
 
   // 结构化数组参数白名单：这些参数本来就是数组语义（批量/表格行/样式组），不受"参数别传数组"护栏拦截
-  const STRUCTURAL_ARRAY_PARAMS = new Set(['src', 'headers', 'rows', 'styles', 'merges', 'sheets', 'paragraphs', 'replacements', 'cells', 'questions', 'paths'])
-
-  // ===== 工具输出溢出治理 =====
-  // 单条结果超长时全文归档到工作台 .tool-outputs/，上下文只进"头尾预览+归档路径"，
-  // 模型按需 read_file 回读（归档文件超 64KB 也会自动分段）。防大文档/巨网页/失控输出灌爆上下文触发整段压缩。
-  // 读文档类工具（read_docx/read_pdf/read_xlsx）旧版是 64KB 硬截断丢内容，归档后内容零丢失。
-  function guardToolOutput(name, result) {
-    if (!result || typeof result.message !== 'string' || result.message.length <= TOOL_OUTPUT_CAP) return result
-    if (OVERFLOW_EXEMPT.has(name)) return result // read_file 自带分段协议，不重复治理
-    let baseDir = workspaceDir || tmpDir || ''
-    if (!baseDir) return result // 无落盘位置时原样返回，绝不因治理丢数据
-    try {
-      const msg = result.message
-      const outDir = path.join(baseDir, '.tool-outputs')
-      fs.mkdirSync(outDir, { recursive: true })
-      const ts = new Date()
-      const pad = (n) => String(n).padStart(2, '0')
-      const file = path.join(outDir, `${ts.getFullYear()}${pad(ts.getMonth() + 1)}${pad(ts.getDate())}-${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}-${String(name).replace(/[^\w-]/g, '_')}.md`)
-      const lines = msg.split('\n').length
-      fs.writeFileSync(file, `# 工具输出归档：${name}\n\n> 时间：${ts.toLocaleString('zh-CN')}　规模：${lines} 行 / ${msg.length} 字\n> 本文件由工具输出溢出治理自动生成，供 read_file 按需回读。\n\n----\n\n${msg}\n`)
-      const body = `---- 开头预览 ----\n${msg.slice(0, OVERFLOW_HEAD)}\n\n…（中段省略，全文见归档文件）…\n\n---- 末尾预览 ----\n${msg.slice(-OVERFLOW_TAIL)}`
-      return { ...result, message: `【输出过大已归档】本次输出共 ${lines} 行 / ${msg.length} 字，完整内容已存：${file}\n下方仅显示开头与末尾预览；不够用时用 read_file 读取归档文件（超 64KB 会自动分段，按提示传 offset 读完）。\n\n${body}` }
-    } catch {
-      return result // 归档失败退化为原样
-    }
-  }
+  const STRUCTURAL_ARRAY_PARAMS = new Set(['src', 'headers', 'rows', 'styles', 'merges', 'sheets', 'paragraphs', 'replacements', 'cells', 'questions'])
 
   async function execute(name, args) {
     const fn = impl[name]
@@ -3793,10 +3210,10 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       return { ok: false, message: `参数 ${badArr.join('、')} 不能传数组（只接受单个值）。要批量操作（如下载多张图）就发多个 ${name} 调用，一轮里可以同时发多个并行执行，每个调用各传各的参数` }
     }
     try {
-      return guardToolOutput(name, await fn(clean))
+      return await fn(clean)
     } catch (err) {
       log(`工具 ${name} 执行异常: ${err.message}`)
-      return guardToolOutput(name, { ok: false, message: `执行异常: ${err.message}` })
+      return { ok: false, message: `执行异常: ${err.message}` }
     }
   }
 
@@ -3880,8 +3297,7 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       case 'rename_path': return `${t}重命名 ${args.path} → ${args.new_name}`
       case 'delete_path': return `${t}删除 ${args.path}`
       case 'search_files': return `${t}搜索 ${args.dir} 中的 "${args.keyword}"`
-      case 'view_image': return `${t}识图：${args.paths ? `${Array.isArray(args.paths) ? args.paths.length : String(args.paths).split(/[;\n]/).filter(Boolean).length} 张图` : args.path}${args.question ? `（${args.question}）` : ''}`
-      case 'remove_bg': return `${t}抠图去背景：${args.path}`
+      case 'view_image': return `${t}识图：${args.path}${args.question ? `（${args.question}）` : ''}`
       case 'screenshot': return `${t}截图（${args.scope || 'webview'}）`
       case 'update_notes': return `${t}${args.mode === 'read' ? '读大记事本' : args.mode === 'replace' ? '重写大记事本' : '记大记事本'}`
       case 'generate_image': return args.image ? `AI 编辑图片：${String(args.prompt || '').slice(0, 40)}` : `AI 生图：${String(args.prompt || '').slice(0, 40)}`
@@ -3929,9 +3345,6 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       case 'open_path': return `打开 ${args.path}`
       case 'zip_compress': return `压缩打包 → ${args.zip_path}`
       case 'zip_extract': return `解压 ${args.zip_path}`
-      case 'merge_pdf': return `合并 PDF（${Array.isArray(args.paths) ? args.paths.length : String(args.paths || '').split(/[;；]/).length} 个）`
-      case 'split_pdf': return args.pages ? `提取 PDF 第 ${args.pages} 页` : '逐页拆分 PDF'
-      case 'convert_file': return `格式转换 → ${(args.to || '').toUpperCase()}`
       case 'delegate': return `委派子任务：${args.title || String(args.task || '').slice(0, 30)}`
       case 'ask_user': return `向用户提问：${String((args.questions && args.questions[0] && args.questions[0].question) || '').slice(0, 40)}`
       default: return `${t}${name}`
@@ -3955,7 +3368,6 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
     defs: TOOL_DEFS,
     toolPromptSection: buildToolPromptSection(),
     execute,
-    guardToolOutput,
     classify,
     summarize,
     applyUndo,
@@ -3990,4 +3402,4 @@ function resolveMsmateProvider(getSetting) {
   } catch { return null }
 }
 
-module.exports = { createTools, resolveModelProvider, httpJson, httpDownload, extractArticleText, httpGet, sniffMagic }
+module.exports = { createTools, resolveModelProvider, httpJson, httpDownload, extractArticleText, httpGet }

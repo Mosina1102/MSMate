@@ -34,6 +34,26 @@ const AI_PROVIDERS = {
 
 const EMPTY_CHAT_HTML = `<div class="empty-state"><div class="empty-title">我是 MSMate 助手</div><div class="empty-hint">让我帮你复制/移动/创建/编辑文件<br>本机和已连接设备都行，试试看喵</div></div>`
 
+// 空状态按主题出形象：莫西主题换成莫西立绘+人设语气（三无简洁风），其他主题保持通用文案
+function emptyChatHtml() {
+  try {
+    if (document.documentElement.classList.contains('theme-moxi')) {
+      return '<div class="empty-state moxi-empty"><img class="moxi-empty-img" src="../assets/moxi/emotion-eager.webp" alt="莫西"><div class="empty-title">我是莫西</div><div class="empty-hint">任务交给我。<br>本机和已连接设备的文件，都能处理。</div></div>'
+    }
+  } catch {}
+  return EMPTY_CHAT_HTML
+}
+
+// 主题热切换时空状态跟随换装（正在显示空状态才重建）+ 莫西默认背景跟随主题
+document.addEventListener('theme-changed', () => {
+  try {
+    if (typeof applyAppearance === 'function') applyAppearance()
+    if (typeof curChatEl !== 'function') return
+    const cur = curChatEl()
+    if (cur && cur.querySelector(':scope > .empty-state')) cur.innerHTML = emptyChatHtml()
+  } catch {}
+})
+
 // ===== 多会话：每个会话独立的渲染状态，后台会话的 AI 流也实时渲染到自己的容器 =====
 const SESS_KEYS = ['running', 'curAssistant', 'curContent', 'curReasoning', 'toolCards', 'roundSteps', 'stickToBottom', 'rollbackArmed', 'restoreArmed']
 
@@ -86,7 +106,7 @@ function curChatEl() {
   if (!st.el) {
     const div = document.createElement('div')
     div.className = 'chat-session'
-    div.innerHTML = EMPTY_CHAT_HTML
+    div.innerHTML = emptyChatHtml()
     st.el = div
   }
   const list = $('chatList')
@@ -1086,21 +1106,23 @@ async function fillQuickModelSelect() {
   })
 }
 
-// ===== 主题切换（执事风=默认 / 经典白 / 深色）=====
+// ===== 主题切换（执事风=默认 / 经典白 / 莫西 / 深色）=====
 function getSavedTheme() {
   try {
     const t = localStorage.getItem('msmate_theme')
-    return (t === 'dark' || t === 'classic') ? t : 'butler'
+    return (t === 'dark' || t === 'classic' || t === 'moxi') ? t : 'butler'
   } catch { return 'butler' }
 }
 
 function applyTheme(theme) {
-  const t = theme === 'dark' ? 'dark' : (theme === 'classic' ? 'classic' : 'butler')
+  const t = theme === 'dark' ? 'dark' : (theme === 'classic' ? 'classic' : (theme === 'moxi' ? 'moxi' : 'butler'))
   const root = document.documentElement
   root.classList.toggle('theme-light', t !== 'dark')
   root.classList.toggle('theme-butler', t === 'butler')
+  root.classList.toggle('theme-moxi', t === 'moxi')
   applyPanelRgb()
   try { localStorage.setItem('msmate_theme', t) } catch {}
+  document.dispatchEvent(new CustomEvent('theme-changed', { detail: { theme: t } })) // 桌宠/形象层联动
 }
 
 // ===== 全局设置：外观（自定义背景）=====
@@ -1119,23 +1141,30 @@ function applyAppearance() {
   const bgEl = $('appBackground')
   const imgEl = $('appBgImg')
   if (!bgEl || !imgEl) return
-  const hasBg = !!bgMedia
-  root.style.setProperty('--panel-alpha', String(appearance.panelAlpha / 100))
+  // 莫西主题默认背景：用户未设置自定义背景时用海报（横）铺底，参数定版
+  // （不透明 100 / 模糊 0 / 缩放 0=不额外放大即 scale1 / 暗化 0 / 面板透明 85）；用户自设背景优先
+  const moxiDefault = !bgMedia && document.documentElement.classList.contains('theme-moxi')
+  const media = moxiDefault ? { kind: 'image', src: '../assets/moxi/poster-h.webp' } : bgMedia
+  const params = moxiDefault
+    ? { bgOpacity: 100, bgBlur: 0, bgScale: 100, bgMask: 0, panelAlpha: 85 }
+    : appearance
+  const hasBg = !!media
+  root.style.setProperty('--panel-alpha', String(params.panelAlpha / 100))
   if (hasBg) {
     // 图片走 background-image；GIF 动图/视频走元素挂载（img 才有帧动画，video 才能循环播放）
-    if (bgMedia.kind === 'image') {
+    if (media.kind === 'image') {
       imgEl.innerHTML = ''
-      imgEl.style.backgroundImage = `url("${bgMedia.src}")`
+      imgEl.style.backgroundImage = `url("${media.src}")`
     } else {
       imgEl.style.backgroundImage = ''
-      imgEl.innerHTML = bgMedia.kind === 'video'
-        ? `<video class="app-bg-media" src="${bgMedia.src}" autoplay loop muted playsinline></video>` // 静音循环，不打扰
-        : `<img class="app-bg-media" src="${bgMedia.src}" draggable="false" alt="">`
+      imgEl.innerHTML = media.kind === 'video'
+        ? `<video class="app-bg-media" src="${media.src}" autoplay loop muted playsinline></video>` // 静音循环，不打扰
+        : `<img class="app-bg-media" src="${media.src}" draggable="false" alt="">`
     }
-    root.style.setProperty('--app-bg-opacity', String(appearance.bgOpacity / 100))
-    root.style.setProperty('--app-bg-blur', `${appearance.bgBlur}px`)
-    root.style.setProperty('--app-bg-scale', String(appearance.bgScale / 100))
-    root.style.setProperty('--app-bg-mask', String(appearance.bgMask / 100))
+    root.style.setProperty('--app-bg-opacity', String(params.bgOpacity / 100))
+    root.style.setProperty('--app-bg-blur', `${params.bgBlur}px`)
+    root.style.setProperty('--app-bg-scale', String(params.bgScale / 100))
+    root.style.setProperty('--app-bg-mask', String(params.bgMask / 100))
   }
   root.classList.toggle('has-bg', hasBg)
   bgEl.classList.toggle('hidden', !hasBg)
@@ -1198,6 +1227,7 @@ function gsSyncBgThumb() {
 async function openGlobalSettings() {
   // 外观
   $('gsThemeSelect').value = getSavedTheme()
+  try { $('gsPetSelect').value = (await _api.getSetting('petEnabled')) ? 'on' : 'off' } catch { $('gsPetSelect').value = 'off' }
   gsSyncSliderUI()
   gsSyncBgThumb()
   // 互联与传输
@@ -1261,6 +1291,7 @@ function initGlobalSettings() {
 
   // 外观：主题即时切换（与 AI 设置里的主题联动，同一存储）
   $('gsThemeSelect').addEventListener('change', (e) => applyTheme(e.target.value))
+  $('gsPetSelect').addEventListener('change', (e) => { try { _api.petSetEnabled(e.target.value === 'on') } catch {} })
   // 外观：滑块实时预览
   const sliderMap = [
     ['gsBgOpacity', 'bgOpacity', (v) => `${v}%`],
@@ -2297,7 +2328,7 @@ function appendStepsNotice(max) {
 
 async function restoreHistory(sid) {
   const chatList = curChatEl()
-  chatList.innerHTML = EMPTY_CHAT_HTML
+  chatList.innerHTML = emptyChatHtml()
   work.toolCards.clear()
   work.roundSteps = []
   work.curAssistant = null
@@ -2613,7 +2644,7 @@ function handleAiEventInner(ev) {
       finalizeRound()
       break
     case 'chat_cleared':
-      curChatEl().innerHTML = EMPTY_CHAT_HTML
+      curChatEl().innerHTML = emptyChatHtml()
       hideRetryWait()
       work.roundSteps = []
       break

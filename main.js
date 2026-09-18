@@ -5,6 +5,10 @@ const net = require('net')
 const fs = require('fs')
 const crypto = require('crypto')
 const { spawn } = require('child_process')
+const { createPetManager } = require('./pet')
+
+// ===== 桌宠"莫西"管理器（窗口/托盘/事件广播见 pet.js；情绪状态机在 src/pet.html）=====
+let petMgr = null
 
 // Windows 通知必需：设置 AppUserModelId，否则系统通知不弹出
 app.setAppUserModelId('com.ms-interconnect.app')
@@ -273,25 +277,31 @@ function createWindow() {
   })
 }
 
+function buildTrayMenu() {
+  return Menu.buildFromTemplate([
+    { label: '显示主窗口', click: () => { if (mainWindow) { mainWindow.show(); mainWindow.focus() } } },
+    { type: 'separator' },
+    { label: petMgr && petMgr.isPetEnabled() ? '收起莫西' : '唤出莫西', click: () => { log('tray: 菜单点击切换莫西'); if (petMgr) petMgr.setPetEnabled(!petMgr.isPetEnabled()) } },
+    { type: 'separator' },
+    { label: '退出', click: () => { app.isQuitting = true; app.quit() } }
+  ])
+}
+
 function createTray() {
+  // 防重复托盘：开关桌宠只热更新菜单文案，Tray 本体只建一次（销毁重建会残留幽灵图标）
+  if (tray) { try { tray.destroy() } catch {} tray = null }
   const appPath = app.getAppPath()
   const iconPath = path.join(appPath, 'assets', 'icon.png')
-  
+
   let trayIcon
   try {
     trayIcon = require('electron').nativeImage.createFromPath(iconPath)
     if (trayIcon.isEmpty()) trayIcon = undefined
   } catch {}
 
-  const contextMenu = Menu.buildFromTemplate([
-    { label: '显示主窗口', click: () => { if (mainWindow) { mainWindow.show(); mainWindow.focus() } } },
-    { type: 'separator' },
-    { label: '退出', click: () => { app.isQuitting = true; app.quit() } }
-  ])
-
   tray = new Tray(trayIcon || undefined)
   tray.setToolTip('MS互联 - 局域网文件共享')
-  tray.setContextMenu(contextMenu)
+  tray.setContextMenu(buildTrayMenu())
   tray.on('click', () => {
     if (mainWindow) {
       if (mainWindow.isVisible()) {
@@ -412,6 +422,7 @@ function initServices() {
           setSetting,
           send: (event) => {
             if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('ai:event', { ...event, sessionId })
+            if (petMgr) petMgr.petBroadcast(event) // 桌宠情绪状态机同源吃事件
           },
           log,
           hostName: getSetting('deviceName') || os.hostname(),
@@ -430,6 +441,33 @@ function initServices() {
       try { sessionStore.ensureDefault() } catch {}
       workAgent = getWorkAgent(sessionStore.list()[0].id)
       registerAIIPC()
+
+      // ===== 桌宠"莫西"：管理器 + IPC + 启动恢复 =====
+      petMgr = createPetManager({
+        getSetting,
+        setSetting,
+        log,
+        isDev,
+        showMainWindow: () => { if (mainWindow) { mainWindow.show(); mainWindow.focus() } },
+        onEnabledChanged: () => { if (tray) tray.setContextMenu(buildTrayMenu()) } // 菜单文案热更新，Tray 本体不动（防幽灵托盘）
+      })
+      ipcMain.on('pet:drag-start', (_e, p) => { if (petMgr) petMgr.dragStart(p.screenX, p.screenY) })
+      ipcMain.on('pet:drag-move', (_e, p) => { if (petMgr) petMgr.dragMove(p.screenX, p.screenY) })
+      ipcMain.on('pet:click', () => { if (mainWindow) { mainWindow.show(); mainWindow.focus() } })
+      // 拖文件给莫西：注入默认会话的 WorkAgent 自动阅读理解，结果进主界面 Work 会话
+      ipcMain.on('pet:file-drop', (_e, p) => {
+        const paths = (p && p.paths || []).filter(Boolean)
+        if (!paths.length || !sessionStore) return
+        try {
+          const agent = getWorkAgent(sessionStore.list()[0].id)
+          if (mainWindow) { mainWindow.show(); mainWindow.focus() } // 结果在主界面看，顺手 bring up
+          agent.sendUserMessage(`用户把文件拖给了你，请阅读并理解以下 ${paths.length} 个文件，逐个给出简明摘要（是什么/关键内容/能怎么用）：\n${paths.join('\n')}`)
+          log(`pet: 拖入 ${paths.length} 个文件已注入 WorkAgent`)
+        } catch (err) { log('pet: 文件注入失败 ' + err.message) }
+      })
+      ipcMain.handle('pet:get-enabled', () => !!getSetting('petEnabled'))
+      ipcMain.handle('pet:set-enabled', (_e, p) => { log('pet: IPC set-enabled on=' + !!(p && p.on) + '（来源：设置下拉）'); return petMgr.setPetEnabled(!!(p && p.on)) })
+      if (getSetting('petEnabled')) petMgr.createPetWindow() // 上次开着桌宠 → 启动即恢复
       log('WorkAgent initialized')
     } catch (err) {
       log(`WorkAgent init failed: ${err.message}\n${err.stack}`)
@@ -479,6 +517,7 @@ function initServices() {
   tcpAgent.on('file-transfer-complete', (data) => {
     if (mainWindow) mainWindow.webContents.send('transfer:complete', data)
     saveTransferHistory(data)
+    if (petMgr) petMgr.petBroadcast({ type: 'transfer_complete', name: data.path ? path.basename(data.path) : '', direction: data.direction }) // 莫西：惊讶+气泡
 
     // 智能通知：对方发来文件或编辑了文件（带上对方设备名）
     if (data.direction === 'upload' && data.path) {

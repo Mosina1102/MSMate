@@ -817,7 +817,7 @@ console.log('— v2.4.65：工作台目录实时刷新 + 视频/GIF 背景 + 本
   ok(mainJs.includes("'ui-background-video.'"), '视频背景原样复制（不过 nativeImage）')
   ok(mainJs.includes("'ui-background-anim.'"), 'GIF 动图原样保留帧动画')
   ok(mainJs.includes("extensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'mp4', 'webm']"), '选择器支持视频/动图格式')
-  ok(app.includes('<video class="app-bg-media" src="${bgMedia.src}" autoplay loop muted playsinline>'), '视频背景静音循环')
+  ok(app.includes('<video class="app-bg-media" src="${media.src}" autoplay loop muted playsinline>'), '视频背景静音循环')
   ok(css.includes('.app-bg-media'), '媒体背景样式（cover 撑满+同滤镜）')
   // ③ 本地模型上下文瘦身（实测变慢主因：工具结果/正文喂给模型太多）
   ok(tools.includes('.slice(0, 120)'), '搜索摘要 220→120 字')

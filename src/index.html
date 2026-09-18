@@ -5,11 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MSMate - 互联 · AI 电脑助手</title>
   <script>
-    // 渲染前应用主题：默认执事风（灰阶分层浅色），可选经典白/深色
+    // 渲染前应用主题：默认执事风（灰阶分层浅色），可选经典白/莫西/深色
     try {
       var _t = localStorage.getItem('msmate_theme') || 'butler'
       if (_t !== 'dark') document.documentElement.classList.add('theme-light')
       if (_t === 'butler') document.documentElement.classList.add('theme-butler')
+      if (_t === 'moxi') document.documentElement.classList.add('theme-moxi')
     } catch (e) {
       document.documentElement.classList.add('theme-light')
       document.documentElement.classList.add('theme-butler')
@@ -28,10 +29,13 @@
     <div class="app-bg-mask" id="appBgMask"></div>
   </div>
   <div id="app">
+    <!-- 莫西常驻立绘：主界面右侧（moxi 主题），vh 单位随窗口高度缩放 -->
+    <img id="moxiAppStandee" class="moxi-app-standee" src="../assets/moxi/standee.webp" alt="">
     <!-- 顶栏 -->
     <header class="top-bar">
       <div class="brand">
         <img class="logo-icon" src="../assets/icon.png" alt="MSMate">
+        <img class="logo-icon logo-icon-moxi" src="../assets/moxi/avatar.webp" alt="MSMate 莫西主题">
         <div class="brand-text">
           <h1>MSMate <span id="appVersion" class="version-tag">v1.0.0</span></h1>
           <span class="subtitle">互联 · AI 电脑助手</span>
@@ -700,6 +704,7 @@
 
     <!-- 积分充值弹窗：个人收款码 + 凭证提交，人工批款自动到账 -->
     <div class="modal-overlay hidden" id="creditsModal">
+      <img class="moxi-modal-standee" src="../assets/moxi/standee.webp" alt="">
       <div class="modal modal-credits">
         <button class="modal-x" id="creditsCloseX" title="关闭">
           <svg viewBox="0 0 24 24" width="14" height="14"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
@@ -1154,6 +1159,7 @@
                 <select id="aiThemeSelect" class="sort-select">
                   <option value="butler">执事风（默认 · 灰阶分层）</option>
                   <option value="classic">经典白（高对比纯白）</option>
+                  <option value="moxi">莫西主题（猫耳管家 · 淡紫）</option>
                   <option value="dark">深色模式</option>
                 </select>
               </div>
@@ -1254,7 +1260,15 @@
                 <select id="gsThemeSelect" class="sort-select">
                   <option value="butler">执事风（默认 · 灰阶分层）</option>
                   <option value="classic">经典白（高对比纯白）</option>
+                  <option value="moxi">莫西主题（猫耳管家 · 淡紫）</option>
                   <option value="dark">深色模式</option>
+                </select>
+              </div>
+              <div class="pair-code-input">
+                <label>莫西桌宠：</label>
+                <select id="gsPetSelect" class="sort-select">
+                  <option value="off">关闭</option>
+                  <option value="on">开启（莫西常驻桌面，随任务变表情）</option>
                 </select>
               </div>
               <div class="ai-rules-block">
@@ -1346,11 +1360,13 @@
             <div class="ai-pane" data-pane="about">
               <div class="gs-about-row">
                 <img class="logo-icon" src="../assets/icon.png" alt="MSMate">
+                <img class="logo-icon logo-icon-moxi" src="../assets/moxi/avatar.webp" alt="MSMate 莫西主题">
                 <div>
                   <div class="gs-about-name">MSMate <span id="gsAppVersion" class="version-tag"></span></div>
                   <div class="gs-about-sub">互联 · AI 电脑助手</div>
                 </div>
               </div>
+              <img class="moxi-about-poster" src="../assets/moxi/poster-h.webp" alt="MSMate 莫西主题海报">
               <div class="data-sync-row">
                 <button class="btn btn-secondary" id="gsHelpBtn">操作手册</button>
                 <button class="btn btn-sm" id="checkUpdateBtn">检查更新</button>
