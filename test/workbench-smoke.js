@@ -197,6 +197,10 @@ ok(appjs.includes("'新对话', '未命名会话']"), '会话自动取名豁免�
 ok(fs.readFileSync(path.join(ROOT, 'ai/desktop-control.js'), 'utf8').includes('_checkUserBusy') && fs.readFileSync(path.join(ROOT, 'ai/desktop-control.js'), 'utf8').includes('userBusy: true'), 'desktop_* 用户占用避让（鼠标动了就停手）')
 ok(fs.readFileSync(path.join(ROOT, 'src/control-overlay.html'), 'utf8').includes('请勿操作鼠标键盘'), '控制遮罩提示"请勿操作鼠标键盘"')
 ok(fs.readFileSync(path.join(ROOT, 'ai/manuals/电脑控制.md'), 'utf8').includes('前台占用铁律'), '手册：前台占用铁律（浏览器任务走 browser_*）')
+ok(toolsSrc.includes("name: 'desktop_drag'") && toolsSrc.includes("name: 'desktop_move'"), 'desktop_drag 拖拽 + desktop_move 悬停工具')
+ok(fs.readFileSync(path.join(ROOT, 'ai/desktop-control.js'), 'utf8').includes('public static string Drag(') && fs.readFileSync(path.join(ROOT, 'ai/desktop-control.js'), 'utf8').includes("const BOOT_VER = 'msdesk-v5'"), '引擎拖拽原语（分步移动）+ BOOT_VER v5')
+ok(fs.readFileSync(path.join(ROOT, 'ai/desktop-control.js'), 'utf8').includes("horizontal ? 'wheelh' : 'scroll'"), '横向滚轮')
+ok(toolsSrc.includes('holdKeys: Array.isArray(args.hold_keys)'), '修饰键按住点击（hold_keys）')
 
 console.log('— v2.4.33：卡片进工作台 + 资源管理器定位 + 划词胶囊 —')
 ok(appjs.includes('点击加入工作台预览'), '聊天文件卡片点击改为加入工作台')
@@ -2260,7 +2264,7 @@ console.log('— v2.4.82：钩子半残中毒修复（第二句话起永久瞎�
     ok(manualNames.every((n) => { try { return fs.statSync(path.join(manualDir, n)).size > 2000 } catch { return false } }), '手册十一册落盘且非空（>2KB，含 电脑控制/开发）')
     // ② TOOL_DEFS manual 字段计数（brief 瘦身 + 手册指向；行尾手册路径=双轨渲染）
     const manualCount = (toolsDef.match(/manual: '/g) || []).length
-    ok(manualCount === 54, `TOOL_DEFS manual 字段计数 = 54（实际 ${manualCount}）`)
+    ok(manualCount === 56, `TOOL_DEFS manual 字段计数 = 56（实际 ${manualCount}）`)
     ok(toolsDef.includes("case 'remove_bg': return") && toolsDef.includes("'抠图引擎（onnxruntime-node）不可用"), 'remove_bg 实现+审批+describe 三处注册（本地 u2netp 抠图）')
     ok(toolsDef.includes("name: 'merge_pdf'") && toolsDef.includes("name: 'split_pdf'") && toolsDef.includes('STRUCTURAL_ARRAY_PARAMS') && toolsDef.includes("'paths'"), 'PDF 合并/拆分工具注册（pdf-lib，paths 数组白名单）')
     ok(toolsDef.includes("manual: 'ppt文档'") && toolsDef.includes("name: 'create_pptx'") && toolsDef.includes("name: 'read_pptx'") && toolsDef.includes("name: 'edit_pptx'"), 'PPT 三件套注册（create_pptx/read_pptx/edit_pptx → 手册：ppt文档）')

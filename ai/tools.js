@@ -124,10 +124,12 @@ const TOOL_DEFS = [
   { name: 'browser_click', params: 'ref(元素编号,如 e3,来自 snapshot)', desc: '点击页面元素（按钮/链接/复选框）。点击后页面可能变化，继续操作前重新 snapshot', manual: '电脑控制' },
   { name: 'browser_fill', params: 'ref(元素编号), value(填入内容;select 下拉传选项文本或value)', desc: '向输入框/文本域/下拉框填值（自动触发 input/change 事件，React 表单也能感知）。填完用 snapshot 或 read 核对', manual: '电脑控制' },
   { name: 'browser_read', params: '', desc: '读当前页面正文文本（≤8000字）+标题。填表后核对结果/读页面内容用', manual: '电脑控制' },
-  { name: 'desktop_click', params: 'nx(归一化横坐标,0-1000)/ny(归一化纵坐标,0-1000) 二选一优先推荐；或 x/y(绝对像素,=截图里的物理像素)；button(可选,left默认/right/middle), double(可选,bool双击)', desc: '点击桌面位置。标准流程：screenshot scope:"screen" 截屏 → view_image 提问加"输出目标中心点归一化坐标(x,y)，0-1000"（视觉模型输出归一化坐标最准）→ desktop_click 传 nx/ny。操作第三方程序用；网页内操作优先 browser_* 更稳', manual: '电脑控制' },
+  { name: 'desktop_click', params: 'nx(归一化横坐标,0-1000)/ny(归一化纵坐标,0-1000) 二选一优先推荐；或 x/y(绝对像素,=截图里的物理像素)；button(可选,left默认/right/middle), double(可选,bool双击), hold_keys(可选,按住修饰键点击,如["ctrl"]多选)', desc: '点击桌面位置。标准流程：screenshot scope:"screen" 截屏 → view_image 提问加"输出目标中心点归一化坐标(x,y)，0-1000"（视觉模型输出归一化坐标最准）→ desktop_click 传 nx/ny。hold_keys 按住修饰键点击=多选文件/范围选择。操作第三方程序用；网页内操作优先 browser_* 更稳', manual: '电脑控制' },
   { name: 'desktop_type', params: 'text(要输入的文字,支持中文)', desc: '向当前焦点窗口逐字输入文本（先点中输入框获得焦点再输入）。第三方程序填表/挂机办公用', manual: '电脑控制' },
   { name: 'desktop_key', params: 'keys(按键数组,如["ctrl","s"]或["enter"];修饰键在前主键在后)', desc: '按组合键：ctrl/alt/shift/win + enter/tab/esc/space/f1-f24/字母/数字/方向键/backspace/delete/home/end/pageup/pagedown 等。保存/提交/快捷键场景', manual: '电脑控制' },
-  { name: 'desktop_scroll', params: 'x(横坐标), y(纵坐标), amount(滚动量,正=向上负=向下,一格约120)', desc: '在屏幕指定位置滚动滚轮。翻页/长列表/缩放(ctrl+滚轮需 desktop_key 配合)用', manual: '电脑控制' },
+  { name: 'desktop_scroll', params: 'x(横坐标), y(纵坐标), amount(滚动量,正=向上/向右负=向下/向左,一格约120), horizontal(可选,bool横向滚动)', desc: '在屏幕指定位置滚动滚轮（纵向默认，horizontal:true 走横向）。翻页/长列表/横向表格/缩放(ctrl+滚轮需 desktop_key 配合)用', manual: '电脑控制' },
+  { name: 'desktop_drag', params: '起点 x1,y1 / 终点 x2,y2（均支持归一化：nx1,ny1,nx2,ny2 优先推荐 0-1000）；steps(可选,移动步数默认24), hold_keys(可选,拖拽时按住修饰键,如["shift"]框选)', desc: '鼠标拖拽：按住左键从起点平滑拖到终点再松开。拖文件/拖滑块/选中一段文字/框选元素/移动窗口用。先截图拿起终点归一化坐标', manual: '电脑控制' },
+  { name: 'desktop_move', params: 'nx(归一化横坐标,0-1000)/ny(归一化纵坐标,0-1000) 优先推荐；或 x/y(绝对像素)', desc: '移动鼠标到指定位置（不点击）：悬停显示 tooltip、展开悬停菜单、让鼠标就位。悬停弹出的内容截图前先 move 过去', manual: '电脑控制' },
   { name: 'desktop_window', params: 'action(list列出/activate激活/minimize最小化/maximize最大化/close关闭), pid(进程id,list结果里拿)', desc: '管理桌面窗口：先 list 拿窗口清单（pid+标题），activate 把目标窗口拉到前台（desktop_click/type 前必须先激活目标窗口），close 走正常关闭流程（相当于点X）', manual: '电脑控制' },
   { name: 'desktop_uia', params: 'pid(进程id,desktop_window list里拿;不传=当前前台窗口), filter(可选,按控件名过滤)', desc: '读窗口的 UIA 控件名册（类型/名字/物理坐标/可操作方式，≤150条）——原生程序不用视觉猜坐标：先 uia 拿控件清单 → 挑目标 → desktop_click 传它 x/y。比截屏定位快且准，操作原生程序优先用', manual: '电脑控制' },
   { name: 'run_command', params: 'command(命令行,cmd语法), cwd(可选,工作目录,默认工作区), timeout(可选,秒,默认120上限600)', desc: '执行命令行并返回输出（npm/pip/git/编译/跑脚本/跑测试）。改代码→跑测试→读报错→修复的开发闭环核心。**修 2 次仍失败必须 ask_user 汇报报错+已试方案，禁止闷头硬修或没验证就称修好**。危险命令（格式化/删盘/引导）有黑名单硬拦；输出超长自动归档。Windows cmd 语法', manual: '开发' },
@@ -3685,7 +3687,7 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       if (!hasNorm && (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0)) {
         return { ok: false, message: '坐标非法。两种传法：① nx/ny 归一化坐标（0-1000，view_image 让视觉模型输出目标中心点归一化坐标后直接传，推荐最稳）② x/y 绝对像素（= 截图里的物理像素位置）' }
       }
-      const r = await desktop.click({ ...(hasNorm ? { nx: args.nx, ny: args.ny } : { x, y }), button: args.button, double: !!args.double })
+      const r = await desktop.click({ ...(hasNorm ? { nx: args.nx, ny: args.ny } : { x, y }), button: args.button, double: !!args.double, holdKeys: Array.isArray(args.hold_keys) ? args.hold_keys : [] })
       return r.ok
         ? { ok: true, message: `已点击 ${r.x ? `(${r.x},${r.y})` : '目标位置'}${args.double ? ' 双击' : ''}${args.button === 'right' ? '（右键）' : ''}。若目标窗口之前不在前台，先 desktop_window activate；不确定点没点中就再截屏看一眼` }
         : { ok: false, message: r.error }
@@ -3713,9 +3715,30 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       const g = this.desktopGuard(args)
       if (g) return g
       const x = Number(args.x) || 0, y = Number(args.y) || 0, amount = Number(args.amount) || 0
-      if (!amount) return { ok: false, message: 'amount 为 0（正=向上滚，负=向下滚，一格约 120）' }
-      const r = await desktop.scroll(x, y, amount)
-      return r.ok ? { ok: true, message: `已在 (${x},${y}) 滚动 ${amount}` } : { ok: false, message: r.error }
+      if (!amount) return { ok: false, message: 'amount 为 0（正=向上/向右滚，负=向下/向左滚，一格约 120）' }
+      const horizontal = !!args.horizontal
+      const r = await desktop.scroll(x, y, amount, horizontal)
+      return r.ok ? { ok: true, message: `已在 (${x},${y}) ${horizontal ? '横向' : ''}滚动 ${amount}` } : { ok: false, message: r.error }
+    },
+
+    async desktop_drag(args) {
+      const g = this.desktopGuard(args)
+      if (g) return g
+      const r = await desktop.drag({
+        x1: args.x1, y1: args.y1, x2: args.x2, y2: args.y2,
+        nx1: args.nx1, ny1: args.ny1, nx2: args.nx2, ny2: args.ny2,
+        steps: args.steps, holdKeys: Array.isArray(args.hold_keys) ? args.hold_keys : []
+      })
+      return r.ok
+        ? { ok: true, message: `已拖拽 (${r.from.x},${r.from.y}) → (${r.to.x},${r.to.y})${args.hold_keys ? '（按住 ' + args.hold_keys.join('+') + '）' : ''}。拖拽结果截屏确认一眼，没生效就换 desktop_window activate 后重试` }
+        : { ok: false, message: r.error }
+    },
+
+    async desktop_move(args) {
+      const g = this.desktopGuard(args)
+      if (g) return g
+      const r = await desktop.move(args.x, args.y, args.nx, args.ny)
+      return r.ok ? { ok: true, message: `鼠标已移动到 (${r.x},${r.y})` } : { ok: false, message: r.error }
     },
 
     async desktop_window(args) {
@@ -4407,6 +4430,8 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       case 'desktop_type': return `${t}输入文本(${String(args.text || '').length}字)`
       case 'desktop_key': return `${t}按键 ${(Array.isArray(args.keys) ? args.keys : []).join('+')}`
       case 'desktop_scroll': return `${t}滚动(${args.x},${args.y},${args.amount})`
+      case 'desktop_drag': return `${t}拖拽 (${args.x1 ?? args.nx1 ?? '?'},${args.y1 ?? args.ny1 ?? '?'}) → (${args.x2 ?? args.nx2 ?? '?'},${args.y2 ?? args.ny2 ?? '?'})`
+      case 'desktop_move': return `${t}移动鼠标(${args.nx ?? args.x ?? '?'},${args.ny ?? args.y ?? '?'})`
       case 'desktop_window': return `${t}窗口${args.action || 'list'}${args.pid ? ' pid=' + args.pid : ''}`
       case 'desktop_uia': return `${t}读控件名册${args.pid ? ' pid=' + args.pid : ''}${args.filter ? ' 过滤"' + args.filter + '"' : ''}`
       case 'run_command': return `${t}执行命令 ${String(args.command || '').slice(0, 60)}`

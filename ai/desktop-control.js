@@ -128,6 +128,42 @@ public static class MSDesk {
     }
     return "ok";
   }
+  public static string KeyDown(ushort vk) {
+    INPUT[] a = new INPUT[1];
+    a[0].type = INPUT_KEYBOARD; a[0].U.ki.wVk = vk; a[0].U.ki.dwFlags = 0;
+    SendInput(1, a, Marshal.SizeOf(typeof(INPUT)));
+    return "ok";
+  }
+  public static string KeyUp(ushort vk) {
+    INPUT[] a = new INPUT[1];
+    a[0].type = INPUT_KEYBOARD; a[0].U.ki.wVk = vk; a[0].U.ki.dwFlags = KUP;
+    SendInput(1, a, Marshal.SizeOf(typeof(INPUT)));
+    return "ok";
+  }
+  public static string Drag(int x1, int y1, int x2, int y2, int steps) {
+    SetCursorPos(x1, y1);
+    System.Threading.Thread.Sleep(150);
+    INPUT[] d = new INPUT[1];
+    d[0].type = INPUT_MOUSE; d[0].U.mi.dwFlags = LDOWN;
+    SendInput(1, d, Marshal.SizeOf(typeof(INPUT)));
+    System.Threading.Thread.Sleep(80);
+    for (int i = 1; i <= steps; i++) {
+      SetCursorPos(x1 + (x2 - x1) * i / steps, y1 + (y2 - y1) * i / steps);
+      System.Threading.Thread.Sleep(12);
+    }
+    System.Threading.Thread.Sleep(100);
+    INPUT[] u = new INPUT[1];
+    u[0].type = INPUT_MOUSE; u[0].U.mi.dwFlags = LUP;
+    SendInput(1, u, Marshal.SizeOf(typeof(INPUT)));
+    return "ok";
+  }
+  public static string WheelH(int x, int y, int amount) {
+    SetCursorPos(x, y);
+    INPUT[] a = new INPUT[1];
+    a[0].type = INPUT_MOUSE; a[0].U.mi.dwFlags = 4096; a[0].U.mi.mouseData = unchecked((uint)amount);
+    SendInput(1, a, Marshal.SizeOf(typeof(INPUT)));
+    return "ok";
+  }
 }
 '@
 Add-Type -TypeDefinition $src
@@ -144,7 +180,17 @@ while ($true) {
     $op = [string]$cmd.op
     switch ($op) {
       'ping' { $resp = @{ id = $id; ok = $true } }
-      'click' { [void][MSDesk]::Click([int]$cmd.x, [int]$cmd.y, [int]$cmd.button, [int]$cmd.clicks, 0); $resp = @{ id = $id; ok = $true } }
+      'click' {
+        if ($cmd.hold) { foreach ($h in @($cmd.hold)) { [void][MSDesk]::KeyDown([MSDesk]::VkOf((B64Dec ([string]$h)))); Start-Sleep -Milliseconds 40 } }
+        [void][MSDesk]::Click([int]$cmd.x, [int]$cmd.y, [int]$cmd.button, [int]$cmd.clicks, 0)
+        if ($cmd.hold) { foreach ($h in @($cmd.hold)) { [void][MSDesk]::KeyUp([MSDesk]::VkOf((B64Dec ([string]$h)))) } }
+        $resp = @{ id = $id; ok = $true }
+      }
+      'drag' {
+        $r = [MSDesk]::Drag([int]$cmd.x1, [int]$cmd.y1, [int]$cmd.x2, [int]$cmd.y2, ([int]($cmd.steps)))
+        $resp = @{ id = $id; ok = ($r -eq 'ok') }
+      }
+      'wheelh' { [void][MSDesk]::WheelH([int]$cmd.x, [int]$cmd.y, [int]$cmd.amount); $resp = @{ id = $id; ok = $true } }
       'scroll' { [void][MSDesk]::Click([int]$cmd.x, [int]$cmd.y, 0, 0, [int]$cmd.amount); $resp = @{ id = $id; ok = $true } }
       'type' { $t = B64Dec $cmd.text; [void][MSDesk]::TypeText($t); $resp = @{ id = $id; ok = $true } }
       'key' {
@@ -223,7 +269,7 @@ while ($true) {
 }
 `
 
-const BOOT_VER = 'msdesk-v4' // 改引导脚本必升版本：旧文件靠 includes 判定不重写（v4：修 TrueCondition 取错类导致 UIA 名册全挂）
+const BOOT_VER = 'msdesk-v5' // 改引导脚本必升版本：旧文件靠 includes 判定不重写（v5：拖拽/横向滚轮/修饰键按住点击）
 
 class DesktopControl {
   constructor(log) {
@@ -345,7 +391,7 @@ class DesktopControl {
   // 是其强项，绝对像素易受截图缩放/DPI 影响——nx/ny × 主屏物理尺寸 = 精确定位
   async click(params) {
     if (await this._checkUserBusy()) return { ok: false, userBusy: true, error: '检测到鼠标正在移动（用户可能正在操作电脑）。已暂停本次键鼠操作避免互相干扰。用户停手后重试即可；连续出现请 ask_user 询问用户是否在用电脑' }
-    const { x, y, button = 'left', double = false, nx, ny } = params || {}
+    const { x, y, button = 'left', double = false, nx, ny, holdKeys } = params || {}
     let cx = x, cy = y
     if (nx != null || ny != null) {
       const { w, h } = primaryPhysical()
@@ -354,7 +400,8 @@ class DesktopControl {
     }
     cx = Math.round(cx); cy = Math.round(cy)
     if (!Number.isFinite(cx) || !Number.isFinite(cy) || cx < 0 || cy < 0) return { ok: false, error: '坐标非法' }
-    const r = await this._run('click', { x: cx, y: cy, button: button === 'right' ? 2 : (button === 'middle' ? 1 : 0), clicks: double ? 2 : 1 })
+    const hold = Array.isArray(holdKeys) ? holdKeys : []
+    const r = await this._run('click', { x: cx, y: cy, button: button === 'right' ? 2 : (button === 'middle' ? 1 : 0), clicks: double ? 2 : 1, hold: hold.map((k) => b64(String(k))) }, 10000 + hold.length * 500)
     if (r.ok) { this._lastMouse = { x: cx, y: cy }; return { ok: true, x: cx, y: cy } }
     return { ok: false, error: b64dec(r.err) || '点击失败' }
   }
@@ -373,12 +420,43 @@ class DesktopControl {
     return r.ok ? { ok: true } : { ok: false, error: b64dec(r.err) || '按键失败' }
   }
 
-  async scroll(x, y, amount) {
+  async scroll(x, y, amount, horizontal) {
     if (await this._checkUserBusy()) return { ok: false, userBusy: true, error: '检测到鼠标正在移动（用户可能正在操作电脑）。已暂停本次键鼠操作避免互相干扰。用户停手后重试即可；连续出现请 ask_user 询问用户是否在用电脑' }
-    // amount: 正=向上滚，负=向下滚（WHEEL delta 单位，一格≈120）
-    const r = await this._run('scroll', { x: Math.round(x), y: Math.round(y), amount: Math.round(amount) })
+    // amount: 正=向上/向右滚，负=向下/向左滚（WHEEL delta 单位，一格≈120）；horizontal=true 走横向滚轮
+    const r = await this._run(horizontal ? 'wheelh' : 'scroll', { x: Math.round(x), y: Math.round(y), amount: Math.round(amount) })
     if (r.ok) { this._lastMouse = { x: Math.round(x), y: Math.round(y) }; return { ok: true } }
     return { ok: false, error: b64dec(r.err) || '滚动失败' }
+  }
+
+  // 拖拽：按下 → 分步移动（很多程序只认多步 move，一次瞬移不认）→ 松开。支持修饰键按住（如 shift 拖选）
+  async drag(params) {
+    if (await this._checkUserBusy()) return { ok: false, userBusy: true, error: '检测到鼠标正在移动（用户可能正在操作电脑）。已暂停本次键鼠操作避免互相干扰。用户停手后重试即可；连续出现请 ask_user 询问用户是否在用电脑' }
+    const { x1, y1, x2, y2, nx1, ny1, nx2, ny2, steps = 24, holdKeys } = params || {}
+    const { w, h } = primaryPhysical()
+    let ax1 = x1, ay1 = y1, ax2 = x2, ay2 = y2
+    if (nx1 != null || ny1 != null) { if (nx1 != null) ax1 = Math.round((Number(nx1) / 1000) * w); if (ny1 != null) ay1 = Math.round((Number(ny1) / 1000) * h) }
+    if (nx2 != null || ny2 != null) { if (nx2 != null) ax2 = Math.round((Number(nx2) / 1000) * w); if (ny2 != null) ay2 = Math.round((Number(ny2) / 1000) * h) }
+    ax1 = Math.round(ax1); ay1 = Math.round(ay1); ax2 = Math.round(ax2); ay2 = Math.round(ay2)
+    if (![ax1, ay1, ax2, ay2].every((v) => Number.isFinite(v) && v >= 0)) return { ok: false, error: '坐标非法（需要起点 x1,y1 和终点 x2,y2）' }
+    const nSteps = Math.min(Math.max(Number(steps) || 24, 6), 60)
+    const hold = Array.isArray(holdKeys) ? holdKeys : []
+    const opParams = { x1: ax1, y1: ay1, x2: ax2, y2: ay2, steps: nSteps, hold: hold.map((k) => b64(String(k))) }
+    const r = await this._run('drag', opParams, 20000 + nSteps * 20)
+    if (r.ok) { this._lastMouse = { x: ax2, y: ay2 }; return { ok: true, from: { x: ax1, y: ay1 }, to: { x: ax2, y: ay2 } } }
+    return { ok: false, error: b64dec(r.err) || '拖拽失败' }
+  }
+
+  // 悬停/移动鼠标（不点击）：悬停显示 tooltip、展开悬停菜单
+  async move(x, y, nx, ny) {
+    if (await this._checkUserBusy()) return { ok: false, userBusy: true, error: '检测到鼠标正在移动（用户可能正在操作电脑）。已暂停本次键鼠操作避免互相干扰。用户停手后重试即可；连续出现请 ask_user 询问用户是否在用电脑' }
+    const { w, h } = primaryPhysical()
+    let cx = x, cy = y
+    if (nx != null || ny != null) { if (nx != null) cx = Math.round((Number(nx) / 1000) * w); if (ny != null) cy = Math.round((Number(ny) / 1000) * h) }
+    cx = Math.round(cx); cy = Math.round(cy)
+    if (!Number.isFinite(cx) || !Number.isFinite(cy) || cx < 0 || cy < 0) return { ok: false, error: '坐标非法' }
+    const r = await this._run('click', { x: cx, y: cy, button: 0, clicks: 0 }) // clicks=0 = 只移动不点击
+    if (r.ok) { this._lastMouse = { x: cx, y: cy }; return { ok: true, x: cx, y: cy } }
+    return { ok: false, error: b64dec(r.err) || '移动失败' }
   }
 
   async cursor() {
