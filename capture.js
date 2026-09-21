@@ -19,6 +19,7 @@ function createCaptureManager({ getMainWindow, workspaceDir, log, isDev, appendC
   let overlayWin = null
   let overlayTimer = null
   let controlAborted = false
+  let msMinimizedByAI = false // AI 控制序列中替 AI 最小化主窗的标记（收起遮罩时还原，防点击坐标错位）
 
   // preload 路径按"是否真打包"判定（app.isPackaged），与主窗口同款——npx 开发启动走 __dirname
   const preloadPath = app.isPackaged
@@ -171,12 +172,41 @@ function createCaptureManager({ getMainWindow, workspaceDir, log, isDev, appendC
   }
   function armOverlayIdle() {
     if (overlayTimer) clearTimeout(overlayTimer)
-    overlayTimer = setTimeout(() => hideControlOverlay(), 15000) // 15s 无控制活动自动收起（不挡屏不碍事）
+    overlayTimer = setTimeout(() => hideControlOverlay(), 30000) // 30s 无控制活动自动收起（view_image 思考一轮可能超 15s，拉长防序列中遮罩消失）
   }
   function hideControlOverlay() {
     if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null }
-    if (overlayWin && !overlayWin.isDestroyed()) overlayWin.destroy()
-    overlayWin = null
+    // 控制序列收起（idle 超时/急停）→ 先还原被 AI 最小化的主窗（此时 AI 不再看屏点击，桌面还给用户）
+    if (msMinimizedByAI) restoreMainForAI()
+    // 透明置顶窗口的 hide/destroy 偶发同步挂起（真机探针实锤卡死）——全部丢到下一轮，主流程立即放行
+    if (overlayWin && !overlayWin.isDestroyed()) {
+      const w = overlayWin
+      overlayWin = null
+      setImmediate(() => { try { if (!w.isDestroyed()) { w.hide(); w.destroy() } } catch (e2) { try { log_('[control] 遮罩销毁异常: ' + e2.message) } catch {} } })
+    }
+  }
+  // AI 控制序列中把主窗最小化（避免挡截图+点击错位）；收起遮罩时 restoreMainForAI 还原
+  function minimizeMainForAI() {
+    try {
+      const mw = typeof getMainWindow === 'function' ? getMainWindow() : null
+      if (mw && !mw.isDestroyed() && mw.isVisible() && !mw.isMinimized()) {
+        mw.minimize()
+        msMinimizedByAI = true
+        return true
+      }
+    } catch {}
+    return false
+  }
+  function restoreMainForAI() {
+    if (!msMinimizedByAI) return false
+    msMinimizedByAI = false
+    log_('[control] restoreMainForAI: 开始还原主窗')
+    try {
+      const mw = typeof getMainWindow === 'function' ? getMainWindow() : null
+      log_('[control] restoreMainForAI: 拿到主窗 ' + !!mw)
+      if (mw && !mw.isDestroyed()) { mw.restore(); log_('[control] restoreMainForAI: restore 完成'); mw.show(); log_('[control] restoreMainForAI: show 完成') }
+    } catch (e) { log_('[control] restoreMainForAI 异常: ' + e.message) }
+    return true
   }
   // 截图前临时隐藏：遮罩会污染 AI 的视觉定位（view_image 要看真实界面），截完恢复
   function hideOverlayForShot() { if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null }; if (overlayWin && !overlayWin.isDestroyed()) overlayWin.hide() }
@@ -194,7 +224,10 @@ function createCaptureManager({ getMainWindow, workspaceDir, log, isDev, appendC
       touch: () => { if (controlAborted) return; showControlOverlay() },
       hideForShot: hideOverlayForShot,
       restoreAfterShot: restoreOverlayAfterShot,
-      isAborted: () => controlAborted
+      isAborted: () => controlAborted,
+      isControlActive: () => !!(overlayWin && !overlayWin.isDestroyed()), // 窗口存在即活跃（创建中/hide 避让中都算，防序列中误判非控制）
+      minimizeMainForAI,
+      restoreMainForAI
     }
   }
 }

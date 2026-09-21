@@ -1705,35 +1705,49 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       if (!el) return { ok: false, message: '截图需要 MSMate 应用内环境（当前是纯 Node/无 GUI 环境），无法截图' }
       // 控制遮罩避让：遮罩会污染 AI 视觉定位（半透明暗色挡真实界面）——截屏前隐藏，截完恢复
       if (controlOverlay && (scope === 'screen' || scope === 'app')) controlOverlay.hideForShot()
-      // v2.5.3：screen 全屏截图默认自动最小化 MSMate 主窗口（不然截出来的桌面被自己挡住），截完自动还原；
-      // AI 可传 minimizeSelf:false 关闭（比如就想连 MSMate 界面一起截下来）
+      // v2.5.3：screen 全屏截图默认自动最小化 MSMate 主窗口（不然截出来的桌面被自己挡住）。
+      // v2.8.8 修（老大实锤"截图完 MS 又弹回来，点击就点到 MS 自己"）：控制序列（遮罩活跃）中
+      // MS 保持最小化——AI 看到的桌面 = 点击时的桌面，布局冻结；遮罩收起（idle/急停）时才还原主窗
       let restoreWin = null
       if (scope === 'screen' && args.minimizeSelf !== false) {
-        try {
-          const mainWin = el.BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
-          if (mainWin && mainWin.isVisible() && !mainWin.isMinimized()) {
-            mainWin.minimize()
-            restoreWin = mainWin
-            await new Promise((r) => setTimeout(r, 700)) // 等最小化动画走完、桌面完全露出
-          }
-        } catch {}
+        let minimized = false
+        if (controlOverlay && controlOverlay.minimizeMainForAI) minimized = !!controlOverlay.minimizeMainForAI()
+        if (!minimized) {
+          try {
+            const mainWin = el.BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+            if (mainWin && mainWin.isVisible() && !mainWin.isMinimized()) {
+              mainWin.minimize()
+              restoreWin = mainWin
+              minimized = true
+            }
+          } catch {}
+        }
+        if (minimized) await new Promise((r) => setTimeout(r, 700)) // 等最小化动画走完、桌面完全露出
       }
       try {
         const cap = scope === 'app' ? await captureAppShot(el) : scope === 'screen' ? await captureScreenShot(el) : await captureWebviewShot(el)
         const p = shotSavePath(el, scope, args.path)
         const info = shotSave(cap.img, p)
         const coordNote = scope === 'screen' && cap.w ? `\n坐标基准：图 ${cap.w}×${cap.h}px = 屏幕物理分辨率 1:1——desktop_click 的 x/y 直接用你在图上看到的像素位置；或用归一化坐标 nx/ny（0-1000，图内百分比×10）更稳` : ''
+        const frozenNote = scope === 'screen' && controlOverlay && controlOverlay.isControlActive() ? '\n（MSMate 主窗口已最小化保持桌面冻结：你看到的布局 = desktop_click 时的布局；遮罩收起时自动还原）' : ''
         return {
           ok: true,
-          message: `已截图（${scope}${cap.url ? '：' + cap.url.slice(0, 80) : ''}）→ ${info.path}（${info.width}×${info.height}px，${fmtSize(info.size)}）${coordNote}\n图片还没"看"：要看画面内容/找东西/确认结果，就调 view_image 传 path:"${info.path}"，提问里让模型"输出目标中心点归一化坐标(x,y)，0-1000"，拿到的 nx/ny 直接传 desktop_click`
+          message: `已截图（${scope}${cap.url ? '：' + cap.url.slice(0, 80) : ''}）→ ${info.path}（${info.width}×${info.height}px，${fmtSize(info.size)}）${coordNote}${frozenNote}\n图片还没"看"：要看画面内容/找东西/确认结果，就调 view_image 传 path:"${info.path}"，提问里让模型"输出目标中心点归一化坐标(x,y)，0-1000"，拿到的 nx/ny 直接传 desktop_click`
         }
       } catch (err) {
         return { ok: false, message: `截图失败: ${err.message}` }
       } finally {
-        if (controlOverlay && (scope === 'screen' || scope === 'app')) controlOverlay.restoreAfterShot()
-        if (restoreWin) {
+        if (controlOverlay && (scope === 'screen' || scope === 'app')) {
+          controlOverlay.restoreAfterShot()
+          // 控制序列中（遮罩可见）：MS 保持最小化——AI 看到的桌面 = 点击时的桌面；遮罩收起时统一还原主窗
+          if (restoreWin && !controlOverlay.isControlActive()) {
+            try { restoreWin.restore() } catch {}
+            try { restoreWin.show() } catch {}
+            restoreWin = null
+          }
+        } else if (restoreWin) {
           try { restoreWin.restore() } catch {}
-          try { restoreWin.show() } catch {} // 截完自动把 MSMate 弹回桌面（老大拍板：最小化之后又自动打开）
+          try { restoreWin.show() } catch {} // 非控制场景：截完自动把 MSMate 弹回桌面（老大拍板）
         }
       }
     },
