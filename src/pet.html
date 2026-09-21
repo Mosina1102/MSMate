@@ -266,6 +266,18 @@
       })
     }
 
+    // ===== 尺寸缩放：body.zoom 整体等比（主进程切窗口尺寸时同步发来）=====
+    // 注意：精灵图 background-size 写死（4320x270 定律），缩放只能走 zoom 整体放大，勿动 background-size
+    if (window.api && window.api.onPetScale) {
+      window.api.onPetScale((k) => {
+        try {
+          const v = Number(k) || 1
+          document.body.style.zoom = v
+          document.documentElement.style.zoom = v
+        } catch (e) {}
+      })
+    }
+
     // ===== 拖文件给莫西：自动阅读理解 =====
     // 拖入文件 → 主进程注入 WorkAgent（自动选工具读取+摘要，结果进主界面会话）
     // 情绪联动走既有 petBroadcast：user_msg(收到) → tool_call(打字) → run_done(喜欢)

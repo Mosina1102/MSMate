@@ -372,6 +372,18 @@ function initWorkMode() {
   work._appendChatRef = (ref) => appendChatRef(ref)
   // v2.4.85：外部模块带生成模式（图片编辑器「发送到对话框」自动切图片模式，编辑图直接是参考图）
   work._setGenMode = (mode) => setGenMode(mode)
+  // --- Ctrl+V 粘贴图片：剪贴板有图就存文件挂引用胶囊（截图工具/微信复制的图直接粘进来）---
+  chatInput.addEventListener('paste', async (e) => {
+    try {
+      const items = (e.clipboardData && e.clipboardData.items) || []
+      const hasImg = Array.from(items).some((it) => it.type && it.type.startsWith('image/'))
+      if (!hasImg || !_api.saveClipboardImage) return // 纯文本粘贴走默认行为
+      e.preventDefault()
+      const r = await _api.saveClipboardImage()
+      if (r && r.ok && r.path) appendChatRef(r.path)
+      else showToast((r && r.error) || '粘贴图片失败', 'error')
+    } catch (err) { console.error('[paste-img]', err) }
+  })
   // 输入框为空时按退格 = 删除最后一个引用胶囊
   chatInput.addEventListener('keydown', (e) => {
     if (e.key === 'Backspace' && !chatInput.value && chatRefList.length) {
@@ -626,8 +638,19 @@ function initWorkMode() {
   $('aiSettingsBtn').addEventListener('click', openAiSettings)
   // 全局设置（外观 / 互联与传输 / 设备 / 关于）
   initGlobalSettings()
-  $('aiApprovalTag').addEventListener('click', toggleApprovalMode)
+  $('aiApprovalTag').addEventListener('click', (e) => { e.stopPropagation(); showApprovalMenu() })
+  document.addEventListener('click', (e) => { // 点外部关闭控制模式菜单
+    const m = $('aiApprovalMenu')
+    if (m && !m.classList.contains('hidden') && !m.contains(e.target)) m.classList.add('hidden')
+  })
   fillQuickModelSelect() // v0.4：自绘模型菜单（按钮+菜单的事件在函数内绑定一次）
+  initBrowserCtlBridge() // browser_* 网页控制：主进程桥回执（AI 受控页签）
+  // --- 内置截图：按钮入口 + 成品自动注入聊天引用（存工作区「截图」+ 剪贴板已同时写入）---
+  const capBtn = $('chatCaptureBtn')
+  if (capBtn) capBtn.addEventListener('click', () => { if (_api.captureStart) _api.captureStart() })
+  if (_api.onCaptureInject) _api.onCaptureInject(({ path }) => {
+    if (typeof work._appendChatRef === 'function' && path) work._appendChatRef(path)
+  })
   const sessionMenu = $('sessionMenu')
   $('sessionBarBtn').addEventListener('click', (e) => {
     e.stopPropagation()
@@ -992,26 +1015,248 @@ function startInlineRename(s, row, titleSpan) {
 }
 
 function stripToolBlocks(text) {
-  return text.replace(/```tool[\s\S]*?```/g, '').trim()
+  return String(text || '')
+    .replace(/```tool[\s\S]*?```/g, '')
+    .replace(/<tool_call\s*>[\s\S]*?<\/tool_call\s*>/g, '') // tool_call XML 标签（Qwen/GLM 系漂移形态）不进正文
+    .replace(/<[\s|]*DSML[\s|]*[\s\S]*?(?:<[\s|]*\/[\s|]*DSML[\s|]*(?:invoke|calls|parameter)[\s|]*>|$)/g, '') // DeepSeek DSML 内部标记（漂移产物）不进正文，防乱码
+    .trim()
+}
+
+function approvalModeOf(v) {
+  return v === 'auto' ? 'auto' : (v === 'unlimited' ? 'unlimited' : 'manual')
 }
 
 function updateApprovalTag() {
   const tag = $('aiApprovalTag')
   if (!tag) return
-  const manual = work.config.approvalMode !== 'auto'
+  const mode = approvalModeOf(work.config.approvalMode)
   const label = tag.querySelector('.as-label')
-  if (label) label.textContent = manual ? '手动批准' : '自动信任'
-  else tag.textContent = manual ? '手动批准' : '自动信任'
-  tag.classList.toggle('manual', manual)
-  tag.classList.toggle('auto', !manual)
+  const text = mode === 'auto' ? '自动信任' : (mode === 'unlimited' ? '无限制' : '手动批准')
+  if (label) label.textContent = text
+  else tag.textContent = text
+  tag.classList.toggle('manual', mode === 'manual')
+  tag.classList.toggle('auto', mode === 'auto')
+  tag.classList.toggle('unlimited', mode === 'unlimited')
 }
 
-async function toggleApprovalMode() {
-  const next = work.config.approvalMode === 'auto' ? 'manual' : 'auto'
+async function applyApprovalMode(next) {
   work.config.approvalMode = next
   updateApprovalTag()
   try { await _api.aiSetConfig({ approvalMode: next }) } catch {}
-  showToast(next === 'auto' ? '已切换：自动信任（C盘除桌面仍需批准）' : '已切换：手动批准', 'success')
+  if (next === 'unlimited') showToast('无限制模式已开启：所有操作（含 exe/脚本/桌面控制）不再询问。重启应用自动回落自动信任', 'error')
+  else if (next === 'auto') showToast('已切换：自动信任（C盘除桌面仍需批准）', 'success')
+  else showToast('已切换：手动批准', 'success')
+}
+
+// 控制模式三选菜单（手动批准/自动信任/无限制）：无限制=会话级高危档，两步确认防误触
+function showApprovalMenu() {
+  const menu = $('aiApprovalMenu')
+  const btn = $('aiApprovalTag')
+  if (!menu || !btn) return
+  if (!menu.classList.contains('hidden')) { menu.classList.add('hidden'); return }
+  const cur = approvalModeOf(work.config.approvalMode)
+  const item = (val, name, desc, cls) => `
+    <button type="button" class="am-item ${cls}" data-mode="${val}">
+      <span class="am-dot"></span>
+      <span><span class="am-name">${name}${val === cur ? ' ✓' : ''}</span><span class="am-desc">${desc}</span></span>
+    </button>`
+  menu.innerHTML =
+    item('manual', '手动批准', '每个风险操作都弹卡确认，最稳妥', 'manual') +
+    item('auto', '自动信任', '自动执行（C盘除桌面、运行exe/脚本仍需确认）', 'auto') +
+    item('unlimited', '无限制（挂机办公）', '所有操作全自动不再询问，含 exe/脚本/桌面控制；重启应用自动回落自动信任', 'unlimited')
+  menu.classList.remove('hidden')
+  const rect = btn.getBoundingClientRect()
+  menu.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - menu.offsetWidth - 8)) + 'px'
+  const mh = menu.offsetHeight
+  menu.style.top = (rect.top - mh - 8 > 8 ? rect.top - mh - 8 : rect.bottom + 8) + 'px'
+  menu.querySelectorAll('.am-item').forEach((el) => {
+    el.addEventListener('click', async (e) => {
+      e.stopPropagation()
+      const mode = el.getAttribute('data-mode')
+      if (mode === 'unlimited' && cur !== 'unlimited' && !el.classList.contains('armed')) {
+        el.classList.add('armed')
+        const n = el.querySelector('.am-name')
+        if (n) n.textContent = '再次点击确认开启（本会话内不再询问任何操作）'
+        setTimeout(() => { // 3 秒不点就解除武装，防误触
+          if (!el.isConnected) return
+          el.classList.remove('armed')
+          if (n) n.textContent = '无限制（挂机办公）'
+        }, 3000)
+        return
+      }
+      menu.classList.add('hidden')
+      await applyApprovalMode(mode)
+    })
+  })
+}
+
+// ===== browser_* 网页控制（AI 受控页签）：导航/快照/点击/填表/读取 =====
+// 受控页签固定一个（path='url://ai-ctl'，名称"AI 浏览"），用户全程可见操作内容；
+// ref 表存 webview 主世界 window.__msAiRefs（页面自身导航后自然失效，需重新 snapshot）
+const AI_WEB_PATH = 'url://ai-ctl'
+const AI_WEB_KEY = 'local|' + AI_WEB_PATH
+
+function aiWebView() {
+  const v = typeof ensureUrlView === 'function' ? ensureUrlView(AI_WEB_KEY, 'about:blank') : null
+  return v ? v.el : null
+}
+
+async function waitAiWebLoad(el, timeoutMs) {
+  const t0 = Date.now()
+  while (Date.now() - t0 < (timeoutMs || 15000)) {
+    try {
+      const st = await el.executeJavaScript('({s:document.readyState,t:document.title,u:location.href})')
+      if (st && st.s === 'complete') { await new Promise((r) => setTimeout(r, 400)); return st }
+    } catch {}
+    await new Promise((r) => setTimeout(r, 300))
+  }
+  return null
+}
+
+async function browserNavigate(url) {
+  const el = aiWebView()
+  if (!el) return { ok: false, error: '工作台网页层不可用' }
+  let u = String(url || '').trim()
+  if (!u) return { ok: false, error: 'url 为空' }
+  // 本地文件直接开发预览：Windows 路径自动转 file:/// URL（AI 写完网页自己看效果）
+  if (/^[a-zA-Z]:[\\/]/.test(u)) u = 'file:///' + u.replace(/\\/g, '/')
+  if (!/^(https?:\/\/|file:\/\/)/i.test(u)) u = 'https://' + u
+  let it = state.wbItems.find((w) => w.aiCtl)
+  if (!it) {
+    state.wbItems.push({ kind: 'urltab', url: u, path: AI_WEB_PATH, name: 'AI 浏览', isDir: false, size: 0, origin: 'local', originName: 'AI', _missing: false, aiCtl: true })
+  } else { it.url = u; it.path = AI_WEB_PATH }
+  try { wbPersist() } catch {}
+  wbActiveKey = AI_WEB_KEY
+  wbRenderedKey = null
+  renderWorkbench()
+  // renderWbView 首建带 src；已存在的 webview 层手动导航
+  try { el.loadURL(u) } catch { try { el.setAttribute('src', u) } catch {} }
+  const st = await waitAiWebLoad(el)
+  aiRefsClear()
+  if (!st) return { ok: false, error: '页面加载超时（15s），可能网络不通或站点很慢' }
+  return { ok: true, title: st.t || '', url: st.u || u }
+}
+
+function aiRefsClear() {
+  const el = aiWebView()
+  if (el) { try { el.executeJavaScript('window.__msAiRefs = {}') } catch {} }
+}
+
+const AI_SNAP_JS = `(() => {
+  const out = []
+  window.__msAiRefs = {}
+  const nodes = document.querySelectorAll('a,button,input,textarea,select,[role="button"],[role="tab"],[role="menuitem"],[contenteditable="true"],[onclick]')
+  let n = 0
+  for (const el of nodes) {
+    if (n >= 120) { out.push('（元素超过 120 个，已截断）'); break }
+    const r = el.getBoundingClientRect()
+    if (!r.width || !r.height) continue
+    const st = getComputedStyle(el)
+    if (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') continue
+    n++
+    const ref = 'e' + n
+    window.__msAiRefs[ref] = el
+    const tag = el.tagName.toLowerCase()
+    const type = (el.getAttribute('type') || '').toLowerCase()
+    const ph = el.getAttribute('placeholder') || ''
+    const text = (el.innerText || el.value || el.getAttribute('aria-label') || '').replace(/\\s+/g, ' ').trim().slice(0, 50)
+    out.push(ref + ': ' + tag + (type ? '[' + type + ']' : '') + (ph ? ' 占位="' + ph + '"' : '') + (text ? ' 文="' + text + '"' : '') + ' @(' + Math.round(r.x) + ',' + Math.round(r.y) + ' ' + Math.round(r.width) + 'x' + Math.round(r.height) + ')')
+  }
+  return out.join('\\n') || '（页面没有可交互元素）'
+})()`
+
+async function browserSnapshot() {
+  const el = aiWebView()
+  if (!el) return { ok: false, error: 'AI 浏览页签不存在，先 browser_navigate' }
+  try {
+    const list = await el.executeJavaScript(AI_SNAP_JS)
+    return { ok: true, elements: String(list || '') }
+  } catch (e) { return { ok: false, error: '快照失败: ' + e.message } }
+}
+
+async function browserClick(ref) {
+  const el = aiWebView()
+  if (!el) return { ok: false, error: 'AI 浏览页签不存在，先 browser_navigate' }
+  const r = String(ref || '').trim()
+  if (!/^e\d+$/.test(r)) return { ok: false, error: 'ref 格式应为 e数字（来自 browser_snapshot）' }
+  try {
+    const res = await el.executeJavaScript(`(() => {
+      const el = (window.__msAiRefs || {})['${r}']
+      if (!el || !el.isConnected) return 'REF_GONE'
+      el.scrollIntoView({ block: 'center' })
+      const rc = el.getBoundingClientRect()
+      const opts = { bubbles: true, cancelable: true, view: window, clientX: rc.x + rc.width / 2, clientY: rc.y + rc.height / 2 }
+      ;['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach((t) => { try { el.dispatchEvent(new MouseEvent(t, opts)) } catch (e) {} })
+      try { el.click() } catch (e) {}
+      return 'OK'
+    })()`)
+    if (res !== 'OK') return { ok: false, error: '元素已失效（页面重渲染了），重新 browser_snapshot 后再操作' }
+    await new Promise((rr) => setTimeout(rr, 600)) // 等 SPA 路由/弹窗落定
+    const st = await waitAiWebLoad(el, 4000)
+    return { ok: true, navigated: st ? (st.t || '') : '' }
+  } catch (e) { return { ok: false, error: '点击失败: ' + e.message } }
+}
+
+async function browserFill(ref, value) {
+  const el = aiWebView()
+  if (!el) return { ok: false, error: 'AI 浏览页签不存在，先 browser_navigate' }
+  const r = String(ref || '').trim()
+  if (!/^e\d+$/.test(r)) return { ok: false, error: 'ref 格式应为 e数字（来自 browser_snapshot）' }
+  const v = String(value == null ? '' : value)
+  const b64v = (() => { try { return btoa(unescape(encodeURIComponent(v))) } catch { return '' } })() // 中文绕开拼接编码坑
+  try {
+    const res = await el.executeJavaScript(`(() => {
+      const el = (window.__msAiRefs || {})['${r}']
+      if (!el || !el.isConnected) return 'REF_GONE'
+      let v = ''
+      try { v = decodeURIComponent(escape(atob('${b64v}'))) } catch (e) { return 'DEC_ERR' }
+      const tag = el.tagName
+      if (tag === 'SELECT') {
+        const hit = Array.from(el.options).some((o) => { if (o.value === v || o.text === v) { el.value = o.value; return true } return false })
+        if (hit) { el.dispatchEvent(new Event('change', { bubbles: true })); return 'OK' }
+        return 'NO_OPTION'
+      }
+      if (tag === 'INPUT' || tag === 'TEXTAREA') {
+        const proto = tag === 'INPUT' ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype
+        Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v) // 原生 setter 绕 React 受控组件
+        el.dispatchEvent(new Event('input', { bubbles: true }))
+        el.dispatchEvent(new Event('change', { bubbles: true }))
+        return 'OK'
+      }
+      if (el.isContentEditable) { el.innerText = v; el.dispatchEvent(new InputEvent('input', { bubbles: true })); return 'OK' }
+      return 'NOT_EDITABLE'
+    })()`)
+    if (res === 'OK') return { ok: true }
+    const msg = { REF_GONE: '元素已失效（页面重渲染了），重新 browser_snapshot', NOT_EDITABLE: '该元素不是可编辑控件（input/textarea/select/contenteditable 才能填）', NO_OPTION: '下拉框没有匹配选项（value 或 文本都要对上）', DEC_ERR: '值解码失败' }[res]
+    return { ok: false, error: msg || ('填充失败: ' + res) }
+  } catch (e) { return { ok: false, error: '填充失败: ' + e.message } }
+}
+
+async function browserRead() {
+  const el = aiWebView()
+  if (!el) return { ok: false, error: 'AI 浏览页签不存在，先 browser_navigate' }
+  try {
+    const info = await el.executeJavaScript('({t:document.title,u:location.href,b:(document.body?document.body.innerText:"")})')
+    const body = String((info && info.b) || '').replace(/\\n{3,}/g, '\\n\\n').slice(0, 8000)
+    return { ok: true, title: (info && info.t) || '', url: (info && info.u) || '', text: body }
+  } catch (e) { return { ok: false, error: '读取失败: ' + e.message } }
+}
+
+function initBrowserCtlBridge() {
+  if (!_api.onAiBrowserCtl || _api._browserCtlBound) return
+  _api._browserCtlBound = true
+  _api.onAiBrowserCtl(async ({ reqId, op, params }) => {
+    let result = { ok: false, error: '未知操作: ' + op }
+    try {
+      const p = params || {}
+      if (op === 'navigate') result = await browserNavigate(p.url)
+      else if (op === 'snapshot') result = await browserSnapshot()
+      else if (op === 'click') result = await browserClick(p.ref)
+      else if (op === 'fill') result = await browserFill(p.ref, p.value)
+      else if (op === 'read') result = await browserRead()
+    } catch (e) { result = { ok: false, error: e.message } }
+    try { _api.browserCtlResult(reqId, result) } catch {}
+  })
 }
 
 // ===== 主模型快捷切换（聊天输入区自绘菜单：内置模型置顶带积分价 + 常用模型，Trae 风格分组）=====
@@ -2227,42 +2472,70 @@ async function doRollback(msgIndex, btn, originalText) {
     showToast('AI 正在执行任务，请先停止', 'error')
     return
   }
-  // 二次确认：第一次点击进入待确认状态，4 秒内再点才真正回滚
-  if (work.rollbackArmed !== msgIndex) {
-    work.rollbackArmed = msgIndex
-    btn.classList.add('armed')
-    btn.innerHTML = iconSvg('triangle-alert') + ' 确认回滚？'
-    showToast('将还原这段对话的所有文件改动（含删除 AI 新建的文件），再点一次确认', 'info')
-    setTimeout(() => {
-      if (work.rollbackArmed === msgIndex) {
-        work.rollbackArmed = null
-        btn.classList.remove('armed')
-        btn.textContent = '↩ 回到此处'
+  // Trae 式确认卡：先拉"将撤销哪些文件操作"的清单，看清变化再拍板（老大要求"一定一定可以真实回退"）
+  let preview = null
+  try { preview = await _api.aiRollbackPreview(msgIndex, work.active) } catch {}
+  showRollbackConfirm(msgIndex, btn, originalText, preview)
+}
+
+// 回滚确认卡（Trae 式，内嵌聊天流）：看清将撤销哪些文件操作，取消或确认
+function showRollbackConfirm(msgIndex, btn, originalText, preview) {
+  const old = $('rollbackConfirmCard')
+  if (old) old.remove()
+  const card = document.createElement('div')
+  card.id = 'rollbackConfirmCard'
+  card.className = 'rb-card'
+  const items = (preview && preview.items) || []
+  const listHtml = items.map((it) => `
+    <div class="rb-item${it.action.indexOf('删除') !== -1 ? ' danger' : ''}">
+      <span class="rb-icon">${iconSvg(it.action.indexOf('删除') !== -1 ? 'trash-2' : 'file-text')}</span>
+      <span class="rb-name" title="${escapeHtml(it.path || '')}">${escapeHtml(it.name || '')}</span>
+      <span class="rb-action">${escapeHtml(it.action)}</span>
+    </div>`).join('')
+  card.innerHTML = `
+    <div class="rb-title">${iconSvg('triangle-alert')}<span>确定要回滚到此步骤并重新开始吗？</span></div>
+    ${items.length ? `<div class="rb-list">${listHtml}</div>` : '<div class="rb-empty">这一步没有文件改动，仅撤回这段对话</div>'}
+    <div class="rb-tip">文件将还原为该步骤之前的状态（逆序撤销），此段对话会撤回，原消息填回输入框</div>
+    <div class="rb-btns">
+      <button class="btn btn-ghost" id="rbCancel">取消</button>
+      <button class="btn btn-ghost" id="rbRollback">仅回滚</button>
+      <button class="btn btn-primary" id="rbRerun">回滚并重跑</button>
+    </div>`
+  // 内嵌聊天流：插到「回到此处」按钮所在消息的后面，不做全屏遮罩（Trae 同款对话框形态）
+  const msgEl = btn && btn.parentElement
+  if (msgEl && msgEl.parentElement) msgEl.after(card)
+  else (curChatEl() || document.body).appendChild(card)
+  card.scrollIntoView({ block: 'nearest' })
+  const close = () => card.remove()
+  card.querySelector('#rbCancel').addEventListener('click', close)
+  const execRollback = async (rerun) => {
+    close()
+    btn.disabled = true
+    btn.textContent = '回滚中…'
+    const r = await _api.aiRollback(msgIndex, work.active).catch((err) => ({ success: false, error: err.message }))
+    if (r && r.success) {
+      showToast(`已回滚 ${r.undone} 项文件操作${r.failed ? `（${r.failed} 项失败）` : ''}`, r.failed ? 'error' : 'success')
+      // 原消息文本回填输入框，方便改一改重新发送
+      if (typeof originalText === 'string') {
+        const chatInput = $('chatInput')
+        if (chatInput) {
+          chatInput.value = originalText
+          chatInput.dispatchEvent(new Event('input')) // 触发动态增高重算
+          chatInput.focus()
+        }
       }
-    }, 4000)
-    return
-  }
-  work.rollbackArmed = null
-  btn.classList.remove('armed')
-  btn.disabled = true
-  btn.textContent = '回滚中…'
-  const r = await _api.aiRollback(msgIndex, work.active).catch((err) => ({ success: false, error: err.message }))
-  if (r && r.success) {
-    showToast(`已回滚 ${r.undone} 项文件操作${r.failed ? `（${r.failed} 项失败）` : ''}`, r.failed ? 'error' : 'success')
-    // 原消息文本回填输入框，方便改一改重新发送
-    if (typeof originalText === 'string') {
-      const chatInput = $('chatInput')
-      if (chatInput) {
-        chatInput.value = originalText
-        chatInput.dispatchEvent(new Event('input')) // 触发动态增高重算
-        chatInput.focus()
+      if (rerun) {
+        // Trae 同款"回退并重新开始"：回滚完成后自动重发原消息（稍等输入框回填与刷新落定）
+        setTimeout(() => { const send = $('chatSend'); if (send && !work.running) send.click() }, 400)
       }
+    } else {
+      showToast(`回滚失败: ${(r && r.error) || '未知错误'}`, 'error')
+      btn.disabled = false
+      btn.textContent = '↩ 回到此处'
     }
-  } else {
-    showToast(`回滚失败: ${(r && r.error) || '未知错误'}`, 'error')
-    btn.disabled = false
-    btn.textContent = '↩ 回到此处'
   }
+  card.querySelector('#rbRollback').addEventListener('click', () => execRollback(false))
+  card.querySelector('#rbRerun').addEventListener('click', () => execRollback(true))
 }
 
 function appendChatError(text) {
@@ -2416,6 +2689,61 @@ function parseToolBlocksUI(content) {
       if (obj && obj.name) out.push({ name: obj.name, args: obj.args || {} })
     } catch {}
   }
+  // DSML 兼容：DeepSeek 网页版漂移吐内部标记，历史重建也能还原成工具卡片（竖线/空格混排全宽容）
+  const open = '<[\\s|]*DSML[\\s|]*invoke\\s+name\\s*=\\s*"([^"]+)"[\\s|]*>'
+  const close = '<[\\s|]*\\/[\\s|]*DSML[\\s|]*invoke[\\s|]*>'
+  for (const dm of String(content || '').matchAll(new RegExp(`${open}([\\s\\S]*?)${close}`, 'g'))) {
+    const args = {}
+    for (const p of dm[2].matchAll(/<[\s|]*DSML[\s|]*parameter\s+name\s*=\s*"([^"]+)"([^>]*)>([\s\S]*?)<[\s|]*\/[\s|]*DSML[\s|]*parameter[\s|]*>/g)) {
+      let val = p[3].trim()
+      if (/string\s*=\s*"false"/.test(p[2])) { try { val = JSON.parse(val) } catch {} }
+      args[p[1].trim()] = val
+    }
+    if (dm[1].trim()) out.push({ name: dm[1].trim(), args })
+  }
+  // tool_call XML 标签兼容：Qwen/GLM 系漂移形态，历史重建还原成工具卡片
+  // 标签体是函数调用风格 funcName(k=v,...)——切分/取值逻辑与主进程 parseToolCallArgs 同款
+  for (const m of String(content || '').matchAll(/<tool_call\s*>([\s\S]*?)<\/tool_call\s*>/g)) {
+    const body = m[1].trim()
+    const fm = body.match(/^([a-zA-Z_][\w.]*)\s*\(([\s\S]*)\)\s*$/)
+    if (fm && fm[1]) {
+      const args = {}
+      const parts = []
+      let depth = 0, inStr = false, esc = false, start = 0
+      const s = fm[2]
+      for (let i = 0; i < s.length; i++) {
+        const ch = s[i]
+        if (inStr) {
+          if (esc) esc = false
+          else if (ch === '\\') esc = true
+          else if (ch === '"') inStr = false
+        } else if (ch === '"') inStr = true
+        else if (ch === '(' || ch === '[' || ch === '{') depth++
+        else if (ch === ')' || ch === ']' || ch === '}') depth--
+        else if (ch === ',' && depth === 0) { parts.push(s.slice(start, i)); start = i + 1 }
+      }
+      parts.push(s.slice(start))
+      for (const part of parts) {
+        const eq = part.indexOf('=')
+        if (eq < 1) continue
+        const key = part.slice(0, eq).trim()
+        let val = part.slice(eq + 1).trim()
+        if (!key) continue
+        if (/^-?\d+(\.\d+)?$/.test(val)) val = Number(val)
+        else if (val === 'true') val = true
+        else if (val === 'false') val = false
+        else if (/^[[{]/.test(val)) { try { val = JSON.parse(val) } catch {} }
+        else if (/^"[\s\S]*"$/.test(val)) { try { val = JSON.parse(val) } catch { val = val.slice(1, -1) } }
+        args[key] = val
+      }
+      out.push({ name: fm[1], args })
+    } else {
+      try {
+        const obj = JSON.parse(body)
+        if (obj && obj.name) out.push({ name: obj.name, args: obj.args || obj.arguments || {} })
+      } catch {}
+    }
+  }
   return out
 }
 
@@ -2545,6 +2873,8 @@ function handleAiEventInner(ev) {
       clearChatEmpty()
       const card = ev.name === 'ask_user' ? buildAskCard(ev) : buildToolCard(ev)
       work.toolCards.set(ev.callId, card)
+      work.toolCallArgs = work.toolCallArgs || new Map()
+      work.toolCallArgs.set(ev.callId, ev.args || {}) // edit_file diff / run_command 终端风渲染要回读参数
       work.roundSteps.push(card)
       curChatEl().appendChild(card)
       scrollChat(true)
@@ -2599,6 +2929,10 @@ function handleAiEventInner(ev) {
         const res = card.querySelector('.tool-card-result')
         if (res) {
           linkifyFilePaths(res, String(ev.message || '').slice(0, 500))
+          // 开发手感增强：edit_file 红绿 diff、run_command 终端风输出
+          const cargs = (work.toolCallArgs && work.toolCallArgs.get(ev.callId)) || {}
+          if (ev.name === 'edit_file' && cargs.old_string != null) res.appendChild(buildEditDiff(cargs.old_string, cargs.new_string))
+          if (ev.name === 'run_command' || ev.name === 'dev_server') res.appendChild(buildCmdOut(String(ev.message || '')))
           res.classList.remove('hidden')
         }
       }
@@ -2657,8 +2991,140 @@ function handleAiEventInner(ev) {
       if ((ev.credits || 0) > 0) mountCreditsTag(null, ev.credits, ev.balance) // 兜底：流中 ai_credits 没挂上时补到最后一条回复
       hideWaitingSpin() // 任务收尾，撤掉等待行
       setChatRunning(false)
+      playDoneSound() // 回复完成提示音（Windows 系统通知音，轻量）
       break
   }
+}
+
+// 回复完成提示音：Windows 自带通知音（无外部资源；文件缺失/播放失败静默不影响主流程）
+let _doneAudio = null
+function playDoneSound() {
+  try {
+    if (!_doneAudio) _doneAudio = new Audio('file:///C:/Windows/Media/Windows Notify System Generic.wav')
+    _doneAudio.currentTime = 0
+    _doneAudio.volume = 0.45
+    _doneAudio.play().catch(() => {})
+  } catch {}
+}
+
+// ===== 开发手感：edit_file 红绿 diff + run_command 终端风输出（老大要求对齐专业 code 工具体感）=====
+function buildEditDiff(oldS, newS) {
+  const box = document.createElement('div')
+  box.className = 'dev-diff'
+  const clip = (s, n) => String(s ?? '').split('\n').slice(0, n)
+  const maxLines = 24
+  const oldLines = clip(oldS, maxLines), newLines = clip(newS, maxLines)
+  const row = (sign, text, cls) => {
+    const d = document.createElement('div')
+    d.className = 'dev-diff-line ' + cls
+    d.textContent = sign + ' ' + text
+    return d
+  }
+  oldLines.forEach((l) => box.appendChild(row('-', l, 'del')))
+  newLines.forEach((l) => box.appendChild(row('+', l, 'add')))
+  const more = []
+  if (String(oldS ?? '').split('\n').length > maxLines) more.push(`原内容超 ${maxLines} 行已截断`)
+  if (String(newS ?? '').split('\n').length > maxLines) more.push(`新内容超 ${maxLines} 行已截断`)
+  if (more.length) {
+    const note = document.createElement('div')
+    note.className = 'dev-diff-more'
+    note.textContent = '… ' + more.join('，')
+    box.appendChild(note)
+  }
+  return box
+}
+
+// 报错行号定位：path:line:col 可点击 → 跳工作台对应文件对应行（诊断闭环的"最后一厘米"）
+// 端口地址：localhost:xxxx / 127.0.0.1:xxxx 可点击 → AI 浏览器页签直接预览
+// 字符类含中文（项目路径常有中文），排除 :;'`|*?<> 防吃进 URL/时间戳
+const ERR_LOC_RE = /(?:[A-Za-z]:)?(?:[^\s:;'"`|*?<>]+[/\\])*[^\s:;'"`|*?<>]+\.(?:js|mjs|cjs|ts|tsx|jsx|java|py|json|css|scss|html|vue|log):(\d+)(?::(\d+))?/g
+const DEV_URL_RE = /(?:https?:\/\/)?(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):\d+(?:\/[^\s"'`]*)?/g
+function wbGotoFileLine(locPath, line) {
+  try {
+    const norm = (s) => String(s).replace(/[\\/]+$/, '').toLowerCase()
+    let it = state.wbItems.find((w) => norm(w.path) === norm(locPath))
+    if (!it) it = state.wbItems.find((w) => norm(w.path).endsWith(norm(locPath))) // 相对路径后缀匹配
+    if (!it) {
+      addToWorkbench([{ path: locPath, name: String(locPath).split(/[\\/]/).pop(), isDir: false }], 'local', '本机')
+      it = state.wbItems.find((w) => norm(w.path) === norm(locPath))
+    }
+    if (!it) { showToast('跳转失败：文件不在工作台', 'error'); return }
+    if (work.mode !== 'work') { const mw = $('modeWork'); if (mw) mw.click() }
+    const key = wbKey(it)
+    if (wbActiveKey !== key) { wbActiveKey = key; renderWorkbench(); wbPersist() }
+    openPreview(it)
+    // 等编辑器挂完再跳行+挂报错红标（跳到哪红到哪，一眼锁死问题行）
+    setTimeout(() => {
+      const ed = wbEditors[key]
+      if (ed && ed.cm) {
+        ;(ed.errMarks || []).forEach((l) => {
+          try { ed.cm.removeLineClass(l, 'background', 'wb-err-line'); ed.cm.removeLineClass(l, 'gutter', 'wb-err-gutter') } catch {}
+        })
+        ed.errMarks = []
+        const ln = Math.max(0, (parseInt(line, 10) || 1) - 1)
+        ed.cm.setCursor(ln, 0)
+        ed.cm.scrollIntoView(null, 100)
+        ed.cm.focus()
+        try {
+          ed.cm.addLineClass(ln, 'background', 'wb-err-line')
+          ed.cm.addLineClass(ln, 'gutter', 'wb-err-gutter')
+          ed.errMarks.push(ln)
+        } catch {}
+      }
+    }, 500)
+  } catch (e) { console.warn('err-loc 跳转失败', e) }
+}
+
+function buildCmdOut(message) {
+  const wrap = document.createElement('div')
+  wrap.className = 'dev-cmdout'
+  const lines = message.split('\n')
+  const first = lines[0] || ''
+  const codeLine = document.createElement('div')
+  codeLine.className = 'dev-cmdout-code' + (/执行成功/.test(first) ? ' ok' : ' bad')
+  codeLine.textContent = first
+  wrap.appendChild(codeLine)
+  if (lines.length > 1) {
+    const pre = document.createElement('pre')
+    pre.className = 'dev-cmdout-pre'
+    // 报错位置染可点击（跳工作台对应行）+ 本机端口染可点击（AI 浏览器直接预览），其余原样
+    const pushPlain = (seg, html) => {
+      let l2 = 0, u
+      DEV_URL_RE.lastIndex = 0
+      while ((u = DEV_URL_RE.exec(seg))) {
+        html.out += escapeHtml(seg.slice(l2, u.index))
+        let url = u[0]
+        if (!/^https?:\/\//i.test(url)) url = 'http://' + url.replace(/^0\.0\.0\.0|\[::1\]/, 'localhost')
+        html.out += `<span class="dev-url" data-url="${escapeHtml(url)}">${escapeHtml(u[0])}</span>`
+        l2 = u.index + u[0].length
+      }
+      html.out += escapeHtml(seg.slice(l2))
+    }
+    pre.innerHTML = lines.slice(1).join('\n').slice(0, 4000).split('\n').map((line) => {
+      const html = { out: '' }
+      let last = 0, m
+      ERR_LOC_RE.lastIndex = 0
+      while ((m = ERR_LOC_RE.exec(line))) {
+        pushPlain(line.slice(last, m.index), html)
+        html.out += `<span class="err-loc" data-loc="${escapeHtml(m[0])}">${escapeHtml(m[0])}</span>`
+        last = m.index + m[0].length
+      }
+      pushPlain(line.slice(last), html)
+      return html.out || '&nbsp;'
+    }).join('\n')
+    wrap.appendChild(pre)
+    pre.addEventListener('click', (e) => {
+      const loc = e.target.closest('.err-loc')
+      if (loc) {
+        const m = /^(.*):(\d+)(?::(\d+))?$/.exec(loc.dataset.loc || '')
+        if (m) wbGotoFileLine(m[1], m[2])
+        return
+      }
+      const url = e.target.closest('.dev-url')
+      if (url && typeof addUrlTab === 'function') addUrlTab(url.dataset.url)
+    })
+  }
+  return wrap
 }
 
 // 积分消耗标注挂载：container 传 curAssistant 或 null（null = 最后一条 AI 回复，run_done 兜底用）

@@ -223,10 +223,15 @@
                 <button type="button" id="chatModelQuickBtn" class="model-quick-btn" title="主模型快捷切换">默认模型</button>
                 <div class="model-quick-menu hidden" id="chatModelQuickMenu"></div>
               </div>
-              <button class="approval-switch manual" id="aiApprovalTag" title="点击切换审批模式：手动批准=每个风险操作都要确认；自动信任=全自动（C盘除桌面仍需确认）">
-                <span class="as-label">手动批准</span>
-                <span class="as-track"><span class="as-knob"></span></span>
+              <button type="button" id="chatCaptureBtn" class="model-quick-btn" title="截图（Ctrl+Shift+A 全局快捷键）：框选+箭头标注，截完自动引用到对话" style="display:flex;align-items:center;gap:4px;padding:0 8px;">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2v3M18 2v3M3 8h18"/><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M12 11l4 3-4 3z"/></svg>
+                截图
               </button>
+              <button class="approval-switch manual" id="aiApprovalTag" title="控制模式：点击选择 手动批准 / 自动信任 / 无限制">
+                <span class="as-dot"></span>
+                <span class="as-label">手动批准</span>
+              </button>
+              <div class="approval-menu hidden" id="aiApprovalMenu"></div>
             </div>
             <textarea id="chatInput" class="chat-input" rows="2" placeholder="让 AI 帮你干活…（Enter 发送，拖文件进来可引用）"></textarea>
             <button class="chat-send" id="chatSend" title="发送（Enter）">
@@ -1443,6 +1448,30 @@
     </div>
   </div>
 
+  <link rel="stylesheet" href="vendor/codemirror/codemirror.css">
+  <script src="vendor/codemirror/codemirror.js"></script>
+  <script src="vendor/codemirror/mode/javascript.js"></script>
+  <script src="vendor/codemirror/mode/css.js"></script>
+  <script src="vendor/codemirror/mode/xml.js"></script>
+  <script src="vendor/codemirror/mode/htmlmixed.js"></script>
+  <script src="vendor/codemirror/mode/clike.js"></script>
+  <script src="vendor/codemirror/mode/python.js"></script>
+  <script src="vendor/codemirror/mode/markdown.js"></script>
+  <script src="vendor/codemirror/mode/sql.js"></script>
+  <script src="vendor/codemirror/mode/shell.js"></script>
+  <script src="vendor/codemirror/addon/mode/overlay.js"></script>
+  <script src="vendor/codemirror/addon/edit/closebrackets.js"></script>
+  <script src="vendor/codemirror/addon/edit/matchbrackets.js"></script>
+  <script src="vendor/codemirror/addon/selection/active-line.js"></script>
+  <script src="vendor/codemirror/addon/fold/foldcode.js"></script>
+  <script src="vendor/codemirror/addon/fold/foldgutter.js"></script>
+  <script src="vendor/codemirror/addon/fold/brace-fold.js"></script>
+  <script src="vendor/codemirror/addon/fold/xml-fold.js"></script>
+  <script src="vendor/codemirror/addon/dialog/dialog.js"></script>
+  <script src="vendor/codemirror/addon/search/searchcursor.js"></script>
+  <script src="vendor/codemirror/addon/search/search.js"></script>
+  <script src="vendor/codemirror/addon/hint/show-hint.js"></script>
+  <script src="vendor/codemirror/addon/hint/anyword-hint.js"></script>
   <script src="js/icons.js"></script>
   <script src="js/webchat.js"></script>
   <script src="js/app.js"></script>

@@ -412,7 +412,7 @@ async function createDocx(filePath, content) {
   const title = c.title || path.basename(filePath, '.docx')
   const children = c.cover ? coverParas(c.cover, fonts)
     : c.noTitle ? [] // 工作台所见即所得编辑已有文档：不重复插文件名标题
-    : [new Paragraph({ heading: HeadingLevel.TITLE, children: [docxRun({ text: title, bold: true, size: 40, color: theme.titleColor || undefined, eastAsia: fonts.heading }, fonts)] })]
+    : [new Paragraph({ heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER, children: [docxRun({ text: title, bold: true, size: 40, color: theme.titleColor || undefined, eastAsia: fonts.heading }, fonts)] })] // 大标题居中：docx Title 样式默认左对齐（老大实锤），文档常规是大标题居中
 
   if (c.toc) {
     children.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 240, after: 240 }, children: [docxRun({ text: c.tocTitle || '目  录', bold: true, size: 32, eastAsia: fonts.heading }, fonts)] }))
@@ -737,6 +737,152 @@ async function modifyDocx(filePath, content, mode) {
   return buffer.length
 }
 
+// ===== 指令式格式修改（style_word 底层）：治"单独改格式费劲且改不好" =====
+// ops 直接说意图：{ target, align, color, font, sizePt, bold, firstLine }
+// target: 'title'文档大标题 | 'h1'/'h2'/'h3'各级标题 | 'all'全部段落 | { contains:'文本' } 按内容定位
+// 手术原则：增量改（有则替换/无则按 OOXML 顺序锚点插入），不重排 rPr，避开 schema 顺序雷
+async function styleDocx(filePath, ops) {
+  const list = (Array.isArray(ops) ? ops : [ops]).filter((o) => o && o.target)
+  if (!list.length) throw new Error('缺少 ops（至少一条格式指令，如 { target:"title", align:"center" }）')
+  const zip = await JSZip.loadAsync(fs.readFileSync(filePath))
+  const doc = zip.file('word/document.xml')
+  if (!doc) throw new Error('不是有效的 Word 文档（缺少 document.xml）')
+  let xml = await doc.async('string')
+
+  const unesc = (s) => String(s).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&')
+  const pStyleOf = (p) => { const m = p.match(/<w:pStyle w:val="([^"]+)"/); return m ? m[1] : '' }
+  const pTextOf = (p) => [...p.matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g)].map((m) => unesc(m[1])).join('')
+  const isH = (st, lv) => new RegExp(`^(heading${lv}|${lv})$`, 'i').test(st || '')
+
+  // pPr 内确保 w:jc（对齐）：有则替换，无则插（pPr 的 rPr 前/尾部——jc 在 ind 后合法）
+  const setParaAlign = (p, val) => {
+    if (/<w:jc w:val="/.test(p)) return p.replace(/<w:jc w:val="[^"]*"\s*\/>/, `<w:jc w:val="${val}"/>`)
+    if (/<w:pPr\b[^>]*>/.test(p)) return p.replace(/(<w:pPr\b[^>]*>)/, `$1<w:jc w:val="${val}"/>`)
+    return p.replace(/(<w:p\b[^>]*>)/, `$1<w:pPr><w:jc w:val="${val}"/></w:pPr>`)
+  }
+  // rPr 内"有则替换/无则插入"：anchorRe 是插入锚点（新元素须在锚点前才合 schema 顺序）
+  const rprSet = (p, tag, xml, anchorRes) => {
+    const re = new RegExp(`<w:${tag}\\b[^>]*/?>`)
+    let out = p
+    let touched = false
+    out = out.replace(/<w:rPr>([\s\S]*?)<\/w:rPr>/g, (m, inner) => {
+      if (touched) return m
+      touched = true
+      if (re.test(inner)) return m.replace(re, xml)
+      for (const a of anchorRes) {
+        const am = inner.match(a)
+        if (am) return m.replace(am[0], xml + am[0])
+      }
+      return `<w:rPr>${xml}${inner}</w:rPr>`
+    })
+    return out
+  }
+
+  const report = list.map(() => 0)
+  // 第一轮：分段 + 定位 title 段（pStyle=Title 优先，否则第一个非空段）
+  const segs = []
+  const re = /<w:p\b[^>]*>[\s\S]*?<\/w:p>/g
+  let m
+  while ((m = re.exec(xml)) !== null) segs.push({ xml: m[0], start: m.index })
+  if (!segs.length) throw new Error('文档里没有段落可改')
+  let titleIdx = segs.findIndex((s) => pStyleOf(s.xml) === 'Title')
+  if (titleIdx < 0) titleIdx = segs.findIndex((s) => pTextOf(s.xml).trim())
+
+  // 第二轮：逐段匹配 ops 并手术
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i]
+    const pText = pTextOf(seg.xml)
+    const st = pStyleOf(seg.xml)
+    let np = seg.xml
+    let hit = false
+    for (let oi = 0; oi < list.length; oi++) {
+      const op = list[oi]
+      let match = false
+      if (op.target === 'all') match = !!pText.trim() || /w:pPr/.test(np)
+      else if (op.target === 'title') match = i === titleIdx
+      else if (op.target === 'h1') match = isH(st, 1)
+      else if (op.target === 'h2') match = isH(st, 2)
+      else if (op.target === 'h3') match = isH(st, 3)
+      else if (typeof op.target === 'object' && op.target.contains) match = pText.includes(op.target.contains)
+      if (!match) continue
+      hit = true
+      if (op.align) {
+        const val = { center: 'center', left: 'left', right: 'right', justify: 'both', both: 'both' }[String(op.align).toLowerCase()]
+        if (!val) throw new Error(`align 无效: ${op.align}（center/left/right/justify）`)
+        np = setParaAlign(np, val)
+      }
+      if (op.firstLine === 'none') {
+        np = np.replace(/(<w:ind [^>]*?) w:firstLine="\d+"/, '$1').replace(/(<w:ind [^>]*?) w:firstLineChars="\d+"/, '$1')
+      }
+      const colorHex = op.color ? (/^[0-9a-fA-F]{6}$/.test(String(op.color)) ? String(op.color).toUpperCase() : { black: '000000', red: 'FF0000', blue: '0000FF', gray: '808080', auto: 'auto' }[String(op.color).toLowerCase()] || null) : null
+      if (op.color && !colorHex) throw new Error(`color 无效: ${op.color}（6 位 hex 如 000000，或 black/red/blue/gray/auto）`)
+      const sizeHalf = Number(op.sizePt) > 0 ? Math.round(Number(op.sizePt) * 2) : null
+      if (op.color || op.font || sizeHalf || op.bold !== undefined) {
+        // run 级手术：只动有文字的 run（<w:t> 非空），空 run（sectPr/书签等）不动
+        np = np.replace(/<w:r\b[^>]*>[\s\S]*?<\/w:r>/g, (run) => {
+          if (!/<w:t[^>]*>[^<]/.test(run)) return run
+          let r = run
+          if (colorHex) {
+            if (/<w:color w:val="/.test(r)) r = r.replace(/<w:color w:val="[^"]*"\s*\/>/, `<w:color w:val="${colorHex}"/>`)
+            else r = rprSet(r, 'color', `<w:color w:val="${colorHex}"/>`, [/<w:szCs\b/, /<w:sz\b/, /<w:u\b/, /<w:highlight\b/, /<\/w:rPr>/])
+          }
+          if (sizeHalf) {
+            if (/<w:sz w:val="/.test(r)) {
+              r = r.replace(/<w:sz w:val="\d+"\s*\/>/, `<w:sz w:val="${sizeHalf}"/>`).replace(/<w:szCs w:val="\d+"\s*\/>/, `<w:szCs w:val="${sizeHalf}"/>`)
+            } else {
+              r = rprSet(r, 'sz', `<w:sz w:val="${sizeHalf}"/><w:szCs w:val="${sizeHalf}"/>`, [/<\/w:rPr>/])
+            }
+          }
+          if (op.bold === true) {
+            if (/<w:b\s*w:val="(?:0|false)"/.test(r)) r = r.replace(/<w:b\s*w:val="(?:0|false)"\s*\/>/, '<w:b/>')
+            else if (!/<w:b\b[^>]*\/>/.test(r)) r = rprSet(r, 'b', '<w:b/>', [/<w:rFonts\b/, /<\/w:rPr>/])
+          } else if (op.bold === false) {
+            if (/<w:b\/>/.test(r)) r = r.replace(/<w:b\/>/, '<w:b w:val="0"/>')
+            else if (/<w:b\b[^>]*\/>/.test(r) && !/<w:b\s*w:val="(?:1|true)"/.test(r)) r = r.replace(/<w:b\b[^>]*\/>/, '<w:b w:val="0"/>')
+          }
+          if (op.font) {
+            const f = escapeXml(String(op.font))
+            if (/<w:rFonts\b[^>]*\/>/.test(r)) {
+              r = /w:eastAsia="/.test(r)
+                ? r.replace(/w:eastAsia="[^"]*"/, `w:eastAsia="${f}"`)
+                : r.replace(/<w:rFonts\b/, `<w:rFonts w:eastAsia="${f}"`)
+            } else {
+              r = rprSet(r, 'rFonts', `<w:rFonts w:eastAsia="${f}"/>`, [/<w:b\b/, /<w:color\b/, /<w:szCs\b/, /<w:sz\b/, /<\/w:rPr>/])
+            }
+          }
+          return r
+        })
+      }
+    }
+    if (hit) {
+      for (let oi = 0; oi < list.length; oi++) {
+        const op = list[oi]
+        const match = op.target === 'all' ? !!pText.trim() : op.target === 'title' ? i === titleIdx
+          : op.target === 'h1' ? isH(st, 1) : op.target === 'h2' ? isH(st, 2) : op.target === 'h3' ? isH(st, 3)
+          : (typeof op.target === 'object' && op.target.contains) ? pText.includes(op.target.contains) : false
+        if (match) report[oi]++
+      }
+      xml = xml.slice(0, seg.start) + np + xml.slice(seg.start + seg.xml.length)
+      // 重算后续段偏移（长度变了）
+      const delta = np.length - seg.xml.length
+      for (let j = i + 1; j < segs.length; j++) segs[j].start += delta
+    }
+  }
+
+  const miss = list.map((o, i) => ({ o, n: report[i] })).filter((x) => !x.n)
+  if (report.every((n) => !n)) throw new Error(`没有任何段落命中——target 写法：title/h1/h2/h3/all 或 { contains:"段落里的文字" }。可先 read_word 看内容再定位`)
+  zip.file('word/document.xml', xml)
+  const buffer = await zip.generateAsync({ type: 'nodebuffer' })
+  fs.writeFileSync(filePath, buffer)
+  await validateDocx(filePath, { throwOnError: true })
+  const done = list.map((o, i) => {
+    const t = typeof o.target === 'object' && o.target.contains ? `"${o.target.contains}"段` : String(o.target)
+    const what = [o.align && `对齐=${o.align}`, o.color && `颜色=${o.color}`, o.font && `字体=${o.font}`, o.sizePt && `字号=${o.sizePt}磅`, o.bold !== undefined && `加粗=${o.bold}`, o.firstLine === 'none' && '去首行缩进'].filter(Boolean).join('/')
+    return `${t}: ${what}（${report[i]} 段）`
+  }).join('；')
+  return { buffer: buffer.length, done, miss: miss.map((x) => JSON.stringify(x.o.target)) }
+}
+
 // ===== Excel（exceljs 全接管）=====
 
 // Excel 主题：与 Word THEMES 对应的表头/斑马纹/边框配色
@@ -803,27 +949,83 @@ function setCellStyled(cell, v, { header = false, zebra = null, xtheme = null, s
   else if (typeof cell.value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(cell.value.trim())) cell.numFmt = 'yyyy-mm-dd'
 }
 
+// 列宽自适应 v2（治"单元格太小显示不全"）：
+// ① 中文/全角按 2.25 显示宽度系数（11pt 下实测 2 偏挤）；② 余量 +3、上限 80；
+// ③ 长文本/显式换行自动 wrapText + 估算行数设行高（ExcelJS 不设行高时 Excel 只显示首行——"显示不全"主根因）；
+// ④ 合并单元格：成员格跳过，起点格按跨列分摊宽度（防标题把首列撑爆）
 function autoFitColumns(ws) {
+  const colNum = (letters) => String(letters).split('').reduce((a, ch) => a * 26 + ch.charCodeAt(0) - 64, 0)
+  const dispW = (s) => { let l = 0; for (const ch of String(s)) l += ch.charCodeAt(0) > 255 ? 2.25 : 1; return l }
+  const cellStr = (v) => {
+    if (v == null) return ''
+    if (v instanceof Date) return v.toISOString().slice(0, 10)
+    if (typeof v === 'object') {
+      if (Array.isArray(v.richText)) return v.richText.map((t) => t.text).join('')
+      if (v.formula) return v.result != null ? String(v.result) : '=' + v.formula
+      if (v.text != null) return String(v.text)
+      if (v.result != null) return String(v.result)
+      return ''
+    }
+    return String(v)
+  }
+  const MAXW = 80, MINW = 8, LINE_H = 14.4, MAX_LINES = 12
+  // merge 映射：成员格不参与估宽；起点格记跨列数（估行高用）
+  const mergeSpan = new Map()  // 'r,c' -> 列数（仅 merge 起点）
+  const mergedMember = new Set() // 'r,c' 非起点成员
+  try {
+    for (const ref of (ws.model && ws.model.merges) || []) {
+      const m = String(ref).match(/^([A-Z]+)(\d+):([A-Z]+)(\d+)$/)
+      if (!m) continue
+      const c1 = colNum(m[1]), r1 = parseInt(m[2], 10), c2 = colNum(m[3]), r2 = parseInt(m[4], 10)
+      for (let r = Math.min(r1, r2); r <= Math.max(r1, r2); r++) {
+        for (let c = Math.min(c1, c2); c <= Math.max(c1, c2); c++) {
+          if (r === r1 && c === c1) mergeSpan.set(`${r},${c}`, Math.abs(c2 - c1) + 1)
+          else mergedMember.add(`${r},${c}`)
+        }
+      }
+    }
+  } catch {}
   const widths = []
-  ws.eachRow({ includeEmpty: true }, (row) => {
+  const wrapCells = [] // { rn, col, segs }
+  ws.eachRow({ includeEmpty: true }, (row, rn) => {
     row.eachCell({ includeEmpty: true }, (cell, col) => {
-      const v = cell.value
-      let s = ''
-      if (v != null) {
-        if (v instanceof Date) s = v.toISOString().slice(0, 10)
-        else if (typeof v === 'object') s = v.result != null ? String(v.result) : (Array.isArray(v.richText) ? v.richText.map((t) => t.text).join('') : (v.text != null ? String(v.text) : ''))
-        else s = String(v)
-      }
-      let w = 8
-      if (s) {
-        let l = 0
-        for (const ch of s) l += ch.charCodeAt(0) > 255 ? 2 : 1
-        w = Math.min(Math.max(l + 2, 8), 60)
-      }
+      const key = `${rn},${col}`
+      if (mergedMember.has(key)) return // merge 成员不撑列宽
+      const s = cellStr(cell.value)
+      if (!s) { if (!widths[col - 1]) widths[col - 1] = MINW; return }
+      const segs = String(s).split(/\r?\n/)
+      const span = mergeSpan.get(key) || 1
+      const maxSeg = Math.max(...segs.map((x) => dispW(x)))
+      // merge 起点格宽度按跨列分摊（单列不独扛整行标题）
+      const w = Math.min(Math.max(maxSeg / span + 3, MINW), MAXW)
       if (!widths[col - 1] || w > widths[col - 1]) widths[col - 1] = w
+      // 需要换行的格：显式 \n 多行 或 单行超可用宽
+      if (segs.length > 1 || maxSeg > MAXW - 3) {
+        const al = cell.alignment || {}
+        cell.alignment = Object.assign({}, al, { wrapText: true })
+        wrapCells.push({ rn, col, segs })
+      }
     })
   })
   widths.forEach((w, i) => { if (w) ws.getColumn(i + 1).width = w })
+  // 行高：wrap 格按"各显示行 / 可用列宽"估算，取该行最大需求，封顶 12 行
+  const rowNeed = new Map()
+  for (const wc of wrapCells) {
+    const span = mergeSpan.get(`${wc.rn},${wc.col}`) || 1
+    let avail = 0
+    for (let c = wc.col; c < wc.col + span; c++) avail += (widths[c - 1] || MINW) - 2
+    avail = Math.max(avail, 6)
+    let lines = 0
+    for (const seg of wc.segs) lines += Math.max(1, Math.ceil(dispW(seg) / avail))
+    rowNeed.set(wc.rn, Math.max(rowNeed.get(wc.rn) || 1, Math.min(lines, MAX_LINES)))
+  }
+  for (const [rn, lines] of rowNeed) {
+    if (lines > 1) {
+      const row = ws.getRow(rn)
+      const cur = Number(row.height) || 0
+      row.height = Math.max(cur, lines * LINE_H + 4)
+    }
+  }
 }
 
 // 向 worksheet 写一张表（headers + rows + merges + statusMap）；xtheme 提供表头/斑马纹/边框配色
@@ -1009,6 +1211,7 @@ async function appendXlsxRows(filePath, rows, sheetName) {
     const row = ws.addRow([])
     ;(Array.isArray(r) ? r : [r]).forEach((v, ci) => setCellStyled(row.getCell(ci + 1), v))
   }
+  autoFitColumns(ws) // 追加后列宽/行高自适应（新行长文本不再显示不全）
   await wb.xlsx.writeFile(filePath)
   return fs.statSync(filePath).size
 }
@@ -1024,6 +1227,7 @@ async function modifyXlsxCell(filePath, cellRef, value, sheetName) {
   const cell = ws.getCell(`${m[1]}${m[2]}`)
   cell.value = parseCellValue(value)
   cell.border = BORDER
+  autoFitColumns(ws) // 改值后列宽/行高自适应（改成长文本不再显示不全）
   await wb.xlsx.writeFile(filePath)
   return fs.statSync(filePath).size
 }
@@ -3479,4 +3683,4 @@ async function validateDocx(filePath, opts = {}) {
   return { ok, issues }
 }
 
-module.exports = { createDocx, readDocxText, readPdfText, parseWordComments, parseWordFormat, wordFormatFingerprint, parseFormatRuleText, extractPaperFormatSpec, checkPaperFormat, anchorSpecRole, convertNumPrToText, replaceCoverFields, applyWordFormat, applyWordTemplate, modifyDocx, createXlsx, appendXlsxRows, readXlsx, modifyXlsxCell, modifyXlsxCells, formatXlsx, listXlsxSheets, scanWordTables, formatWordTable, addWordTable, editWordTable, fixPaperPaging, svgToPng, isLegacyDoc, isFormatDemoPara, splitTplSections, classifyTplSection, softbreakSplitBlocks, createPptx, readPptx, editPptx, validateDocx, PPT_PALETTES, PPT_STYLES }
+module.exports = { createDocx, readDocxText, readPdfText, parseWordComments, parseWordFormat, wordFormatFingerprint, parseFormatRuleText, extractPaperFormatSpec, checkPaperFormat, anchorSpecRole, convertNumPrToText, replaceCoverFields, applyWordFormat, applyWordTemplate, modifyDocx, styleDocx, createXlsx, appendXlsxRows, readXlsx, modifyXlsxCell, modifyXlsxCells, formatXlsx, listXlsxSheets, scanWordTables, formatWordTable, addWordTable, editWordTable, fixPaperPaging, svgToPng, isLegacyDoc, isFormatDemoPara, splitTplSections, classifyTplSection, softbreakSplitBlocks, createPptx, readPptx, editPptx, validateDocx, PPT_PALETTES, PPT_STYLES }

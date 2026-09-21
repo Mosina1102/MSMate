@@ -165,12 +165,43 @@ ok(appjs.includes('内置编辑'), '内嵌失败/主动切换可回内置编辑�
 ok(appjs.includes('waitFileChange(item.path, base && base.mtimeMs, 300000)'), '内嵌失败回退外部打开+保存自动刷新')
 ok(css.includes('.wb-embed-host'), 'CSS 含内嵌占位区样式')
 
+console.log('— v2.8.5+：编辑器四件套 + 文件改动刷新 + 回档确认卡 —')
+const agentSrc = fs.readFileSync(path.join(ROOT, 'ai/agent.js'), 'utf8')
+const toolsSrc = fs.readFileSync(path.join(ROOT, 'ai/tools.js'), 'utf8')
+const mainSrc = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8')
+const mainCss = fs.readFileSync(path.join(ROOT, 'src/styles/main.css'), 'utf8')
+ok(appjs.includes('foldGutter: !isMd') && appjs.includes("gutters: ['CodeMirror-linenumbers', 'CodeMirror-foldgutter']"), 'CodeMirror 代码折叠（md 不折叠）')
+ok(html.includes('vendor/codemirror/addon/fold/foldcode.js') && html.includes('vendor/codemirror/addon/search/search.js') && html.includes('vendor/codemirror/addon/hint/show-hint.js'), 'index.html 引折叠/搜索/补全 addon（9 script）')
+ok(appjs.includes('CodeMirror.hint.anyword') && appjs.includes("on('inputRead'"), '单词自动补全（anyword 键控+输入触发）')
+ok(appjs.includes('wb-cm-status') && appjs.includes('cmLangLabel'), '状态条（行:列·语言·缩进档）')
+ok(mainCss.includes('.CodeMirror-line::selection') && mainCss.includes('background: #89b4fa') && mainCss.includes('color: #11111b'), '选区负片模式（实心紫底+深色字）')
+ok(!mainCss.includes('repeating-linear-gradient') && mainCss.includes('.cm-type-x'), '参考线已改按行画（CSS 无全局渐变）+ 类型染色样式')
+ok(appjs.includes('onAiFileChanged') && appjs.includes('delete wbEditors[key]; delete wbGrids[key]; delete wbHtmlModes[key]'), 'AI 改文件→工作台页签自动刷新（渲染层失效重载）')
+ok(toolsSrc.includes('FILE_CHANGE_TOOLS') && toolsSrc.includes('function changedPathsOf'), 'tools 执行成功后发 file-changed（改/删/复制/移动路径提取）')
+ok(appjs.includes('aiRollbackPreview') && appjs.includes('showRollbackConfirm') && appjs.includes('rb-card') && appjs.includes('rollbackConfirmCard'), '回档 Trae 式确认卡（内嵌聊天流+预览清单+取消/确认）')
+ok(agentSrc.includes('rollbackPreview') && agentSrc.includes('undoChangePaths') && agentSrc.includes('undoPreviewItem'), 'agent 回滚预览（清单/受影响路径提取）')
+ok(agentSrc.includes('this.plan = null') && agentSrc.includes('this.createdPaths = new Set()'), '回滚后任务清单板/防重档重置')
+ok(agentSrc.includes("typeof this.onFileChanged === 'function'"), '回滚落盘后发 file-changed（界面不残留旧内容）')
+ok(appjs.includes('cmTypeOverlay') && appjs.includes('cm.addOverlay(cmTypeOverlay)'), '类型/注解语义复染层（大写=类，Trae 思路）')
+ok(appjs.includes("on('renderLine'") && appjs.includes('defaultCharWidth'), '缩进参考线按行按档画（renderLine，顶格不画）')
+ok(appjs.includes('wbGotoFileLine') && appjs.includes('err-loc') && toolsSrc.includes('extractErrLocs'), '报错行号可点击跳工作台对应行（诊断闭环）')
+ok(toolsSrc.includes("name: 'dev_server'") && toolsSrc.includes('devServers'), 'dev_server 长驻开发进程工具（start/stop/list）')
+ok(toolsSrc.includes("name: 'git'") && toolsSrc.includes("action === 'commit'"), 'git 版本底座工具（status/diff/commit/log）')
+ok(mainSrc.includes('TextDecoder(') && mainSrc.includes('gbk'), '工作台读文件 GBK 兜底（中文注释不再乱码）')
+ok(appjs.includes('wb-err-line') && appjs.includes('addLineClass'), '报错行红标（跳转挂标，行背景+行号红）')
+ok(appjs.includes('DEV_URL_RE') && appjs.includes("addUrlTab(url.dataset.url)"), 'dev_server 端口一键预览（localhost 可点击开 AI 浏览器）')
+ok(appjs.includes('rbRerun') && appjs.includes('回滚并重跑') && appjs.includes('send.click()'), '回滚并重跑（Trae 回退即重新开始）')
+
 console.log('— v2.4.33：卡片进工作台 + 资源管理器定位 + 划词胶囊 —')
 ok(appjs.includes('点击加入工作台预览'), '聊天文件卡片点击改为加入工作台')
 ok(appjs.includes('_api.fsExists(norm)'), '卡片点击前确认文件存在（失效路径不进工作台）')
 ok(appjs.includes("document.getElementById('modeWork')"), '非 Work 模式点卡片自动切 Work')
 ok(appjs.includes('function attachWbTextQuote'), 'app.js 定义 attachWbTextQuote()')
-ok(appjs.includes('attachWbTextQuote(ta, item.name)'), '文本编辑器挂划词胶囊')
+ok(appjs.includes('attachWbCmQuote(cm, item.name)'), '文本编辑器挂划词胶囊（CodeMirror 版）')
+ok(appjs.includes('function attachWbCmQuote') && appjs.includes('cm.getSelection()'), 'CodeMirror 划词取选区（cm.getSelection）')
+ok(appjs.includes('function cmModeOf') && appjs.includes("java: 'text/x-java'"), 'cmModeOf 扩展名→语法 mode 映射')
+ok(appjs.includes('function wbCmMount') && appjs.includes('lineNumbers: true'), '编辑器升级 CodeMirror（行号+高亮，v2.8.5）')
+ok(html.includes('vendor/codemirror/codemirror.js') && html.includes('vendor/codemirror/addon/edit/closebrackets.js'), 'index.html 引 CodeMirror vendor（核心+addon）')
 ok(appjs.includes('if (!_wbQuoteCap) {') || appjs.includes('function ensureWbQuoteCap'), '胶囊单例（切页重建编辑器不泄漏）')
 ok(appjs.includes('来自文件 ${fileName} 的划选'), '插入输入框带来源文件名引用块')
 ok(html.includes('id="wbLocateBtn"'), '工作台工具条含资源管理器定位按钮')
@@ -2207,7 +2238,7 @@ console.log('— v2.4.82：钩子半残中毒修复（第二句话起永久瞎�
     } catch (e) {
       ok(false, `套模板测试失败: ${(e.stdout || e.message).toString().slice(-150)}`)
     }
-    ok(pkg.version === '2.7.27', `package.json 版本 2.7.27（实际 ${pkg.version}）`)
+    ok(pkg.version === '2.8.6', `package.json 版本 2.8.6（实际 ${pkg.version}）`)
   }
 
   // ===== v2.6.0：工具手册化（渐进式披露：主规则瘦身，深度说明迁 ai/manuals 六册）=====
@@ -2219,15 +2250,58 @@ console.log('— v2.4.82：钩子半残中毒修复（第二句话起永久瞎�
     const mainjs2 = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8')
     // ① 手册七册落盘且非空
     const manualDir = path.join(ROOT, 'ai', 'manuals')
-    const manualNames = ['word文档.md', 'Word排版.md', '表格.md', 'ppt文档.md', '图片视频.md', '设计.md', '网络下载.md', '跨设备协作.md', '格式转换.md']
-    ok(manualNames.every((n) => { try { return fs.statSync(path.join(manualDir, n)).size > 2000 } catch { return false } }), '手册九册落盘且非空（>2KB，含 ppt文档/设计/格式转换）')
+    const manualNames = ['word文档.md', 'Word排版.md', '表格.md', 'ppt文档.md', '图片视频.md', '设计.md', '网络下载.md', '跨设备协作.md', '格式转换.md', '电脑控制.md', '开发.md']
+    ok(manualNames.every((n) => { try { return fs.statSync(path.join(manualDir, n)).size > 2000 } catch { return false } }), '手册十一册落盘且非空（>2KB，含 电脑控制/开发）')
     // ② TOOL_DEFS manual 字段计数（brief 瘦身 + 手册指向；行尾手册路径=双轨渲染）
     const manualCount = (toolsDef.match(/manual: '/g) || []).length
-    ok(manualCount === 37, `TOOL_DEFS manual 字段计数 = 37（实际 ${manualCount}）`)
+    ok(manualCount === 54, `TOOL_DEFS manual 字段计数 = 54（实际 ${manualCount}）`)
     ok(toolsDef.includes("case 'remove_bg': return") && toolsDef.includes("'抠图引擎（onnxruntime-node）不可用"), 'remove_bg 实现+审批+describe 三处注册（本地 u2netp 抠图）')
     ok(toolsDef.includes("name: 'merge_pdf'") && toolsDef.includes("name: 'split_pdf'") && toolsDef.includes('STRUCTURAL_ARRAY_PARAMS') && toolsDef.includes("'paths'"), 'PDF 合并/拆分工具注册（pdf-lib，paths 数组白名单）')
     ok(toolsDef.includes("manual: 'ppt文档'") && toolsDef.includes("name: 'create_pptx'") && toolsDef.includes("name: 'read_pptx'") && toolsDef.includes("name: 'edit_pptx'"), 'PPT 三件套注册（create_pptx/read_pptx/edit_pptx → 手册：ppt文档）')
     ok(toolsDef.includes('→ 手册：ai_manuals/'), 'buildToolPromptSection 双轨渲染（manual 工具行尾带手册路径）')
+
+    // ===== 电脑控制三件套（v2.8.2：三档控制模式 + browser_* 网页填表 + desktop_* 桌面键鼠）=====
+    {
+      const workjs = fs.readFileSync(path.join(ROOT, 'src/js/work.js'), 'utf8')
+      const indexHtml = fs.readFileSync(path.join(ROOT, 'src/index.html'), 'utf8')
+      const maincss = fs.readFileSync(path.join(ROOT, 'src/styles/main.css'), 'utf8')
+      const preloadjs = fs.readFileSync(path.join(ROOT, 'preload.js'), 'utf8')
+      const promptjs2 = fs.readFileSync(path.join(ROOT, 'ai/prompt.js'), 'utf8')
+      const desktopCtlSrc = fs.readFileSync(path.join(ROOT, 'ai/desktop-control.js'), 'utf8')
+      // ① 三档控制模式：unlimited 会话级（读档回落 auto）+ needApproval 短路 + 菜单两步确认
+      ok(agentjs.includes('normalApprovalMode()') && agentjs.includes("if (m === 'unlimited') { this.setSetting('aiApprovalMode', 'auto'); return 'auto' }"), 'unlimited 会话级：读档回落 auto 并修正存档（重启防线复位）')
+      ok(agentjs.includes("const needApproval = mode === 'unlimited'\n          ? false"), 'unlimited 档审批全放行（needApproval 短路）')
+      ok(workjs.includes('function showApprovalMenu') && workjs.includes("classList.add('armed')") && workjs.includes('再次点击确认开启'), '控制模式三选菜单 + 无限制两步确认（armed 防误触）')
+      ok(indexHtml.includes('id="aiApprovalMenu"') && indexHtml.includes('as-dot'), '控制模式胶囊（色点）+ 菜单容器落盘')
+      ok(maincss.includes('.approval-switch.unlimited .as-dot') && maincss.includes('@keyframes approvalUnlimitedPulse'), '无限制档红色脉冲样式')
+      // ② desktop_* 桌面键鼠引擎：PowerShell 常驻 + SendInput（零 npm 依赖）
+      ok(desktopCtlSrc.includes('class DesktopControl') && desktopCtlSrc.includes("SendInput") && /msdesk-v\d/.test(desktopCtlSrc) && desktopCtlSrc.includes("'\\ufeff' + BOOTSTRAP"), '桌面控制引擎（PS 常驻+SendInput；引导脚本 UTF8 BOM 防 PS5.1 ANSI 乱码）')
+      ok(mainjs2.includes("require('./ai/desktop-control')") && mainjs2.includes('desktop: desktopCtl'), 'main 注入 desktop 引擎到 createTools')
+      ok(fs.existsSync(path.join(ROOT, 'test/desktop-engine-test.js')), '桌面引擎探针测试落盘（ping/光标/窗口枚举无副作用验证）')
+      // ③ browser_* 网页控制：主进程请求-响应桥 + 受控页签 + ref 表
+      ok(mainjs2.includes("ipcMain.on('ai:browser-ctl-result'") && mainjs2.includes('browserCtl,'), 'browser 桥：主进程 pending+回执 handler+注入')
+      ok(preloadjs.includes('onAiBrowserCtl') && preloadjs.includes('browserCtlResult'), 'preload 双 API（桥请求接收+结果回执）')
+      ok(workjs.includes('function initBrowserCtlBridge') && workjs.includes('initBrowserCtlBridge()') && workjs.includes('window.__msAiRefs') && workjs.includes("AI_WEB_PATH = 'url://ai-ctl'"), '渲染层受控页签执行器（AI 浏览页签+ref 表）')
+      // ④ 工具注册四处 + 手册
+      ok(toolsDef.includes("name: 'browser_navigate'") && toolsDef.includes("name: 'desktop_click'") && toolsDef.includes('name.startsWith(\'desktop_\')') && toolsDef.includes("'keys'"), '电脑控制十工具注册（DEFS/classify/数组白名单）')
+      ok(promptjs2.includes("'电脑控制.md'") && fs.statSync(path.join(ROOT, 'ai/manuals/电脑控制.md')).size > 2000, '电脑控制手册注册+落盘（>2KB）')
+      // ⑤ 开发三件套（对标 Trae：run_command/edit_file/search_file_content + 本地网页预览）
+      ok(toolsDef.includes("name: 'run_command'") && toolsDef.includes('chcp 65001 >nul') && toolsDef.includes("new TextDecoder('gbk')"), 'run_command（exec+危险黑名单+GBK 智能解码零依赖）')
+      ok(toolsDef.includes("name: 'edit_file'") && toolsDef.includes('old_string 在文件中找不到') && toolsDef.includes('replaceAll: true'), 'edit_file（old→new 精准替换+唯一性校验）')
+      ok(toolsDef.includes("name: 'search_file_content'") && toolsDef.includes("'node_modules', '.git'"), 'search_file_content（内容搜索+噪声目录跳过）')
+      ok(workjs.includes("if (/^[a-zA-Z]:[\\\\/]/.test(u)) u = 'file:///' + u.replace(/\\\\/g, '/')") && workjs.includes('/^(https?:\\/\\/|file:\\/\\/)/i'), 'browser_navigate 放行 file:// 本地预览（Windows 路径自动转 file:///）')
+      ok(promptjs2.includes("'开发.md'") && fs.statSync(path.join(ROOT, 'ai/manuals/开发.md')).size > 2000, '开发手册注册+落盘（>2KB）')
+      // ⑥ 内置截图（参考 QQ 截图：快捷键 + 选区标注 + 注入聊天）
+      const captureJs = fs.readFileSync(path.join(ROOT, 'capture.js'), 'utf8')
+      const captureHtml = fs.readFileSync(path.join(ROOT, 'src/capture.html'), 'utf8')
+      const pkgJson2 = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
+      ok(captureJs.includes('createCaptureManager') && captureJs.includes('Ctrl+Shift+A') && captureJs.includes('desktopCapturer') && captureJs.includes('finishWithDataURL'), '截图主进程（快捷键+抓屏+完成管线）')
+      ok(captureHtml.includes('captureDone') && captureHtml.includes("marks.pop()") && captureJs.includes("clipboard.writeImage"), '截图渲染层（标注撤销+导出）+ 剪贴板写入')
+      ok(mainjs2.includes("require('./capture')") && mainjs2.includes('captureMgr.init()') && mainjs2.includes('captureMgr.destroy()'), 'main 挂截图模块（init+before-quit destroy 注销快捷键）')
+      ok(preloadjs.includes('onCaptureBg') && preloadjs.includes('captureDone') && preloadjs.includes('onCaptureInject'), 'preload 截图五 API')
+      ok(workjs.includes('chatCaptureBtn') && workjs.includes('_appendChatRef(path)'), 'Work 截图按钮 + 成品注入聊天引用')
+      ok(pkgJson2.build.files.includes('capture.js'), 'build.files 含 capture.js（防 pet.js 漏打包坑复发）')
+    }
     // ⑤ C 盘文档改稿工作流（modify_word 自动转工作台副本，原文件留作对比；classify 同步按副本路径免保护区审批）
     ok(toolsDef.includes('protectedDraftCopy') && toolsDef.includes('draftPathOf') && toolsDef.includes("'改稿'") && toolsDef.includes('protectedDraftTarget'), 'modify_word C 盘改稿自动转工作台副本（helper+classify 双注册）')
     // ③ releaseManualsTo 真跑：释放到临时目录，6 册非空

@@ -142,6 +142,40 @@ function extractJsonAt(text, start) {
   return null
 }
 
+// <tool_call> 标签的函数调用风格参数解析（Qwen/GLM/Kimi 系漂移形态）：
+// "path=\"...\", target=\"local\", items=[\"a\",\"b\"], doing=1" → 括号/字符串感知切分，防值内逗号误切
+function parseToolCallArgs(s) {
+  const args = {}
+  const parts = []
+  let depth = 0, inStr = false, esc = false, start = 0
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (inStr) {
+      if (esc) esc = false
+      else if (ch === '\\') esc = true
+      else if (ch === '"') inStr = false
+    } else if (ch === '"') inStr = true
+    else if (ch === '(' || ch === '[' || ch === '{') depth++
+    else if (ch === ')' || ch === ']' || ch === '}') depth--
+    else if (ch === ',' && depth === 0) { parts.push(s.slice(start, i)); start = i + 1 }
+  }
+  parts.push(s.slice(start))
+  for (const part of parts) {
+    const eq = part.indexOf('=')
+    if (eq < 1) continue
+    const key = part.slice(0, eq).trim()
+    let val = part.slice(eq + 1).trim()
+    if (!key) continue
+    if (/^-?\d+(\.\d+)?$/.test(val)) val = Number(val)
+    else if (val === 'true') val = true
+    else if (val === 'false') val = false
+    else if (/^[[{]/.test(val)) { try { val = JSON.parse(val) } catch {} }
+    else if (/^"[\s\S]*"$/.test(val)) { try { val = JSON.parse(val) } catch { val = val.slice(1, -1) } }
+    args[key] = val
+  }
+  return args
+}
+
 // 无围栏形态（innerText 漏网）："tool\n复制\n下载\n{...}" → 重建 ```tool 围栏。
 // 已带任何 ``` 围栏时信任页面侧重建结果，不再动（防重复清洗）。
 function rebuildWebToolFences(content) {
@@ -175,7 +209,7 @@ function rebuildWebToolFences(content) {
 }
 
 class WorkAgent {
-  constructor({ client, tools, snapshots, tcpAgent, getSetting, setSetting, send, log, hostName, desktopDir, workspaceDir, isChild, webChatAsk }) {
+  constructor({ client, tools, snapshots, tcpAgent, getSetting, setSetting, send, log, hostName, desktopDir, workspaceDir, isChild, webChatAsk, onFileChanged }) {
     this.client = client
     this.tools = tools
     this.snapshots = snapshots
@@ -184,6 +218,7 @@ class WorkAgent {
     this.setSetting = setSetting
     this.send = send || (() => {})
     this.log = log || (() => {})
+    this.onFileChanged = onFileChanged || null // 回滚落盘后通知渲染层刷新工作台（与工具执行链路同通道）
     this.hostName = hostName || '本机'
     this.desktopDir = desktopDir || ''
     this.workspaceDir = workspaceDir || ''   // AI 工作台（助理专属文件区）
@@ -203,6 +238,15 @@ class WorkAgent {
     this._webChatBuf = ''                  // 网页对话流式增量累积
     this._webConvUrl = ''                  // 网页端对话 URL（/a/chat/s/<uuid>）：随会话持久化，重启后可回到原网页对话（真机：重启后网页端不记得对话）
     this._webConvStarted = false           // 本进程内已开过网页对话（首次发消息后置位）
+  }
+
+  // ===== 审批模式（三档）=====
+  // unlimited（无限制）是会话级档位：运行期写进 settings 让 UI 状态一致，
+  // 但读到即回落 auto 并修正存档——重启应用防线自动复位，防止上一次挂机忘了切回来
+  normalApprovalMode() {
+    const m = this.getSetting('aiApprovalMode') || 'manual'
+    if (m === 'unlimited') { this.setSetting('aiApprovalMode', 'auto'); return 'auto' }
+    return m
   }
 
   // ===== 配置 =====
@@ -234,7 +278,7 @@ class WorkAgent {
       videoModel: this.getSetting('aiVideoModel') || '',
       compactEnabled: (this.getSetting('aiCompactEnabled') || '0') === '1',
       contextLimit: this.contextLimitFor(this.getSetting('aiModel')),
-      approvalMode: this.getSetting('aiApprovalMode') || 'manual',
+      approvalMode: this.normalApprovalMode(),
       rules: this.getSetting('aiRules') || [],
       memory
     }
@@ -285,7 +329,7 @@ class WorkAgent {
         this.setSetting('aiContextLimit', String(n)) // 拿不到模型名时退化为全局（兼容旧路径）
       }
     }
-    if (cfg.approvalMode === 'manual' || cfg.approvalMode === 'auto') this.setSetting('aiApprovalMode', cfg.approvalMode)
+    if (cfg.approvalMode === 'manual' || cfg.approvalMode === 'auto' || cfg.approvalMode === 'unlimited') this.setSetting('aiApprovalMode', cfg.approvalMode)
     if (Array.isArray(cfg.rules)) {
       const rules = cfg.rules.map((r) => String(r).trim().slice(0, 500)).filter(Boolean).slice(0, 50)
       this.setSetting('aiRules', rules)
@@ -1108,14 +1152,29 @@ class WorkAgent {
       for (const call of calls) {
         const callId = 'call_' + Date.now().toString(36) + '_' + Math.floor(Math.random() * 1e4)
         let cls
-        if (call.name === 'delegate') {
-          // 委派本身无风险；子Agent内部的风险操作由子Agent自行走审批流
-          cls = { destructive: false, note: '委派子任务给子Agent', paths: [] }
-        } else {
-          cls = await this.tools.classify(call.name, call.args)
+        try {
+          if (call.name === 'delegate') {
+            // 委派本身无风险；子Agent内部的风险操作由子Agent自行走审批流
+            cls = { destructive: false, note: '委派子任务给子Agent', paths: [] }
+          } else {
+            cls = await this.tools.classify(call.name, call.args)
+          }
+        } catch (err) {
+          // 预检兜底（用户实锤：classify 内 path.basename(数组) 抛裸英文 TypeError，整轮殉葬 0 步执行）。
+          // 分类失败绝不裸奔放行：降级为强制审批（unlimited 档除外），让人工把住不确定的操作
+          cls = {
+            destructive: false,
+            note: `风险预检异常已降级（${err.message}），请人工确认后放行`,
+            paths: [],
+            forceApproval: mode !== 'unlimited'
+          }
         }
         const protectedHit = (cls.paths || []).some((p) => this.tools.isProtectedLocal(p))
-        const needApproval = (cls.destructive && (mode === 'manual' || protectedHit)) || cls.forceApproval === true
+        // unlimited（无限制）档：审批全放行——保护区（C 盘除桌面）与 exe/脚本强制线一并放开，
+        // 防线是切档时的会话级红色警示 + 重启自动回落 auto
+        const needApproval = mode === 'unlimited'
+          ? false
+          : ((cls.destructive && (mode === 'manual' || protectedHit)) || cls.forceApproval === true)
         const summary = call.name === 'delegate'
           ? `委派子任务：${String(call.args.title || call.args.task || '').slice(0, 40)}`
           : this.tools.summarize(call.name, call.args)
@@ -1410,6 +1469,44 @@ class WorkAgent {
         if (/^\{/.test(body) && /"name"[ \t]*:/.test(body) && /"arguments"[ \t]*:/.test(body)) matches.push(m)
       }
     }
+    if (!matches.length) {
+      // DSML 兼容（DeepSeek 网页版新版把内部工具标记文本化，长对话格式漂移时吐出）：
+      // 真机形态 "< | | DSML | | invoke name=...>"（竖线/空格混排数量不定）→ 正则用 [\s|]* 全宽容
+      // <|DSML|invoke name="xxx"> ... <|DSML|parameter name="p" string="?">value</|DSML|parameter> ... </|DSML|invoke>
+      // string="false" 的值按 JSON 字面量还原（false/[1]/数字），"true" 或缺省按字符串
+      const open = '<[\\s|]*DSML[\\s|]*invoke\\s+name\\s*=\\s*"([^"]+)"[\\s|]*>'
+      const close = '<[\\s|]*\\/[\\s|]*DSML[\\s|]*invoke[\\s|]*>'
+      for (const m of String(content || '').matchAll(new RegExp(`${open}([\\s\\S]*?)${close}`, 'g'))) {
+        const name = m[1].trim()
+        const args = {}
+        const pRe = new RegExp('<[\\s|]*DSML[\\s|]*parameter\\s+name\\s*=\\s*"([^"]+)"([^>]*)>([\\s\\S]*?)<[\\s|]*\\/[\\s|]*DSML[\\s|]*parameter[\\s|]*>', 'g')
+        for (const p of m[2].matchAll(pRe)) {
+          const key = p[1].trim()
+          const isStr = /string\s*=\s*"true"/.test(p[2])
+          let val = p[3].trim()
+          if (!isStr) { try { val = JSON.parse(val) } catch {} } // string="false"：值是 JSON 字面量（false/[1]/数字），解析失败就留原串
+          args[key] = val
+        }
+        if (name) matches.push({ 1: JSON.stringify({ name, arguments: args }) })
+      }
+    }
+    if (!matches.length) {
+      // <tool_call> 标签（Qwen/GLM/Kimi 系漂移形态，真机截图实锤）：
+      // <tool_call>list_dir(path="...", target="local")</tool_call> —— 函数调用风格，
+      // 参数含中文引号/括号/数组 → parseToolCallArgs 括号感知切分；也容 JSON 形态标签体
+      for (const m of String(content || '').matchAll(/<tool_call\s*>([\s\S]*?)<\/tool_call\s*>/g)) {
+        const body = m[1].trim()
+        const fm = body.match(/^([a-zA-Z_][\w.]*)\s*\(([\s\S]*)\)\s*$/)
+        if (fm && fm[1]) {
+          matches.push({ 1: JSON.stringify({ name: fm[1], arguments: parseToolCallArgs(fm[2]) }) })
+        } else {
+          try {
+            const obj = JSON.parse(body)
+            if (obj && typeof obj.name === 'string') matches.push({ 1: JSON.stringify(obj) })
+          } catch {}
+        }
+      }
+    }
     if (!matches.length) return null
     const calls = []
     for (const m of matches) {
@@ -1593,6 +1690,66 @@ class WorkAgent {
   // ===== 检查点回滚 =====
   // 回滚到 msgIndex 之前的状态：撤销其后所有文件操作（还原/删除/移回），
   // 并把聊天记录截断到该用户消息之前
+  // undo 记录 → 受影响文件路径（回滚完成后发 file-changed 让工作台同步刷新，绝不显示旧内容）
+  undoChangePaths(u) {
+    if (!u) return []
+    const out = []
+    const snapPath = (id) => {
+      if (!this.snapshots || !this.snapshots.list) return null
+      const meta = (this.snapshots.list() || []).find((m) => m.id === id)
+      return (meta && meta.originalPath) || null
+    }
+    try {
+      switch (u.type) {
+        case 'restore_snap': {
+          const p = snapPath(u.snapId)
+          if (p) out.push(p)
+          break
+        }
+        case 'delete_local': out.push(u.path); break
+        case 'move_back': out.push(u.src, u.dest); break
+        case 'rename_back': out.push(u.oldPath, u.newPath); break
+        case 'restore_snap_remote': {
+          const p = snapPath(u.snapId)
+          if (p) out.push(p)
+          if (u.remotePath) out.push(u.remotePath)
+          break
+        }
+        case 'delete_remote': out.push(u.path); break
+        default: break
+      }
+    } catch {}
+    return out.filter(Boolean)
+  }
+  // undo 记录 → 回滚确认清单条目（Trae 式："将被修改/将被删除/将移回" + 文件名）
+  undoPreviewItem(u) {
+    if (!u) return null
+    const short = (p) => String(p || '').split(/[\\/]/).filter(Boolean).pop() || String(p || '')
+    switch (u.type) {
+      case 'restore_snap': case 'restore_snap_remote': {
+        const paths = this.undoChangePaths(u)
+        const local = paths.find((p) => /^[a-zA-Z]:/.test(p)) // 本机盘符路径优先展示
+        const p = local || paths[0]
+        return p ? { action: u.type === 'restore_snap' ? '将被修改' : '将被修改（远程）', path: String(p), name: short(p) } : null
+      }
+      case 'delete_local': return u.path ? { action: '将被删除', path: String(u.path), name: short(u.path) } : null
+      case 'delete_remote': return u.path ? { action: '将被删除（远程）', path: String(u.path), name: short(u.path) } : null
+      case 'move_back': return u.src ? { action: '将移回原位', path: String(u.src), name: short(u.src) } : null
+      case 'rename_back': return u.newPath ? { action: '将恢复原名', path: String(u.oldPath || u.newPath), name: short(u.oldPath || u.newPath) } : null
+      default: return null
+    }
+  }
+  // 回滚预览：这条消息之后会撤销哪些文件操作（渲染层弹 Trae 式确认卡用）
+  rollbackPreview(msgIndex) {
+    const targets = this.checkpoints.filter((c) => c.msgIndex >= msgIndex)
+    const items = []
+    for (const c of targets) for (const u of (c.undos || [])) {
+      const it = this.undoPreviewItem(u)
+      if (it) items.push(it)
+    }
+    return { count: items.length, items }
+  }
+
   async rollbackTo(msgIndex) {
     if (this.running) return { success: false, error: 'AI 正在执行任务，请先停止' }
     const targets = this.checkpoints.filter((c) => c.msgIndex >= msgIndex)
@@ -1606,12 +1763,20 @@ class WorkAgent {
         const r = await this.tools.applyUndo(undos[j])
         results.push(r)
         this.log(`回滚: ${r.message}`)
+        // 撤销落盘 → 工作台同步刷新（真实回退的最后一环：界面绝不残留旧内容）
+        if (r && r.ok && typeof this.onFileChanged === 'function') {
+          for (const p of this.undoChangePaths(undos[j])) { try { this.onFileChanged(p) } catch {} }
+        }
       }
     }
     // 截断聊天与检查点（网页对话不重置：DeepSeek 网页无法删单条消息，重置=丢全部上下文纯累赘，
     // 老大拍板撤回只动本地，网页对话继续沿用保上下文）
     this.history = this.history.slice(0, msgIndex)
     this.checkpoints = this.checkpoints.filter((c) => c.msgIndex < msgIndex)
+    // 任务清单板/防重创建档一并清掉：文件都回滚了，清单和"已创建过"记录不能残留（防回滚后模型状态错乱）
+    this.plan = null
+    this.createdPaths = new Set()
+    this.toolsSincePlan = 0
     this.saveHistory()
     const failed = results.filter((r) => !r.ok).length
     this.send({ type: 'history_updated' })

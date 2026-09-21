@@ -7,7 +7,7 @@
 const fs = require('fs')
 const path = require('path')
 const crypto = require('crypto')
-const { createDocx, readDocxText, readPdfText, parseWordComments, parseWordFormat, wordFormatFingerprint, parseFormatRuleText, extractPaperFormatSpec, checkPaperFormat, anchorSpecRole, convertNumPrToText, replaceCoverFields, scanWordTables, formatWordTable, addWordTable, editWordTable, fixPaperPaging, svgToPng, isLegacyDoc, applyWordFormat, applyWordTemplate, modifyDocx, createXlsx, appendXlsxRows, readXlsx, modifyXlsxCell, modifyXlsxCells, formatXlsx, listXlsxSheets, createPptx, readPptx, editPptx } = require('./office')
+const { createDocx, readDocxText, readPdfText, parseWordComments, parseWordFormat, wordFormatFingerprint, parseFormatRuleText, extractPaperFormatSpec, checkPaperFormat, anchorSpecRole, convertNumPrToText, replaceCoverFields, scanWordTables, formatWordTable, addWordTable, editWordTable, fixPaperPaging, svgToPng, isLegacyDoc, applyWordFormat, applyWordTemplate, modifyDocx, styleDocx, createXlsx, appendXlsxRows, readXlsx, modifyXlsxCell, modifyXlsxCells, formatXlsx, listXlsxSheets, createPptx, readPptx, editPptx } = require('./office')
 
 let JSZip
 try { JSZip = require('jszip') } catch {}
@@ -77,7 +77,7 @@ const TOOL_DEFS = [
   { name: 'remove_bg', params: 'path(图片完整路径), out(可选,输出透明底PNG路径,默认原名-抠图.png 存原图旁)', desc: 'AI 抠图去背景：本地模型（首次自动下载 4.4MB 到应用数据，之后离线秒级）输出透明底 PNG。海报合成素材必备——抠完配 render_html（透明素材 <img> 直接叠加排版）。人像/宠物/产品/物体主体效果好；复杂发丝边缘偶有毛边，合成时加轻微阴影可弱化', manual: '图片视频' },
   { name: 'screenshot', params: 'scope(可选,默认webview:webview=工作台网页视图/app=应用窗口/screen=整屏), path(可选,保存路径), minimizeSelf(可选,bool,仅screen生效,默认true)', desc: '截图本机，**只截图不分析**——返回保存路径，要看内容再调 view_image。用户问"看看我屏幕/桌面上有啥"先 scope:"screen" 截全屏再看，禁止空想回答', manual: '图片视频' },
   { name: 'update_notes', params: 'mode(append=追加一条记录(默认)/read=查看现在记了什么/replace=整本重写(慎用)), content(append/replace 时的内容，markdown，一行一条)', desc: '读写大记事本（工作台 NOTES.md，全局长期记忆，所有对话共享）：用户说"记住XX/以后都XX/我喜欢XX"就 append 一条（带日期前缀）；用户问"你记了什么"用 read；重要习惯/偏好/常用路径/项目背景都值得记，但只记长期有效的信息（一次性任务不要记）' },
-  { name: 'create_word', params: 'path(docx完整路径), title(文档标题), content(markdown正文:标题/加粗/列表/插图/表格行自动排版), paragraphs(可选,段落数组替代content), header/footer/pageNumbers/toc/theme/fonts/lineSpacing/firstLine/cover/tocLevels(可选,详见手册), target(可选)', desc: '创建 Word 文档(.docx)，markdown 一键排版。⚠仅限从零新建——修改已有文档禁用本工具（重建=用户的封面/页眉/分节/样式全丢，格式必乱），改文字一律 modify_word(edit)。排版铁律详见手册', manual: 'word文档' },
+  { name: 'create_word', params: 'path(docx完整路径), title(文档标题), content(markdown正文:标题/加粗/列表/插图/表格行自动排版), paragraphs(可选,段落数组替代content), header/footer/pageNumbers/toc/theme/fonts/lineSpacing/firstLine/cover/tocLevels(可选,详见手册), target(可选)', desc: '创建 Word 文档(.docx)，markdown 一键排版。⚠仅限从零新建——修改已有文档禁用本工具（重建=用户的封面/页眉/分节/样式全丢，格式必乱），改文字一律 modify_word(edit)，改格式一律 style_word。**内容克制铁律**：标题层级按需（短文档别硬造三级结构）；页眉/页脚/目录/封面默认不加——用户没要求就不加，留白是专业不是偷懒。排版铁律详见手册', manual: 'word文档' },
   { name: 'read_word', params: 'path(docx完整路径), seg(可选,第几段,长文档分段逐段读), target(可选)', desc: '读 Word 文字内容，自动带出批注。超5000字自动分段防幻觉，逐段传 seg 读，禁止一次读完长文档', manual: 'word文档' },
   { name: 'read_pdf', params: 'path(pdf完整路径), target(可选)', desc: '读 PDF 文字内容（文本层提取）。返回"没有文本层"=扫描件/图片型，改用 pdf_to_image 转图后逐张 view_image 读', manual: 'word文档' },
   { name: 'pdf_to_image', params: 'path(pdf完整路径), pages(可选,默认前10页), target(可选)', desc: '把 PDF 每页渲染成 PNG 存工作区返回路径清单。扫描件 PDF 转图后逐张 view_image 读；也用于看 PDF 版面/表格结构', manual: 'word文档' },
@@ -87,7 +87,7 @@ const TOOL_DEFS = [
   { name: 'read_word_format', params: 'path(docx完整路径), mode(可选,默认fingerprint格式指纹;full=逐段全量)', desc: '解析 Word 完整格式（字体/字号/行距/缩进/页边距等），样式级联已折算成每段实际生效格式。参考 A 改 B 的工作流详见手册', manual: 'Word排版' },
   { name: 'read_paper_spec', params: 'path(格式模板docx完整路径), target(可选)', desc: '把学校论文格式模板蒸馏成几百字"格式规范书"（页面设置/各角色格式/批注规则/红字原文）。论文套模板闭环第一步，禁止 read_word 模板全文', manual: 'Word排版' },
   { name: 'check_paper_format', params: 'path(套模板后的产出docx完整路径), templatePath(格式模板docx完整路径), target(可选)', desc: '论文产出体检：对照模板规范书逐项检查，返回逐节对照进度表（六节 ✓/✗）+ issue 清单。分段循环：一节 ✓ 才进下一节，禁止套完不验就交差', manual: 'Word排版' },
-  { name: 'apply_word_format', params: 'path(要改的docx完整路径), formatPath(格式参考A的docx,rules用"source"时必传), rules(套用规则:map角色批量套或picks单段精修), target(不支持远程)', desc: '内容一字不动只改格式。⚠改论文格式禁用本工具，必须走 apply_word_template 闭环。适合普通文档参考A改B、体检后picks精修。详见手册', manual: 'Word排版' },
+  { name: 'apply_word_format', params: 'path(要改的docx完整路径), formatPath(格式参考A的docx,rules用"source"时必传), rules(套用规则:map角色批量套或picks单段精修), target(不支持远程)', desc: '按参考文档A的格式套B（⚠仅限用户明确给了格式参考文件的场景——没有参考物、只是口述"标题居中/全文黑色"这类要求时，用 style_word 逐条指令，别用本工具）。改论文格式禁用本工具，必须走 apply_word_template 闭环。详见手册', manual: 'Word排版' },
   { name: 'apply_word_template', params: 'path(论文docx完整路径), templatePath(学校格式模板docx完整路径), cover(可选封面字段对象:title题目/college学院/major专业/grade年级/studentId学号/name姓名/advisor指导教师/date日期), outputPath(可选输出路径,默认"论文名-套模板格式.docx"), target(不支持远程)', desc: '论文套学校格式模板：模板当骨架论文当血肉，封面校徽图片/页眉页脚/分节页码/目录域一步到位，产出零批注零红字。cover 建议必传。改论文格式必须走本工具，六节闭环详见手册', manual: 'Word排版' },
   { name: 'modify_word', params: 'path(docx完整路径), mode(append=追加/edit=精准替换,默认append;replace=整篇重写⚠慎用), paragraphs/content(append时新内容,格式同create_word), replacements(edit必填:[{find:"旧文字",replace:"新文字",all?}]), title/header/toc/theme等(仅replace生效), target(可选)', desc: '修改已有 Word（自动备份）。**改文字一律 mode:edit 精准替换（唯一正确方式）**——改 10 处也逐条 replacements，禁止图省事用 replace 重写或 create_word 重建（那会丢掉原封面/页眉/分节/样式，格式必乱）；replace 仅限用户明确说"整篇重写/重新生成"时用', manual: 'word文档' },
   { name: 'read_word_tables', params: 'path(docx完整路径), target(可选)', desc: '列出 Word 里所有表格（行×列+前两行预览）。改表格前先看清单定位第几个表', manual: '表格' },
@@ -118,8 +118,60 @@ const TOOL_DEFS = [
   { name: 'generate_image', params: 'prompt(画面描述/修改指令,越具体越好:主体/风格/构图/光线/色调), image(可选,要编辑/参考的图:本地路径或URL,数组1-3张多图合成), size(可选,仅生新图,"宽x高"如1024x1024), batch(可选,张数1-4), steps(可选,1-100默认30), save_path(可选,默认工作区「MSMate生成/图片」)', desc: 'AI 生图+编辑：不传 image=文生图；传 image=按指令改图保构图；2-3张=多图合成。画幅换算/对话式反复修改循环/遮罩黑区规则详见手册', manual: '图片视频' },
   { name: 'generate_video', params: 'prompt(视频内容描述,一句话说清主体+动作+场景+镜头感), save_path(可选,默认工作区「MSMate生成/视频」)', desc: 'AI 文生视频（模型在设置里配置）：约5秒短视频，耗时2-10分钟勿重复调用；多数模型可能产生费用，调用前先告知用户', manual: '图片视频' },
   { name: 'task_plan', params: 'items(建立/替换清单:字符串数组，每项一个具体动作), doing(标记进行中:序号或序号数组), done(标记完成:序号或序号数组)', desc: '任务清单（≥3步任务必用）：开工前建清单，每完成一项立刻打勾并标记下一项进行中；系统会把进度附在每步结果里，照着"下一步"提示继续干，全部打勾再收尾。⚠️ 打勾=该步实际验证成功；工具报错/失败=没完成，严禁打勾，如实汇报失败；也严禁跳步（第2步没完成不许先勾第2步）' },
-  { name: 'render_html', params: 'path(HTML完整路径), out(可选,输出png路径,默认同名.png), preset(可选画布:xhs=1080x1440小红书3:4/square=1080x1080微信分享/a4=1240x1754竖版海报/wide=2100x900横幅/wechat-cover=900x383公众号封面,默认a4), width/height(可选,像素,覆盖preset), scale(可选,1-4倍高清出图,默认1;高清用2且HTML按CSS尺寸写)', desc: 'HTML 渲染成 PNG（离屏窗口截图，中文/渐变/阴影完美）。⚠首次使用必须先 read_file 手册（设计.md）：先定美学方向+备素材三路再写 HTML，禁模板答案。设计工作流：定方向 → 备素材 → write_file 写单文件 HTML（内嵌CSS按CSS尺寸写死）→ render_html → view_image 过功能关+审美关 → 改了重渲。海报/公众号封面/小红书卡片/简历/邀请函全靠它', manual: '设计' }
+  { name: 'render_html', params: 'path(HTML完整路径), out(可选,输出png路径,默认同名.png), preset(可选画布:xhs=1080x1440小红书3:4/square=1080x1080微信分享/a4=1240x1754竖版海报/wide=2100x900横幅/wechat-cover=900x383公众号封面,默认a4), width/height(可选,像素,覆盖preset), scale(可选,1-4倍高清出图,默认1;高清用2且HTML按CSS尺寸写)', desc: 'HTML 渲染成 PNG（离屏窗口截图，中文/渐变/阴影完美）。⚠首次使用必须先 read_file 手册（设计.md）：先定美学方向+备素材三路再写 HTML，禁模板答案。设计工作流：定方向 → 备素材 → write_file 写单文件 HTML（内嵌CSS按CSS尺寸写死）→ render_html → view_image 过功能关+审美关 → 改了重渲。海报/公众号封面/小红书卡片/简历/邀请函全靠它', manual: '设计' },
+  { name: 'browser_navigate', params: 'url(网址,http/https)', desc: '在 AI 受控浏览器页签打开网页（用户全程可见"AI 浏览"页签）。网页填表第一步：navigate → snapshot 看元素 → click/fill 操作 → read 验结果', manual: '电脑控制' },
+  { name: 'browser_snapshot', params: '', desc: '列出当前页面全部可交互元素（编号 e1/e2...带类型/占位符/文本/位置）。元素引用随页面重渲染失效——每次导航或点击后必须重新 snapshot 再继续操作', manual: '电脑控制' },
+  { name: 'browser_click', params: 'ref(元素编号,如 e3,来自 snapshot)', desc: '点击页面元素（按钮/链接/复选框）。点击后页面可能变化，继续操作前重新 snapshot', manual: '电脑控制' },
+  { name: 'browser_fill', params: 'ref(元素编号), value(填入内容;select 下拉传选项文本或value)', desc: '向输入框/文本域/下拉框填值（自动触发 input/change 事件，React 表单也能感知）。填完用 snapshot 或 read 核对', manual: '电脑控制' },
+  { name: 'browser_read', params: '', desc: '读当前页面正文文本（≤8000字）+标题。填表后核对结果/读页面内容用', manual: '电脑控制' },
+  { name: 'desktop_click', params: 'nx(归一化横坐标,0-1000)/ny(归一化纵坐标,0-1000) 二选一优先推荐；或 x/y(绝对像素,=截图里的物理像素)；button(可选,left默认/right/middle), double(可选,bool双击)', desc: '点击桌面位置。标准流程：screenshot scope:"screen" 截屏 → view_image 提问加"输出目标中心点归一化坐标(x,y)，0-1000"（视觉模型输出归一化坐标最准）→ desktop_click 传 nx/ny。操作第三方程序用；网页内操作优先 browser_* 更稳', manual: '电脑控制' },
+  { name: 'desktop_type', params: 'text(要输入的文字,支持中文)', desc: '向当前焦点窗口逐字输入文本（先点中输入框获得焦点再输入）。第三方程序填表/挂机办公用', manual: '电脑控制' },
+  { name: 'desktop_key', params: 'keys(按键数组,如["ctrl","s"]或["enter"];修饰键在前主键在后)', desc: '按组合键：ctrl/alt/shift/win + enter/tab/esc/space/f1-f24/字母/数字/方向键/backspace/delete/home/end/pageup/pagedown 等。保存/提交/快捷键场景', manual: '电脑控制' },
+  { name: 'desktop_scroll', params: 'x(横坐标), y(纵坐标), amount(滚动量,正=向上负=向下,一格约120)', desc: '在屏幕指定位置滚动滚轮。翻页/长列表/缩放(ctrl+滚轮需 desktop_key 配合)用', manual: '电脑控制' },
+  { name: 'desktop_window', params: 'action(list列出/activate激活/minimize最小化/maximize最大化/close关闭), pid(进程id,list结果里拿)', desc: '管理桌面窗口：先 list 拿窗口清单（pid+标题），activate 把目标窗口拉到前台（desktop_click/type 前必须先激活目标窗口），close 走正常关闭流程（相当于点X）', manual: '电脑控制' },
+  { name: 'desktop_uia', params: 'pid(进程id,desktop_window list里拿;不传=当前前台窗口), filter(可选,按控件名过滤)', desc: '读窗口的 UIA 控件名册（类型/名字/物理坐标/可操作方式，≤150条）——原生程序不用视觉猜坐标：先 uia 拿控件清单 → 挑目标 → desktop_click 传它 x/y。比截屏定位快且准，操作原生程序优先用', manual: '电脑控制' },
+  { name: 'run_command', params: 'command(命令行,cmd语法), cwd(可选,工作目录,默认工作区), timeout(可选,秒,默认120上限600)', desc: '执行命令行并返回输出（npm/pip/git/编译/跑脚本/跑测试）。改代码→跑测试→读报错→修复的开发闭环核心。**修 2 次仍失败必须 ask_user 汇报报错+已试方案，禁止闷头硬修或没验证就称修好**。危险命令（格式化/删盘/引导）有黑名单硬拦；输出超长自动归档。Windows cmd 语法', manual: '开发' },
+  { name: 'edit_file', params: 'path(文件完整路径), old_string(要替换的原文,必须与文件内容完全一致含空白换行), new_string(新文本), replaceAll(可选,bool,多处命中时全部替换)', desc: '精准修改文件片段（old_string→new_string），改代码首选——比整文件重写省且稳。old_string 多处命中会拒绝（加长上下文让它唯一，或传 replaceAll）。找不到原文时先 read_file 拿精确内容', manual: '开发' },
+  { name: 'dev_server', params: 'action(start/stop/list), command(start 必填,长驻命令如 "npm run dev"), cwd(可选,默认工作区), id(stop/list 定位用)', desc: '启动/停止/查看长驻开发进程（dev server、watcher 等跑起来不退出的命令）。start 返回 id+启动日志尾部，进程常驻不受 run_command 超时限制；随时 action=list id=xx 看最新日志尾部，action=stop 停止。启动后等几秒再 list 看端口就绪', manual: '开发' },
+  { name: 'git', params: 'action(status/diff/commit/log), message(commit 必填,提交说明), cwd(可选,项目根,默认工作区), path(diff 可选,只看某文件)', desc: '在项目里用 git 看状态/看改动/提交/查历史。改完代码先 status 看动了什么，commit 的 message 说清为什么改。commit 自动 add 全部改动；不是 git 仓库会提示先 git init', manual: '开发' },
+  { name: 'search_file_content', params: 'dir(搜索目录), query(关键词或正则), regex(可选,bool,query按正则解析), target(可选)', desc: '按内容搜代码/文档（递归全子目录，返回文件+行号+命中行）。改代码前先搜：定位函数/配置/引用在哪。跳过 node_modules/.git 等噪声目录', manual: '开发' },
+  { name: 'style_word', params: 'path(docx完整路径), ops(格式指令数组:[{target:"title"|"h1"|"h2"|"h3"|"all"|{contains:"段落文字"}, align:"center"|"left"|"right"|"justify", color:"000000"|"black", font:"微软雅黑", sizePt:22, bold:true|false, firstLine:"none"}])', desc: '指令式改 Word 格式（只动格式不动文字）：把"大标题居中、全文黑色"直接翻译成 ops 传进来——比 apply_word_format 顺手得多。改前自动备份。格式描述类需求一律用本工具，禁止重建文档', manual: 'word文档' }
 ]
+
+// 子进程输出智能解码（共享）：windowsHide 创建无控制台进程时 chcp 设不进，
+// cmd/PowerShell 的中文输出是 GBK 字节——UTF-8 解码含 U+FFFD（乱码标记）就用原生 TextDecoder('gbk') 重解（零依赖）
+function smartDecode(buf) {
+  const u = Buffer.isBuffer(buf) ? buf.toString('utf8') : String(buf || '')
+  if (!u.includes('\uFFFD')) return u
+  try { return new TextDecoder('gbk').decode(buf) } catch { return u }
+}
+
+// 危险命令黑名单（run_command / dev_server 共享）：格式化/删盘/引导修改类，无论审批模式硬拦
+function isDangerousCmd(cmd) {
+  return /\b(format|diskpart|shutdown|reg\s+delete|cipher\s+\/w|vssadmin|bcdedit|bootreg)\b/i.test(cmd) ||
+    /\b(rd|rmdir)\s+\/[sq]/i.test(cmd) || /\bdel\s+\/[fsq]/i.test(cmd) ||
+    /remove-item[\s\S]*-recurse[\s\S]*-force/i.test(cmd) || /\brm\s+-rf\s+\/(?:\s|$)/i.test(cmd)
+}
+
+// 从命令输出提取报错位置（path:line:col），相对路径按 cwd 转绝对——渲染层渲染成可点击跳工作台对应行
+// 字符类含中文（\w 不含）：项目路径常有中文（如"局域网互传2.6"）
+function extractErrLocs(text, cwd) {
+  const re = /(?:[A-Za-z]:)?(?:[^\s:;'"`|*?<>]+[/\\])*[^\s:;'"`|*?<>]+\.(?:js|mjs|cjs|ts|tsx|jsx|java|py|json|css|scss|html|vue):\d+(?::\d+)?/g
+  const seen = new Set()
+  const out = []
+  let m
+  while ((m = re.exec(String(text || ''))) && out.length < 10) {
+    const loc = m[0]
+    if (seen.has(loc)) continue
+    seen.add(loc)
+    const mm = /^(.*):(\d+)(?::(\d+))?$/.exec(loc)
+    if (!mm) continue
+    let abs = mm[1]
+    if (!/^[A-Za-z]:/.test(abs)) { try { abs = path.resolve(cwd || process.cwd(), abs) } catch {} }
+    out.push(`${abs}:${mm[2]}${mm[3] ? ':' + mm[3] : ''}`)
+  }
+  return out
+}
 
 function buildToolPromptSection() {
   const lines = TOOL_DEFS.map((t) => t.manual
@@ -186,8 +238,18 @@ async function captureAppShot(el) {
   return { img, url: '' }
 }
 // desktopCapturer 抓一帧静态画面：无弹窗/不抢输入/用户无感知（非录屏，截完即止）
+// thumbnailSize 必须按主屏"逻辑尺寸×scaleFactor"=物理分辨率请求（写死 2560x1440 时其他分辨率
+// 的屏幕返回图会被缩放 → AI 按图算的绝对坐标系统性错位，老大实锤"经常点不到想点的地方"）
 async function captureScreenShot(el) {
-  const sources = await el.desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 2560, height: 1440 } })
+  let reqW = 2560, reqH = 1440
+  try {
+    const pri = el.screen && el.screen.getPrimaryDisplay ? el.screen.getPrimaryDisplay() : null
+    if (pri) {
+      reqW = Math.round(pri.size.width * pri.scaleFactor)
+      reqH = Math.round(pri.size.height * pri.scaleFactor)
+    }
+  } catch {}
+  const sources = await el.desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: reqW, height: reqH } })
   if (!sources.length) throw new Error('系统没有可用的屏幕源')
   let src = sources[0]
   try {
@@ -197,7 +259,8 @@ async function captureScreenShot(el) {
   } catch {}
   const img = src.thumbnail
   if (!img || img.isEmpty()) throw new Error('屏幕抓帧为空（可能被系统策略限制）')
-  return { img, url: '' }
+  const sz = img.getSize()
+  return { img, url: '', w: sz.width, h: sz.height }
 }
 
 
@@ -572,10 +635,12 @@ function extractArticleText(html, url, maxLen = 9000) {
   } catch { return null }
 }
 
-function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, getSetting, setSetting, log, onDownloadProgress, onWorkbenchOpen }) {
+function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, getSetting, setSetting, log, onDownloadProgress, onWorkbenchOpen, onFileChanged, desktop, browserCtl, controlOverlay }) {
   log = log || (() => {})
   // 活跃下载任务：id -> { req, fileName }（进度条 UI + 用户取消的支撑）
   const activeDownloads = new Map()
+  // 常驻开发进程：id -> { child, logs[], cmd, cwd, exitCode }（dev_server 工具，长驻不受 run_command 超时限制）
+  const devServers = new Map()
   let lastProgressSent = 0
   const emitDownload = (info) => {
     try { if (onDownloadProgress) onDownloadProgress(info) } catch {}
@@ -779,7 +844,12 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
     if (name === 'move_path') return { destructive: true, note: '移动操作', paths: target === 'local' ? [args.src] : [] }
     if (name === 'rename_path') return { destructive: true, note: '重命名操作', paths: target === 'local' ? [args.path] : [] }
     if (name === 'copy_path') {
-      const destExists = await targetExists(args.dest_dir ? path.join(args.dest_dir, path.basename(args.src || '')) : '', target)
+      // src 支持数组批量复制（与 impl 对齐）——逐个查目标是否已存在，任一命中即视为覆盖类操作。
+      // 用户实锤崩溃：模型 copy_path(src=["a.html","b.html"]) 批量建两个页面，这里 path.basename(数组)
+      // 直接抛 TypeError 裸英文报错，且 classify 在 agent 预检无 try 包裹 → 整轮殉葬（0 步执行+卡片卡"执行中"）
+      const srcs = (Array.isArray(args.src) ? args.src : [args.src]).filter(Boolean).map(String)
+      const destBase = args.dest_dir ? String(args.dest_dir) : ''
+      const destExists = destBase ? await targetExists(path.join(destBase, path.basename(srcs[srcs.length - 1] || '')), target) : false
       return { destructive: destExists, note: destExists ? '目标存在同名文件，将被覆盖' : '复制操作', paths: [] }
     }
     if (name === 'create_word') {
@@ -876,6 +946,43 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       if (isExec) notes.push(`下载可执行文件 ${path.basename(outPath)}，请确认来源可信`)
       if (exists) notes.push(`覆盖已有文件 ${outPath}（原文件会先备份）`)
       return { destructive: isExec || exists, note: notes.join('；'), paths: exists ? [outPath] : [] }
+    }
+    if (name.startsWith('desktop_')) {
+      // 桌面控制 = 真实键鼠操作第三方程序：按 destructive 走审批（手动档弹卡 / 自动信任与无限制放行）
+      const notes = {
+        desktop_click: `控制鼠标${args.double ? '双击' : '点击'}屏幕 (${args.x},${args.y})`,
+        desktop_type: `向当前焦点窗口输入文字（${String(args.text || '').length} 字符）`,
+        desktop_key: `按组合键 ${(Array.isArray(args.keys) ? args.keys : []).join('+')}`,
+        desktop_scroll: `滚动屏幕 (${args.x},${args.y})`,
+        desktop_window: `窗口管理（${args.action || 'list'}${args.pid ? ' pid=' + args.pid : ''}）`
+      }
+      return { destructive: true, note: notes[name] || '桌面控制操作（键鼠模拟）', paths: [] }
+    }
+    if (name.startsWith('browser_')) {
+      // 受控页签操作：用户全程可见"AI 浏览"页签内容，无破坏性语义 → 不弹卡保持流畅
+      return { destructive: false, note: '', paths: [] }
+    }
+    if (name === 'run_command') {
+      // 命令执行 = 系统级操作：按 destructive 走审批（手动档逐条弹卡 / 自动信任与无限制放行）；
+      // 危险黑名单在 execute 层硬拦（不依赖审批）
+      return { destructive: true, note: `执行命令：${String(args.command || '').slice(0, 80)}`, paths: [] }
+    }
+    if (name === 'edit_file') {
+      const exists = fs.existsSync(args.path)
+      return {
+        destructive: exists,
+        note: exists ? `精准修改 ${args.path}（原文件先备份，可回滚）` : '目标文件不存在',
+        paths: [args.path]
+      }
+    }
+    if (name === 'search_file_content') return { destructive: false, note: '', paths: [] }
+    if (name === 'style_word') {
+      const exists = fs.existsSync(args.path)
+      return {
+        destructive: exists,
+        note: exists ? `修改 Word 格式 ${args.path}（原文件先备份，可回滚）` : '目标文件不存在',
+        paths: [args.path]
+      }
     }
     return { destructive: false, note: '', paths: [] }
   }
@@ -1594,6 +1701,8 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       const scope = ['webview', 'app', 'screen'].includes(String(args.scope || '').trim().toLowerCase()) ? String(args.scope).trim().toLowerCase() : 'webview'
       const el = shotElectron()
       if (!el) return { ok: false, message: '截图需要 MSMate 应用内环境（当前是纯 Node/无 GUI 环境），无法截图' }
+      // 控制遮罩避让：遮罩会污染 AI 视觉定位（半透明暗色挡真实界面）——截屏前隐藏，截完恢复
+      if (controlOverlay && (scope === 'screen' || scope === 'app')) controlOverlay.hideForShot()
       // v2.5.3：screen 全屏截图默认自动最小化 MSMate 主窗口（不然截出来的桌面被自己挡住），截完自动还原；
       // AI 可传 minimizeSelf:false 关闭（比如就想连 MSMate 界面一起截下来）
       let restoreWin = null
@@ -1611,13 +1720,15 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
         const cap = scope === 'app' ? await captureAppShot(el) : scope === 'screen' ? await captureScreenShot(el) : await captureWebviewShot(el)
         const p = shotSavePath(el, scope, args.path)
         const info = shotSave(cap.img, p)
+        const coordNote = scope === 'screen' && cap.w ? `\n坐标基准：图 ${cap.w}×${cap.h}px = 屏幕物理分辨率 1:1——desktop_click 的 x/y 直接用你在图上看到的像素位置；或用归一化坐标 nx/ny（0-1000，图内百分比×10）更稳` : ''
         return {
           ok: true,
-          message: `已截图（${scope}${cap.url ? '：' + cap.url.slice(0, 80) : ''}）→ ${info.path}（${info.width}×${info.height}px，${fmtSize(info.size)}）\n图片还没"看"：要看画面内容/找东西/确认结果，就调 view_image 传 path:"${info.path}"`
+          message: `已截图（${scope}${cap.url ? '：' + cap.url.slice(0, 80) : ''}）→ ${info.path}（${info.width}×${info.height}px，${fmtSize(info.size)}）${coordNote}\n图片还没"看"：要看画面内容/找东西/确认结果，就调 view_image 传 path:"${info.path}"，提问里让模型"输出目标中心点归一化坐标(x,y)，0-1000"，拿到的 nx/ny 直接传 desktop_click`
         }
       } catch (err) {
         return { ok: false, message: `截图失败: ${err.message}` }
       } finally {
+        if (controlOverlay && (scope === 'screen' || scope === 'app')) controlOverlay.restoreAfterShot()
         if (restoreWin) {
           try { restoreWin.restore() } catch {}
           try { restoreWin.show() } catch {} // 截完自动把 MSMate 弹回桌面（老大拍板：最小化之后又自动打开）
@@ -1840,16 +1951,42 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
         fs.mkdirSync(outDir, { recursive: true })
         const maxPages = Math.min(Math.max(parseInt(args.pages, 10) || 10, 1), 30)
         const stdout = await new Promise((resolve, reject) => {
-          execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1, '-PdfPath', args.path, '-OutDir', outDir, '-MaxPages', String(maxPages)], { timeout: 180000, maxBuffer: 10 * 1024 * 1024, windowsHide: true, encoding: 'utf8' }, (err, so, se) => {
-            if (err) return reject(new Error(String(se || so || err.message).trim().split('\n')[0]))
-            resolve(String(so || ''))
+          execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1, '-PdfPath', args.path, '-OutDir', outDir, '-MaxPages', String(maxPages)], { timeout: 180000, maxBuffer: 10 * 1024 * 1024, windowsHide: true, encoding: 'buffer' }, (err, so, se) => {
+            if (err) {
+              // PowerShell 异常中文是 GBK 字节：smartDecode 救回真实报因（此前乱码盖住"加密/损坏"提示）
+              const first = smartDecode(se || so || Buffer.from(err.message || '')).trim().split('\n')[0]
+              return reject(new Error(first || err.message))
+            }
+            resolve(smartDecode(so))
           })
         })
         const files = stdout.split(/\r?\n/).map((l) => l.trim()).filter((l) => /^[A-Za-z]:\\.+\.png$/i.test(l))
         if (!files.length) return { ok: false, message: 'PDF 渲染失败：没有产出任何页面（加密/损坏的 PDF 不支持，或页面数为 0）' }
         return { ok: true, message: `已渲染 ${files.length} 页（${path.basename(args.path)}）→ 逐张用 view_image 看内容：\n` + files.map((f, i) => `  第${i + 1}页: ${f}`).join('\n'), files }
       } catch (err) {
-        return { ok: false, message: `PDF 转图片失败: ${err.message}（加密/损坏的 PDF 不支持）` }
+        return { ok: false, message: `PDF 转图片失败: ${err.message}。常见原因：①PDF 已加密/有打开密码 ②文件损坏不是真 PDF（魔数不是 %PDF）③扫描件损坏——可先 read_pdf 试文本层，或问用户要未加密版本` }
+      }
+    },
+
+    async style_word(args) {
+      if (!args.path) return { ok: false, message: '缺少 path（docx 完整路径）' }
+      const ops = Array.isArray(args.ops) ? args.ops : (args.ops && typeof args.ops === 'object' ? [args.ops] : [])
+      if (!ops.length) return { ok: false, message: '缺少 ops 格式指令。如 [{ target:"title", align:"center" }, { target:"all", color:"000000" }]——target: title/h1/h2/h3/all 或 { contains:"段落文字" }' }
+      if (isLegacyDoc(args.path)) return { ok: false, message: '这是旧版 .doc（Word 二进制），本工具处理不了。先用 read_word 转成 .docx 副本再改' }
+      try {
+        if (isProtectedLocal(args.path)) return { ok: false, message: '拒绝：C 盘（除桌面）为保护区' }
+        if (!fs.existsSync(args.path)) return { ok: false, message: '文件不存在' }
+        const snap = snapshots.backupLocal(args.path)
+        if (!snap.ok) return { ok: false, message: `已取消修改：原文件备份失败（${snap.reason}）` }
+        const r = await styleDocx(args.path, ops)
+        const missNote = r.miss && r.miss.length ? `\n未命中的指令（0 段命中，检查 target 拼写/文字是否在文中）: ${r.miss.join('、')}` : ''
+        return {
+          ok: true,
+          message: `格式修改完成（${path.basename(args.path)}）：\n${r.done}${missNote}\n可 read_word 复查内容完好，格式效果以 Word/WPS 打开为准`,
+          undo: { type: 'restore_snap', snapId: snap.id }
+        }
+      } catch (err) {
+        return { ok: false, message: `格式修改失败: ${err.message}` }
       }
     },
 
@@ -3494,6 +3631,340 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       }
     },
 
+    // ===== browser_* 网页控制（AI 受控页签，操作全程用户可见）=====
+    async browser_navigate(args) {
+      if (!browserCtl) return { ok: false, message: '网页控制桥不可用（工作台未就绪）' }
+      const r = await browserCtl({ op: 'navigate', params: { url: String(args.url || '') }, timeout: 20000 })
+      if (!r.ok) return { ok: false, message: r.error || '导航失败' }
+      return { ok: true, message: `已打开 ${r.url || args.url}（标题: ${r.title || '无'}）。下一步 browser_snapshot 看可交互元素清单` }
+    },
+
+    async browser_snapshot(args) {
+      if (!browserCtl) return { ok: false, message: '网页控制桥不可用' }
+      const r = await browserCtl({ op: 'snapshot', params: {} })
+      if (!r.ok) return { ok: false, message: r.error || '快照失败' }
+      return { ok: true, message: '可交互元素清单（编号在冒号前，@后是位置尺寸供参考；页面重渲染后编号会过期）：\n' + r.elements }
+    },
+
+    async browser_click(args) {
+      if (!browserCtl) return { ok: false, message: '网页控制桥不可用' }
+      const r = await browserCtl({ op: 'click', params: { ref: args.ref } })
+      if (!r.ok) return { ok: false, message: r.error || '点击失败' }
+      return { ok: true, message: `已点击 ${args.ref}${r.navigated ? `（页面: ${r.navigated}）` : ''}。继续操作前重新 browser_snapshot（页面可能已变化）` }
+    },
+
+    async browser_fill(args) {
+      if (!browserCtl) return { ok: false, message: '网页控制桥不可用' }
+      const r = await browserCtl({ op: 'fill', params: { ref: args.ref, value: args.value } })
+      return r.ok ? { ok: true, message: `已向 ${args.ref} 填入内容（长度 ${String(args.value || '').length}）` } : { ok: false, message: r.error || '填充失败' }
+    },
+
+    async browser_read(args) {
+      if (!browserCtl) return { ok: false, message: '网页控制桥不可用' }
+      const r = await browserCtl({ op: 'read', params: {} })
+      if (!r.ok) return { ok: false, message: r.error || '读取失败' }
+      return { ok: true, message: `页面「${r.title}」(${r.url}) 正文：\n${r.text}` }
+    },
+
+    // ===== desktop_* 桌面控制（键鼠 + 窗口管理，挂机办公）=====
+    // 每次调用：亮控制遮罩（半透明提示"正在控制电脑"）+ 紧急停止检查（用户按 Ctrl+Shift+X 后拒绝）
+    desktopGuard(args, op) {
+      if (!desktop) return { ok: false, message: '桌面控制引擎不可用' }
+      if (controlOverlay) {
+        if (controlOverlay.isAborted()) return { ok: false, message: '用户已按 Ctrl+Shift+X 紧急停止 AI 控制电脑。请先用 ask_user 询问用户是否继续，未经允许不要再调用桌面控制工具' }
+        controlOverlay.touch()
+      }
+      return null
+    },
+
+    async desktop_click(args) {
+      const g = this.desktopGuard(args)
+      if (g) return g
+      const hasNorm = args.nx != null || args.ny != null
+      const x = Number(args.x), y = Number(args.y)
+      if (!hasNorm && (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0)) {
+        return { ok: false, message: '坐标非法。两种传法：① nx/ny 归一化坐标（0-1000，view_image 让视觉模型输出目标中心点归一化坐标后直接传，推荐最稳）② x/y 绝对像素（= 截图里的物理像素位置）' }
+      }
+      const r = await desktop.click(hasNorm ? { nx: args.nx, ny: args.ny } : { x, y }, { button: args.button === 'right' ? 'right' : (args.button === 'middle' ? 'middle' : 'left'), double: !!args.double })
+      return r.ok
+        ? { ok: true, message: `已点击 ${r.x ? `(${r.x},${r.y})` : '目标位置'}${args.double ? ' 双击' : ''}${args.button === 'right' ? '（右键）' : ''}。若目标窗口之前不在前台，先 desktop_window activate；不确定点没点中就再截屏看一眼` }
+        : { ok: false, message: r.error }
+    },
+
+    async desktop_type(args) {
+      const g = this.desktopGuard(args)
+      if (g) return g
+      const t = String(args.text || '')
+      if (!t) return { ok: false, message: 'text 为空' }
+      const r = await desktop.type(t)
+      return r.ok ? { ok: true, message: `已向当前焦点窗口输入 ${t.length} 个字符` } : { ok: false, message: r.error }
+    },
+
+    async desktop_key(args) {
+      const g = this.desktopGuard(args)
+      if (g) return g
+      const keys = (Array.isArray(args.keys) ? args.keys : String(args.keys || '').split(/[+\s]+/)).map((k) => String(k).trim()).filter(Boolean)
+      if (!keys.length) return { ok: false, message: 'keys 为空，如 ["ctrl","s"] 或 ["enter"]' }
+      const r = await desktop.key(keys)
+      return r.ok ? { ok: true, message: `已按键 ${keys.join('+')}` } : { ok: false, message: r.error }
+    },
+
+    async desktop_scroll(args) {
+      const g = this.desktopGuard(args)
+      if (g) return g
+      const x = Number(args.x) || 0, y = Number(args.y) || 0, amount = Number(args.amount) || 0
+      if (!amount) return { ok: false, message: 'amount 为 0（正=向上滚，负=向下滚，一格约 120）' }
+      const r = await desktop.scroll(x, y, amount)
+      return r.ok ? { ok: true, message: `已在 (${x},${y}) 滚动 ${amount}` } : { ok: false, message: r.error }
+    },
+
+    async desktop_window(args) {
+      const g = this.desktopGuard(args)
+      if (g) return g
+      const action = String(args.action || 'list').toLowerCase()
+      if (action === 'list') {
+        const r = await desktop.windowList()
+        if (!r.ok) return { ok: false, message: r.error }
+        if (!r.windows.length) return { ok: true, message: '当前没有可见窗口' }
+        return { ok: true, message: '窗口清单（pid 是 activate/close 等操作的凭据）：\n' + r.windows.map((w) => `pid=${w.pid} [${w.proc}] ${w.title}`).join('\n') }
+      }
+      const pid = Number(args.pid)
+      if (!Number.isInteger(pid) || pid <= 0) return { ok: false, message: 'pid 缺失或非法（先 desktop_window action:"list" 拿）' }
+      const table = { activate: () => desktop.windowActivate(pid), minimize: () => desktop.windowMinimize(pid), maximize: () => desktop.windowMaximize(pid), close: () => desktop.windowClose(pid) }
+      const fn = table[action]
+      if (!fn) return { ok: false, message: `未知 action: ${action}（list/activate/minimize/maximize/close）` }
+      const r = await fn()
+      const doneMsg = { activate: '已激活到前台（随后可 desktop_click/desktop_type）', minimize: '已最小化', maximize: '已最大化', close: '已请求关闭（相当于点X）' }[action]
+      return r.ok ? { ok: true, message: `窗口 pid=${pid} ${doneMsg}` } : { ok: false, message: r.error }
+    },
+
+    async desktop_uia(args) {
+      const g = this.desktopGuard(args)
+      if (g) return g
+      const r = await desktop.uiaTree(args.pid, args.filter)
+      if (!r.ok) return { ok: false, message: r.error }
+      if (!r.elements.length) return { ok: true, message: '没有读到可用控件（该窗口可能是自绘界面——改用 screenshot+desktop_click 视觉方式）' }
+      const lines = r.elements.map((e) => `#${e.n} [${e.type}] "${e.name}" @(${e.x},${e.y} ${e.w}×${e.h})${e.patterns ? ' 可' + e.patterns : ''}`)
+      return { ok: true, message: `控件名册（#序号 → 括号里的 x,y 直接传 desktop_click 的 x/y）：\n` + lines.join('\n') + `\n拿到目标坐标后：desktop_click x=... y=...（同一坐标系，最准）` }
+    },
+
+    // ===== 开发三件套（对标 Trae：跑命令/精准编辑/内容搜索）=====
+    async run_command(args) {
+      const cmd = String(args.command || '').trim()
+      if (!cmd) return { ok: false, message: 'command 为空' }
+      // 危险命令黑名单：无论审批模式硬拦（格式化/删盘/引导修改类）
+      if (isDangerousCmd(cmd)) {
+        return { ok: false, message: '拒绝：命令在危险黑名单中（格式化/删除系统盘/引导修改类），不允许执行。如需删除项目文件用 delete_path 工具（有快照可还原）' }
+      }
+      const cwd = String(args.cwd || '').trim() || workspaceDir || '' // 不传 cwd 默认工作区：项目/脚本统一放工作区，AI 免问路径
+      if (cwd && !fs.existsSync(cwd)) return { ok: false, message: `工作目录不存在: ${cwd}` }
+      const timeoutSec = Math.min(Math.max(Number(args.timeout) || 120, 5), 600)
+      const { exec } = require('child_process')
+      const r = await new Promise((resolve) => {
+        exec(`chcp 65001 >nul && ${cmd}`, {
+          cwd: cwd || undefined, timeout: timeoutSec * 1000, windowsHide: true,
+          maxBuffer: 10 * 1024 * 1024, encoding: 'buffer'
+        }, (err, stdout, stderr) => resolve({ err, stdout: smartDecode(stdout), stderr: smartDecode(stderr) }))
+      })
+      const parts = []
+      if (r.stdout.trim()) parts.push(r.stdout.trimEnd())
+      if (r.stderr.trim()) parts.push('[stderr]\n' + r.stderr.trimEnd())
+      let code = 0
+      if (r.err) {
+        if (r.err.killed) code = 'TIMEOUT'
+        else if (typeof r.err.code === 'number') code = r.err.code
+        else code = r.err.code || 1
+      }
+      const body = parts.join('\n').trim() || '（无输出）'
+      const note = code === 0 ? '执行成功' : (code === 'TIMEOUT' ? `超时被终止（>${timeoutSec}s）——长任务考虑拆步、加大 timeout，或用 dev_server 工具常驻` : `退出码 ${code}`)
+      // 失败时提取报错位置（path:line:col）——渲染卡片可点击跳工作台对应行
+      let locsPart = ''
+      if (code !== 0) {
+        const locs = extractErrLocs(`${r.stdout}\n${r.stderr}`, cwd)
+        if (locs.length) locsPart = '\n—— 报错位置 ——\n' + locs.join('\n')
+      }
+      return { ok: code === 0, message: `${note}\n${body}${locsPart}` }
+    },
+
+    async dev_server(args) {
+      const action = String(args.action || 'list').toLowerCase()
+      if (action === 'start') {
+        const cmd = String(args.command || '').trim()
+        if (!cmd) return { ok: false, message: '缺少 command（长驻命令，如 npm run dev）' }
+        if (isDangerousCmd(cmd)) return { ok: false, message: '拒绝：命令在危险黑名单中' }
+        const cwd = String(args.cwd || '').trim() || workspaceDir || ''
+        if (cwd && !fs.existsSync(cwd)) return { ok: false, message: `工作目录不存在: ${cwd}` }
+        const id = 'ds_' + Date.now().toString(36)
+        const { spawn } = require('child_process')
+        const child = spawn('chcp 65001 >nul && ' + cmd, { shell: true, cwd: cwd || undefined, windowsHide: true })
+        const entry = { id, cmd, cwd, child, logs: [], exitCode: null, startedAt: Date.now() }
+        const pushLog = (buf) => {
+          const s = smartDecode(buf)
+          for (const l of s.split(/\r?\n/)) entry.logs.push(l)
+          if (entry.logs.length > 400) entry.logs.splice(0, entry.logs.length - 400)
+        }
+        child.stdout.on('data', pushLog)
+        child.stderr.on('data', pushLog)
+        child.on('exit', (c) => { entry.exitCode = c })
+        child.on('error', (e) => { entry.logs.push('[启动失败] ' + e.message) })
+        devServers.set(id, entry)
+        await new Promise((res) => setTimeout(res, 2500)) // 等启动日志（端口就绪/编译进度）
+        const tail = entry.logs.slice(-25).join('\n')
+        return {
+          ok: true,
+          message: `开发进程已启动 id=${id}（常驻，不受超时限制）\n命令：${cmd}\n目录：${cwd}\n—— 启动日志尾部 ——\n${tail || '（暂无输出，稍后 list 再看）'}\n看新日志：dev_server action=list id=${id}\n停止：dev_server action=stop id=${id}`
+        }
+      }
+      if (action === 'stop') {
+        const id = String(args.id || '')
+        const e = devServers.get(id)
+        if (!e) return { ok: false, message: `找不到开发进程 id=${id}（用 action=list 查看在跑的）` }
+        try { if (e.child.pid) require('child_process').exec(`taskkill /pid ${e.child.pid} /t /f`, { windowsHide: true }) } catch {}
+        devServers.delete(id)
+        return { ok: true, message: `已停止 ${e.cmd}（id=${id}）` }
+      }
+      // list（默认）
+      const id = String(args.id || '')
+      const list = id ? (devServers.has(id) ? [devServers.get(id)] : []) : [...devServers.values()]
+      if (!list.length) return { ok: true, message: '当前没有常驻开发进程。启动：dev_server action=start command="npm run dev"（长驻命令放这里，不受 run_command 超时限制）' }
+      const body = list.map((e) => `【id=${e.id}】${e.cmd}${e.exitCode !== null ? `（已退出 code=${e.exitCode}）` : '（运行中）'}\n${e.logs.slice(-30).join('\n') || '（暂无输出）'}`)
+      return { ok: true, message: body.join('\n\n————————\n\n').slice(0, 9000) }
+    },
+
+    async git(args) {
+      const action = String(args.action || 'status').toLowerCase()
+      const cwd = String(args.cwd || '').trim() || workspaceDir || ''
+      if (!cwd || !fs.existsSync(cwd)) return { ok: false, message: `项目目录不存在: ${cwd}（cwd 传项目根）` }
+      const { execFile } = require('child_process')
+      const run = (sub, gitArgs) => new Promise((resolve) => {
+        execFile('git', [sub, ...gitArgs], { cwd, windowsHide: true, maxBuffer: 8 * 1024 * 1024, encoding: 'buffer', timeout: 60000 },
+          (err, stdout, stderr) => resolve({ err, out: smartDecode(stdout), errStr: smartDecode(stderr) }))
+      })
+      const notRepo = (r) => r.err && /not a git repository/i.test(String(r.errStr || '') + String(r.err && r.err.message || ''))
+      const repoTip = '该项目不是 git 仓库——要版本管理先 run_command 执行 git init（在项目根）'
+      if (action === 'status') {
+        const r = await run('status', ['--porcelain', '-b'])
+        if (notRepo(r)) return { ok: false, message: repoTip }
+        if (r.err) return { ok: false, message: `git status 失败: ${r.errStr || r.err.message}` }
+        return { ok: true, message: `分支与改动：\n${r.out.trimEnd() || '（工作区干净）'}` }
+      }
+      if (action === 'diff') {
+        const p = String(args.path || '').trim()
+        const extra = p ? ['--', p] : []
+        const st = await run('diff', ['--stat', ...extra])
+        if (notRepo(st)) return { ok: false, message: repoTip }
+        if (st.err) return { ok: false, message: `git diff 失败: ${st.errStr || st.err.message}` }
+        const detail = await run('diff', ['-U3', ...extra])
+        const body = (detail.out || '').slice(0, 8000)
+        return { ok: true, message: `改动统计：\n${st.out.trimEnd() || '（无未提交改动）'}${body ? `\n—— diff（超长截断）——\n${body}` : ''}` }
+      }
+      if (action === 'commit') {
+        const msg = String(args.message || '').trim()
+        if (!msg) return { ok: false, message: '缺少 message（提交说明，说清为什么改）' }
+        const st = await run('status', ['--porcelain'])
+        if (notRepo(st)) return { ok: false, message: repoTip }
+        if (st.err) return { ok: false, message: `git status 失败: ${st.errStr || st.err.message}` }
+        if (!st.out.trim()) return { ok: true, message: '没有可提交的改动（工作区干净）' }
+        const add = await run('add', ['-A'])
+        if (add.err) return { ok: false, message: `git add 失败: ${add.errStr || add.err.message}` }
+        const cm = await run('commit', ['-m', msg])
+        if (cm.err) return { ok: false, message: `git commit 失败: ${cm.errStr || cm.err.message}（常见原因：没配 user.name/user.email——run_command 执行 git config --global user.name/email 设置）` }
+        const log = await run('log', ['--oneline', '-1'])
+        return { ok: true, message: `已提交：${(log.out || '').trim()}` }
+      }
+      if (action === 'log') {
+        const r = await run('log', ['--oneline', '-20'])
+        if (notRepo(r)) return { ok: false, message: repoTip }
+        if (r.err) return { ok: false, message: `git log 失败: ${r.errStr || r.err.message}` }
+        return { ok: true, message: (r.out || '').trimEnd() || '（还没有提交）' }
+      }
+      return { ok: false, message: `未知 action: ${action}（支持 status/diff/commit/log）` }
+    },
+
+    async edit_file(args) {
+      const p = String(args.path || '')
+      if (!p) return { ok: false, message: '缺少 path' }
+      if (typeof args.old_string !== 'string' || !args.old_string) return { ok: false, message: 'old_string 必须是非空字符串（要替换的原文，与文件内容完全一致含空白换行）' }
+      const newS = typeof args.new_string === 'string' ? args.new_string : String(args.new_string ?? '')
+      if (isProtectedLocal(p)) return { ok: false, message: '拒绝：C 盘（除桌面）为保护区' }
+      if (!fs.existsSync(p)) return { ok: false, message: `文件不存在: ${p}（新建文件用 write_file）` }
+      try {
+        const head = Buffer.alloc(4096)
+        const fd = fs.openSync(p, 'r')
+        const n = fs.readSync(fd, head, 0, head.length, 0)
+        fs.closeSync(fd)
+        if (head.slice(0, n).includes(0)) return { ok: false, message: '疑似二进制文件，拒绝编辑' }
+        const src = fs.readFileSync(p, 'utf8')
+        const oldS = args.old_string
+        const count = src.split(oldS).length - 1
+        if (count === 0) {
+          return { ok: false, message: 'old_string 在文件中找不到——必须与文件内容完全一致（含空白/换行/缩进）。先 read_file 拿精确原文再编辑；大文件分段读时注意拼合' }
+        }
+        if (count > 1 && !args.replaceAll) {
+          return { ok: false, message: `old_string 命中 ${count} 处——为防误改，请加长上下文让它唯一，或确认要全改时传 replaceAll: true` }
+        }
+        const snap = snapshots.backupLocal(p)
+        if (!snap.ok) return { ok: false, message: `已取消修改：原文件备份失败（${snap.reason}）` }
+        const out = count > 1 ? src.split(oldS).join(newS) : src.replace(oldS, newS)
+        fs.writeFileSync(p, out, 'utf8')
+        return {
+          ok: true,
+          message: `已精准替换 ${count} 处（${oldS.length} → ${newS.length} 字符）`,
+          undo: { type: 'restore_snap', snapId: snap.id }
+        }
+      } catch (err) {
+        return { ok: false, message: `编辑失败: ${err.message}` }
+      }
+    },
+
+    async search_file_content(args) {
+      const dir = String(args.dir || '').trim()
+      const q = String(args.query || '').trim()
+      if (!dir || !q) return { ok: false, message: '缺少 dir 或 query' }
+      if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return { ok: false, message: `目录不存在: ${dir}` }
+      let re
+      try {
+        re = args.regex ? new RegExp(q, 'i') : new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
+      } catch (e) {
+        return { ok: false, message: `正则无效: ${e.message}` }
+      }
+      const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'out', '__pycache__', '.venv', 'venv', '.idea', '.vscode', 'release_build_v2715'])
+      const TEXT_SKIP = /\.(png|jpe?g|gif|webp|bmp|ico|zip|7z|rar|gz|exe|dll|so|dylib|pdf|mp3|mp4|avi|mkv|woff2?|ttf|eot|otf|db|sqlite3?|bin|dat|wasm)$/i
+      const hits = []
+      let scanned = 0
+      const walk = (d, depth) => {
+        if (depth > 12 || hits.length >= 60 || scanned > 4000) return
+        let entries = []
+        try { entries = fs.readdirSync(d, { withFileTypes: true }) } catch { return }
+        for (const e of entries) {
+          if (hits.length >= 60 || scanned > 4000) return
+          const full = path.join(d, e.name)
+          if (e.isDirectory()) {
+            if (!SKIP_DIRS.has(e.name) && !e.name.startsWith('.')) walk(full, depth + 1)
+            continue
+          }
+          if (!e.isFile() || TEXT_SKIP.test(e.name)) continue
+          let stat
+          try { stat = fs.statSync(full) } catch { continue }
+          if (stat.size > 2 * 1024 * 1024) continue
+          scanned++
+          let content = ''
+          try { content = fs.readFileSync(full, 'utf8') } catch { continue }
+          if (content.includes('\0')) continue // 二进制内容跳过
+          const lines = content.split(/\r?\n/)
+          for (let i = 0; i < lines.length && hits.length < 60; i++) {
+            if (re.test(lines[i])) {
+              hits.push(`${full}:${i + 1}: ${lines[i].trim().slice(0, 200)}`)
+            }
+          }
+        }
+      }
+      walk(dir, 0)
+      if (!hits.length) return { ok: true, message: `未命中（扫描 ${scanned} 个文件）。换个关键词/正则试试，或确认目录对不对` }
+      const more = hits.length >= 60 ? `\n（命中过多已截断到 60 条——用更精确的关键词或更深的具体目录再搜）` : ''
+      return { ok: true, message: `命中 ${hits.length} 行（扫描 ${scanned} 个文件）：\n` + hits.join('\n') + more }
+    },
+
     async remember(args) {
       const fact = String(args.fact || '').trim().slice(0, 300)
       if (!fact) return { ok: false, message: 'fact 不能为空' }
@@ -3748,7 +4219,7 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
   }
 
   // 结构化数组参数白名单：这些参数本来就是数组语义（批量/表格行/样式组），不受"参数别传数组"护栏拦截
-  const STRUCTURAL_ARRAY_PARAMS = new Set(['src', 'headers', 'rows', 'styles', 'merges', 'sheets', 'paragraphs', 'replacements', 'cells', 'questions', 'paths'])
+  const STRUCTURAL_ARRAY_PARAMS = new Set(['src', 'headers', 'rows', 'styles', 'merges', 'sheets', 'paragraphs', 'replacements', 'cells', 'questions', 'paths', 'keys'])
 
   // ===== 工具输出溢出治理 =====
   // 单条结果超长时全文归档到工作台 .tool-outputs/，上下文只进"头尾预览+归档路径"，
@@ -3793,7 +4264,13 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       return { ok: false, message: `参数 ${badArr.join('、')} 不能传数组（只接受单个值）。要批量操作（如下载多张图）就发多个 ${name} 调用，一轮里可以同时发多个并行执行，每个调用各传各的参数` }
     }
     try {
-      return guardToolOutput(name, await fn(clean))
+      const result = guardToolOutput(name, await fn(clean))
+      // 改动文件成功 → 通知渲染层刷新工作台对应页签（仅本地；远程路径对不上工作台本机项）
+      if (result && result.ok && onFileChanged && FILE_CHANGE_TOOLS.has(name)) {
+        const targetLocal = !clean.target || clean.target === 'local'
+        if (targetLocal) for (const p of changedPathsOf(name, clean)) { try { onFileChanged(p) } catch {} }
+      }
+      return result
     } catch (err) {
       log(`工具 ${name} 执行异常: ${err.message}`)
       return guardToolOutput(name, { ok: false, message: `执行异常: ${err.message}` })
@@ -3866,6 +4343,43 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
     }
   }
 
+  // ===== 改动文件 → 工作台自动刷新（老大要求"每次改动完文件，工作台打开着就刷新一遍"）=====
+  // execute 成功后按工具名从参数提取被改路径回调 onFileChanged（渲染层命中工作台页签就重载）
+  const FILE_CHANGE_TOOLS = new Set([
+    'write_file', 'edit_file', 'delete_path', 'rename_path', 'move_path', 'copy_path',
+    'create_word', 'create_xlsx', 'create_pptx', 'modify_word', 'style_word',
+    'append_table_rows', 'format_word_table', 'add_word_table', 'edit_word_table'
+  ])
+  function changedPathsOf(name, args) {
+    const out = []
+    const push = (v) => {
+      if (typeof v === 'string' && v) out.push(v)
+      else if (Array.isArray(v)) for (const x of v) if (typeof x === 'string' && x) out.push(x)
+    }
+    try {
+      switch (name) {
+        case 'write_file': case 'edit_file': case 'delete_path': case 'create_word': case 'create_xlsx':
+        case 'create_pptx': case 'style_word': case 'modify_word': case 'append_table_rows':
+        case 'format_word_table': case 'add_word_table': case 'edit_word_table':
+          push(args.path); break
+        case 'rename_path': {
+          push(args.path) // 旧路径没了
+          if (args.path && args.new_name) out.push(path.join(path.dirname(String(args.path)), String(args.new_name)))
+          break
+        }
+        case 'move_path': push(args.src); break // 源没了也值得刷（页签变失效态）
+        case 'copy_path': {
+          const base = args.dest_dir ? String(args.dest_dir) : ''
+          const srcs = (Array.isArray(args.src) ? args.src : [args.src]).filter(Boolean)
+          for (const s of srcs) out.push(base ? path.join(base, path.basename(String(s))) : String(s))
+          break
+        }
+        default: break
+      }
+    } catch {}
+    return out
+  }
+
   // 生成给用户看的操作摘要
   function summarize(name, args = {}) {
     const t = args.target && args.target !== 'local' ? `[${args.target}] ` : ''
@@ -3883,6 +4397,23 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       case 'view_image': return `${t}识图：${args.paths ? `${Array.isArray(args.paths) ? args.paths.length : String(args.paths).split(/[;\n]/).filter(Boolean).length} 张图` : args.path}${args.question ? `（${args.question}）` : ''}`
       case 'remove_bg': return `${t}抠图去背景：${args.path}`
       case 'screenshot': return `${t}截图（${args.scope || 'webview'}）`
+      case 'browser_navigate': return `${t}AI 浏览器打开 ${args.url}`
+      case 'browser_snapshot': return `${t}读取页面元素清单`
+      case 'browser_click': return `${t}页面点击 ${args.ref}`
+      case 'browser_fill': return `${t}向 ${args.ref} 填写内容`
+      case 'browser_read': return `${t}读取页面内容`
+      case 'desktop_click': return `${t}点击屏幕(${args.x},${args.y}${args.double ? ' 双击' : ''})`
+      case 'desktop_type': return `${t}输入文本(${String(args.text || '').length}字)`
+      case 'desktop_key': return `${t}按键 ${(Array.isArray(args.keys) ? args.keys : []).join('+')}`
+      case 'desktop_scroll': return `${t}滚动(${args.x},${args.y},${args.amount})`
+      case 'desktop_window': return `${t}窗口${args.action || 'list'}${args.pid ? ' pid=' + args.pid : ''}`
+      case 'desktop_uia': return `${t}读控件名册${args.pid ? ' pid=' + args.pid : ''}${args.filter ? ' 过滤"' + args.filter + '"' : ''}`
+      case 'run_command': return `${t}执行命令 ${String(args.command || '').slice(0, 60)}`
+      case 'dev_server': return `${t}开发进程 ${args.action || 'list'}${args.command ? ' ' + String(args.command).slice(0, 40) : ''}${args.id ? ' id=' + args.id : ''}`
+      case 'git': return `${t}git ${args.action || 'status'}${args.message ? ' ' + String(args.message).slice(0, 30) : ''}`
+      case 'edit_file': return `${t}精准编辑 ${args.path}`
+      case 'search_file_content': return `${t}内容搜索 "${String(args.query || '').slice(0, 40)}"`
+      case 'style_word': return `${t}指令式改格式 ${args.path}（${Array.isArray(args.ops) ? args.ops.length : 1} 条）`
       case 'update_notes': return `${t}${args.mode === 'read' ? '读大记事本' : args.mode === 'replace' ? '重写大记事本' : '记大记事本'}`
       case 'generate_image': return args.image ? `AI 编辑图片：${String(args.prompt || '').slice(0, 40)}` : `AI 生图：${String(args.prompt || '').slice(0, 40)}`
       case 'generate_video': return `AI 生视频：${String(args.prompt || '').slice(0, 40)}`

@@ -305,6 +305,10 @@ try {
     aiOpenNotes: () => ipcRenderer.invoke('ai:openNotes'),
     // AI 打开的文件/网址进工作台事件（Work 模式开工作台页签；互联模式回退系统打开）
     onAiWorkbenchOpen: (callback) => ipcRenderer.on('ai:workbench-open', (_, data) => callback(data)),
+    // AI 改动了本地文件事件（写/改/删/复制/移动等成功后）→ 工作台打开着该文件就自动刷新
+    onAiFileChanged: (callback) => ipcRenderer.on('ai:file-changed', (_, data) => callback(data)),
+    // 回滚预览：列出将撤销的文件操作清单（Trae 式确认卡）
+    aiRollbackPreview: (msgIndex, sessionId) => ipcRenderer.invoke('ai:rollback-preview', { msgIndex, sessionId }),
     openExternalFallback: (payload) => ipcRenderer.invoke('sys:open-external', payload || {}),
     // 数据同步：导出/导入全量数据 zip + 重启生效
     aiExportData: (defaultName) => ipcRenderer.invoke('ai:export-data', { defaultName }),
@@ -324,6 +328,9 @@ try {
     webchatDone: (sessionId, requestId, text) => ipcRenderer.invoke('ai:webchat-done', { sessionId, requestId, text }),
     webchatError: (sessionId, requestId, error) => ipcRenderer.invoke('ai:webchat-error', { sessionId, requestId, error }),
     webchatWait: (sessionId, requestId, seconds) => ipcRenderer.invoke('ai:webchat-wait', { sessionId, requestId, seconds }),
+    // browser_* 网页控制桥：主进程请求渲染层工作台受控页签执行操作，结果回执（请求-响应模式）
+    onAiBrowserCtl: (callback) => ipcRenderer.on('ai:browser-ctl', (_, data) => callback(data)),
+    browserCtlResult: (reqId, result) => ipcRenderer.send('ai:browser-ctl-result', { reqId, result }),
     // 生成模式直连（聊天输入区"生图/生视频"上滑菜单）
     aiGenerateImage: (sessionId, prompt, size, images, batch, polish, steps) => ipcRenderer.invoke('ai:generate-image', { sessionId, prompt, size, images, batch, polish, steps }),
     aiGenerateVideo: (sessionId, prompt) => ipcRenderer.invoke('ai:generate-video', { sessionId, prompt }),
@@ -335,12 +342,24 @@ try {
     onPetEvent: (callback) => {
       ipcRenderer.on('pet:event', (_, data) => callback(data))
     },
+    onPetScale: (callback) => {
+      ipcRenderer.on('pet:scale', (_, data) => callback(data))
+    },
     petDragStart: (screenX, screenY) => ipcRenderer.send('pet:drag-start', { screenX, screenY }),
     petDragMove: (screenX, screenY) => ipcRenderer.send('pet:drag-move', { screenX, screenY }),
     petClick: () => ipcRenderer.send('pet:click'),
     petFileDrop: (paths) => ipcRenderer.send('pet:file-drop', { paths }),
     petGetEnabled: () => ipcRenderer.invoke('pet:get-enabled'),
     petSetEnabled: (on) => ipcRenderer.invoke('pet:set-enabled', { on }),
+
+    // 内置截图（capture.html 专用：收背景快照 / 提交成品 / 取消；主窗口收注入事件）
+    onCaptureBg: (callback) => ipcRenderer.on('capture:bg', (_, data) => callback(data)),
+    captureDone: (dataURL) => ipcRenderer.send('capture:done', { dataURL }),
+    captureCancel: () => ipcRenderer.send('capture:cancel'),
+    captureStart: () => ipcRenderer.send('capture:start'),
+    onCaptureInject: (callback) => ipcRenderer.on('capture:inject', (_, data) => callback(data)),
+    // 聊天框 Ctrl+V 粘贴图片：剪贴板有图则存文件返回路径（渲染层挂引用胶囊）
+    saveClipboardImage: () => ipcRenderer.invoke('chat:save-clipboard-image'),
 
     removeAllListeners: () => {
       ipcRenderer.removeAllListeners('tcp:log')

@@ -2523,6 +2523,242 @@ body.work-mode .workbench-panel {
   height: auto;
   border-right: 1px solid var(--border-light);
 }
+
+/* ============================================
+   CodeMirror 编辑器（v2.8.5 工作台手感升级）
+   行号 + 语法高亮 + 括号补全/匹配 + 活动行
+   主题固定深色（老大定调"代码区还是深色合适"）：黑码/白纸分区语义
+   ——文档预览永远是白纸，代码永远是深色 IDE，不随四主题漂移
+   色板 = Mocha（与 app 深色主题同源），浅色主题下也是这块黑屏
+   ============================================ */
+.wb-cm-host {
+  flex: 1;
+  height: 100%;
+  min-height: 0;
+  position: relative; /* 状态条锚点 */
+}
+.wb-md-wrap .wb-cm-host {
+  height: auto;
+  border-right: 1px solid #313244; /* 深色编辑区与白纸预览的分界 */
+}
+.wb-cm-host .CodeMirror {
+  height: 100%;
+  font-family: 'Cascadia Code', Consolas, 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  background: #1e1e2e;
+  color: #cdd6f4;
+}
+/* msmate 深色主题：固定色值 */
+.cm-s-msmate .CodeMirror-gutters {
+  background: #181825;
+  border-right: 1px solid #313244;
+}
+.cm-s-msmate .CodeMirror-linenumber {
+  color: #6c7086;
+  padding: 0 8px 0 12px;
+}
+.cm-s-msmate .CodeMirror-cursor { border-left: 2px solid #89b4fa; }
+.cm-s-msmate .CodeMirror-activeline-background { background: rgba(255, 255, 255, 0.045); }
+.cm-s-msmate .CodeMirror-matchingbracket {
+  color: #89b4fa !important;
+  background: rgba(137, 180, 250, 0.18);
+  border-bottom: 1px solid #89b4fa;
+}
+.cm-s-msmate .cm-keyword { color: #cba6f7; font-weight: 600; }
+.cm-s-msmate .cm-atom { color: #f5c2e7; }
+.cm-s-msmate .cm-number { color: #f9e2af; }
+.cm-s-msmate .cm-def { color: #74c7ec; }
+.cm-s-msmate .cm-variable { color: #cdd6f4; }
+.cm-s-msmate .cm-variable-2 { color: #9ccfd8; }
+.cm-s-msmate .cm-variable-3, .cm-s-msmate .cm-type { color: #a6e3a1; }
+.cm-s-msmate .cm-property { color: #cdd6f4; }
+.cm-s-msmate .cm-operator { color: #89dceb; }
+.cm-s-msmate .cm-comment { color: #9399b2; font-style: italic; }
+.cm-s-msmate .cm-string { color: #a6e3a1; }
+.cm-s-msmate .cm-string-2 { color: #94e2d5; }
+.cm-s-msmate .cm-meta { color: #fab387; }
+.cm-s-msmate .cm-qualifier { color: #f9e2af; }
+.cm-s-msmate .cm-builtin { color: #cba6f7; }
+.cm-s-msmate .cm-bracket { color: #a6adc8; }
+.cm-s-msmate .cm-tag { color: #89b4fa; }
+.cm-s-msmate .cm-attribute { color: #f9e2af; }
+.cm-s-msmate .cm-hr { color: #45475a; }
+.cm-s-msmate .cm-link { color: #89b4fa; text-decoration: underline; }
+.cm-s-msmate .cm-error { color: #f38ba8; }
+.cm-s-msmate .CodeMirror-matchingtag { background: rgba(137, 180, 250, 0.14); }
+/* 选区负片（老大定调"用负片模式"）：实心亮紫底 + 深色字，对比度拉满绝不含糊
+   （半透明方案在深底上叠不出可读性，实测实锤；VS Code/Trae 同为实心反色） */
+.cm-s-msmate .CodeMirror-line::selection,
+.cm-s-msmate .CodeMirror-line > span::selection,
+.cm-s-msmate .CodeMirror-line > span > span::selection {
+  background: #89b4fa;
+  color: #11111b;
+}
+/* 失焦层（CM 画的选择底，无字色控制）：半透明紫示淡 */
+.cm-s-msmate .CodeMirror-selected { background: rgba(137, 180, 250, 0.3); }
+.cm-s-msmate .CodeMirror-focused .CodeMirror-selected { background: transparent; }
+/* 缩进参考线（Trae 同款语义）：按行按实际缩进档画（renderLine 动态注入），
+   顶格行不画——线是给层级指路的，无层级无线（老大实锤"缩进了才会出现"） */
+/* 类型/注解复染层（overlay，学 Trae 的语义染色思路：大写开头=类，@ 开头=注解） */
+.cm-s-msmate .cm-type-x { color: #94e2d5; }
+.cm-s-msmate .cm-anno-x { color: #fab387; font-style: italic; }
+/* 字符串/注释里误命中大写词时恢复原色（双类 specificity 压过单类） */
+.cm-s-msmate .cm-string.cm-type-x, .cm-s-msmate .cm-comment.cm-type-x { color: #a6e3a1; }
+.cm-s-msmate .cm-string-2.cm-type-x { color: #94e2d5; }
+.cm-s-msmate .cm-comment.cm-anno-x { color: #9399b2; }
+/* 折叠槽（foldgutter）：▾/▸ 由 addon 注入，这里管深色观感 */
+.cm-s-msmate .CodeMirror-foldgutter { width: 14px; }
+.cm-s-msmate .CodeMirror-foldgutter-open,
+.cm-s-msmate .CodeMirror-foldgutter-folded { color: #6c7086; cursor: pointer; }
+.cm-s-msmate .CodeMirror-foldgutter-open:hover,
+.cm-s-msmate .CodeMirror-foldgutter-folded:hover { color: #89b4fa; }
+.cm-s-msmate .CodeMirror-foldmarker { color: #f9e2af; text-shadow: none; font-family: inherit; }
+/* 搜索替换面板（dialog addon）：深色化 */
+.CodeMirror-dialog {
+  background: #181825;
+  color: #cdd6f4;
+  border-bottom: 1px solid #313244;
+  font-size: 12px;
+  padding: 5px 10px;
+  position: relative;
+}
+.CodeMirror-dialog input {
+  background: #11111b;
+  color: #cdd6f4;
+  border: 1px solid #45475a;
+  border-radius: 4px;
+  padding: 2px 8px;
+  outline: none;
+  font: inherit;
+}
+.CodeMirror-dialog input:focus { border-color: #89b4fa; }
+.CodeMirror-dialog .CodeMirror-search-hint { color: #6c7086; }
+.CodeMirror-dialog .CodeMirror-search-count { color: #a6adc8; }
+/* 单词补全浮层（show-hint addon）：深色化 */
+.CodeMirror-hints {
+  background: #181825;
+  border: 1px solid #313244;
+  border-radius: 6px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 12px;
+  z-index: 900;
+  padding: 3px;
+}
+.CodeMirror-hint {
+  color: #cdd6f4;
+  border-radius: 4px;
+  padding: 2px 10px;
+}
+li.CodeMirror-hint-active { background: rgba(137, 180, 250, 0.22); color: #ffffff; }
+/* 状态条：右下角深色底（Trae 同款信息密度） */
+.wb-cm-status {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  padding: 2px 12px;
+  font-size: 11px;
+  font-family: 'Cascadia Code', Consolas, monospace;
+  background: #181825;
+  border-top: 1px solid #313244;
+  border-left: 1px solid #313244;
+  border-radius: 6px 0 0 0;
+  color: #a6adc8;
+  pointer-events: none;
+}
+
+/* ============================================
+   回滚确认卡（Trae 式，内嵌聊天流）：看清将撤销哪些文件操作，再拍板
+   ============================================ */
+.rb-card {
+  width: min(560px, 100%);
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  padding: 14px 16px;
+  margin: 8px 0;
+  animation: rbPop 0.16s ease;
+}
+@keyframes rbPop { from { transform: translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
+.rb-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+.rb-title svg { color: var(--accent-yellow); flex: none; }
+.rb-list {
+  overflow: auto;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  margin-bottom: 10px;
+}
+.rb-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-light);
+}
+.rb-item:last-child { border-bottom: none; }
+.rb-icon { display: flex; color: var(--text-dim); flex: none; }
+.rb-item.danger .rb-icon { color: var(--accent-red); }
+.rb-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-family: 'Cascadia Code', Consolas, monospace;
+}
+.rb-action { flex: none; font-size: 11px; color: var(--text-muted); }
+.rb-item.danger .rb-action { color: var(--accent-red); }
+.rb-empty {
+  padding: 12px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+  border: 1px dashed var(--border-light);
+  border-radius: var(--radius);
+  margin-bottom: 10px;
+}
+.rb-tip { font-size: 11.5px; color: var(--text-muted); line-height: 1.5; margin-bottom: 10px; }
+.rb-btns { display: flex; justify-content: flex-end; gap: 8px; }
+/* 报错行号定位（run_command 输出里的 path:line:col 可点击跳工作台对应行） */
+.dev-cmdout .err-loc {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.dev-cmdout .err-loc:hover { color: var(--accent-hover); background: var(--accent-weak); border-radius: 3px; }
+/* dev_server 日志里的本机端口：点击 → AI 浏览器页签预览 */
+.dev-cmdout .dev-url {
+  color: var(--accent-green);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.dev-cmdout .dev-url:hover { color: var(--accent-green-hover); background: var(--accent-weak); border-radius: 3px; }
+/* 报错行红标：跳转到报错行后，行背景淡红 + 行号红（一眼锁死问题行） */
+.wb-cm-host .CodeMirror-linebackground.wb-err-line { background: rgba(243, 139, 168, 0.12) !important; }
+.wb-cm-host .CodeMirror-gutter-wrapper.wb-err-gutter .CodeMirror-linenumber {
+  color: #f38ba8;
+  font-weight: 700;
+  background: rgba(243, 139, 168, 0.14);
+  border-radius: 3px;
+}
 .wb-md-preview {
   flex: 1;
   overflow: auto;
@@ -3379,47 +3615,72 @@ svg.ic-svg {
   50% { box-shadow: 0 0 0 5px rgba(var(--accent-red-rgb), 0.08); }
 }
 
-/* 审批模式滑块开关：左=手动批准(黄) 右=自动信任(绿) */
+/* 控制模式胶囊（三档：手动批准=黄 / 自动信任=绿 / 无限制=红）+ 三选菜单 */
 .approval-switch {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  border: none;
-  background: transparent;
-  padding: 2px 4px;
+  gap: 5px;
+  border: 1px solid var(--border-light);
+  background: var(--bg-active);
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
   cursor: pointer;
   font-size: 10.5px;
   font-weight: 600;
   opacity: 0.92;
 }
 .approval-switch:hover { opacity: 1; }
-.approval-switch .as-label { color: var(--text-dim); }
-.approval-switch.manual .as-label { color: var(--accent-yellow); }
-.approval-switch.auto .as-label { color: var(--accent-green); }
-.approval-switch .as-track {
-  width: 30px;
-  height: 16px;
-  border-radius: var(--radius-pill);
-  background: var(--bg-active);
-  border: 1px solid var(--border-light);
-  position: relative;
-  transition: background 0.18s, border-color 0.18s;
-  flex-shrink: 0;
-}
-.approval-switch .as-knob {
-  position: absolute;
-  top: 1px;
-  left: 1px;
-  width: 12px;
-  height: 12px;
+.approval-switch .as-dot {
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--text-dim);
-  transition: transform 0.18s, background 0.18s;
+  flex-shrink: 0;
 }
-.approval-switch.manual .as-track { border-color: var(--accent-yellow); }
-.approval-switch.manual .as-knob { background: var(--accent-yellow); }
-.approval-switch.auto .as-track { background: var(--accent-green); border-color: var(--accent-green); }
-.approval-switch.auto .as-knob { transform: translateX(14px); background: var(--on-accent); }
+.approval-switch .as-label { color: var(--text-dim); }
+.approval-switch.manual .as-dot { background: var(--accent-yellow); }
+.approval-switch.manual .as-label { color: var(--accent-yellow); }
+.approval-switch.auto .as-dot { background: var(--accent-green); }
+.approval-switch.auto .as-label { color: var(--accent-green); }
+.approval-switch.unlimited .as-dot { background: var(--accent-red); animation: approvalUnlimitedPulse 1.6s ease-in-out infinite; }
+.approval-switch.unlimited .as-label { color: var(--accent-red); }
+@keyframes approvalUnlimitedPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(var(--accent-red-rgb), 0.4); }
+  50% { box-shadow: 0 0 0 4px rgba(var(--accent-red-rgb), 0); }
+}
+/* 控制模式三选菜单（fixed 贴胶囊下方，点外部关闭） */
+.approval-menu {
+  position: fixed;
+  z-index: 900;
+  min-width: 236px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.16);
+  padding: 5px;
+}
+.approval-menu .am-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 8px 9px;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+}
+.approval-menu .am-item:hover { background: var(--bg-active); }
+.approval-menu .am-item .am-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 4px; flex-shrink: 0; }
+.approval-menu .am-item .am-name { font-size: 12px; font-weight: 600; color: var(--text); display: block; }
+.approval-menu .am-item .am-desc { font-size: 10.5px; color: var(--text-dim); margin-top: 2px; display: block; }
+.approval-menu .am-item.manual .am-dot { background: var(--accent-yellow); }
+.approval-menu .am-item.auto .am-dot { background: var(--accent-green); }
+.approval-menu .am-item.unlimited .am-dot { background: var(--accent-red); }
+.approval-menu .am-item.unlimited .am-name { color: var(--accent-red); }
+.approval-menu .am-item.unlimited.armed { background: rgba(var(--accent-red-rgb), 0.12); }
+.approval-menu .am-item.unlimited.armed .am-name { color: var(--accent-red); }
 
 /* ===== 多会话长条（第二行整行铺满，下拉内含全部对话管理）===== */
 .session-row .session-bar {
@@ -3941,6 +4202,18 @@ svg.ic-svg {
   word-break: break-all;
   user-select: text;
 }
+/* 开发手感：edit_file 红绿 diff + run_command 终端风输出 */
+.tool-card-result:has(.dev-diff), .tool-card-result:has(.dev-cmdout) { max-height: 340px; }
+.dev-diff { margin-top: 4px; border: 1px solid var(--border-light); border-radius: 6px; overflow: hidden; font-family: Consolas, monospace; font-size: 11px; }
+.dev-diff-line { padding: 2px 8px; white-space: pre-wrap; word-break: break-all; }
+.dev-diff-line.del { background: rgba(240, 85, 85, 0.12); color: #e08585; }
+.dev-diff-line.add { background: rgba(76, 175, 80, 0.12); color: #7dc47f; }
+.dev-diff-more { padding: 2px 8px; color: var(--text-muted); font-size: 10px; }
+.dev-cmdout { margin-top: 4px; }
+.dev-cmdout-code { font-family: Consolas, monospace; font-size: 11px; padding: 2px 6px; border-radius: 4px; display: inline-block; }
+.dev-cmdout-code.ok { background: rgba(76, 175, 80, 0.14); color: #7dc47f; }
+.dev-cmdout-code.bad { background: rgba(240, 85, 85, 0.14); color: #e08585; }
+.dev-cmdout-pre { margin: 4px 0 0; font-family: Consolas, monospace; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; background: var(--bg-active, #f5f5f7); padding: 8px; border-radius: 6px; max-height: 260px; overflow-y: auto; }
 .tool-card-actions {
   margin-top: 7px;
   display: flex;

@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>控制遮罩</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
+  #veil { position: absolute; inset: 0; background: rgba(10, 8, 24, 0.28); }
+  #tip { position: absolute; left: 50%; bottom: 48px; transform: translateX(-50%);
+         display: flex; align-items: center; gap: 12px; padding: 12px 22px;
+         background: rgba(20, 16, 40, 0.88); border: 1px solid rgba(139, 110, 230, 0.55);
+         border-radius: 999px; box-shadow: 0 8px 32px rgba(0,0,0,0.45); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #a78bfa; animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(167,139,250,0.55); } 50% { box-shadow: 0 0 0 8px rgba(167,139,250,0); } }
+  .txt { color: #ece9ff; font-size: 15px; font-weight: 600; letter-spacing: 0.5px;
+         font-family: "Microsoft YaHei", sans-serif; white-space: nowrap; }
+  .key { color: #c9c2ff; font-size: 12.5px; font-family: "Microsoft YaHei", sans-serif; white-space: nowrap; }
+</style>
+</head>
+<body>
+<div id="veil"></div>
+<div id="tip">
+  <span class="dot"></span>
+  <span class="txt">Mate 正在控制电脑</span>
+  <span class="key">按 Ctrl+Shift+X 紧急停止</span>
+</div>
+</body>
+</html>

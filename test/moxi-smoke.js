@@ -84,7 +84,11 @@ async function main() {
   ok('失败两级：单败乱线/连败无语', /FRAME\.stressed/.test(petHtml) && /FRAME\.speechless/.test(petHtml))
   ok('气泡短句（寡言人设）', /'收到。'/.test(petHtml) && /'完事了。'/.test(petHtml))
   const preload = read('preload.js')
-  ok('preload 桌宠 API 七件套', ['onPetEvent', 'petDragStart', 'petDragMove', 'petClick', 'petFileDrop', 'petGetEnabled', 'petSetEnabled'].every((k) => preload.includes(`${k}:`)))
+  ok('preload 桌宠 API 八件套', ['onPetEvent', 'onPetScale', 'petDragStart', 'petDragMove', 'petClick', 'petFileDrop', 'petGetEnabled', 'petSetEnabled'].every((k) => preload.includes(`${k}:`)))
+  // 桌宠大小可调：四档 scale + body.zoom 缩放（精灵图 background-size 写死定律不动）
+  const petjs = read('pet.js')
+  ok('桌宠四档尺寸 + 持久化', /PET_SCALES/.test(petjs) && /setPetScale/.test(petjs) && /petScale\('petScale'\)|getSetting\('petScale'\)/.test(petjs))
+  ok('缩放走 body.zoom（禁动 background-size）', /document\.body\.style\.zoom/.test(petHtml) && /pet:scale/.test(petjs))
   ok('拖文件给莫西（drop 监听 + IPC + 注入 WorkAgent）', /addEventListener\('drop'/.test(petHtml) && preload.includes('petFileDrop:') && /pet:file-drop/.test(mainJs) && /sendUserMessage/.test(mainJs))
   ok('开机时段问候', /夜猫子，注意身体。/.test(petHtml) && /new Date\(\)\.getHours\(\)/.test(petHtml))
   ok('桌宠右键菜单', /context-menu/.test(read('pet.js')) && /显示主界面[\s\S]*收起莫西[\s\S]*关闭桌宠/.test(read('pet.js')))

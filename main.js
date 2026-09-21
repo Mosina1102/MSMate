@@ -6,9 +6,17 @@ const fs = require('fs')
 const crypto = require('crypto')
 const { spawn } = require('child_process')
 const { createPetManager } = require('./pet')
+const { createCaptureManager } = require('./capture')
+const { DesktopControl } = require('./ai/desktop-control')
 
 // ===== 桌宠"莫西"管理器（窗口/托盘/事件广播见 pet.js；情绪状态机在 src/pet.html）=====
 let petMgr = null
+
+// ===== 内置截图（capture.js：快捷键 Ctrl+Shift+A / 全屏选区标注 / 存图+剪贴板+注入聊天）=====
+let captureMgr = null
+
+// ===== 桌面控制引擎（desktop_* 工具执行层）：常驻 PowerShell + SendInput =====
+let desktopCtl = null
 
 // Windows 通知必需：设置 AppUserModelId，否则系统通知不弹出
 app.setAppUserModelId('com.ms-interconnect.app')
@@ -145,9 +153,11 @@ function runningAgentCount() {
 
 function createWindow() {
   const appPath = app.getAppPath()
-  const preloadPath = isDev
-    ? path.join(__dirname, 'preload.js')
-    : path.join(process.resourcesPath, 'app.asar.unpacked', 'preload.js')
+  // preload 路径按"是否真打包"判定（app.isPackaged），不能用 --dev 参数——
+  // npx electron . 开发启动 isPackaged=false，resourcesPath 下没有 asar.unpacked（老大实锤"应用加载失败"）
+  const preloadPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'preload.js')
+    : path.join(__dirname, 'preload.js')
   const htmlPath = path.join(appPath, 'src', 'index.html')
   const iconPath = path.join(appPath, 'assets', 'icon.png')
 
@@ -391,6 +401,73 @@ function initServices() {
       try { fs.mkdirSync(workspaceDir, { recursive: true }) } catch {}
       // 工具手册释放：asar 内 ai/manuals/*.md → 工作区 ai_manuals/（每次启动覆盖，升级即更新）
       try { releaseManualsTo(workspaceDir) } catch {}
+      // ===== 桌面控制引擎：惰性单例（首个 desktop_* 工具调用才拉起 PowerShell）=====
+      desktopCtl = new DesktopControl((m) => log(m))
+
+      // ===== 内置截图：全局快捷键 + Work 按钮入口；成品存工作区「截图」并自动注入聊天引用 =====
+      // onStop = 紧急停止（Ctrl+Shift+X）时中止所有运行中的 agent
+      captureMgr = createCaptureManager({
+        getMainWindow: () => mainWindow,
+        workspaceDir,
+        log,
+        isDev,
+        appendChatRef: (p) => {
+          if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('capture:inject', { path: p })
+        },
+        onStop: () => {
+          try {
+            if (typeof workAgents !== 'undefined' && workAgents && workAgents.size) {
+              for (const a of workAgents.values()) { if (a.running) { try { a.abort() } catch {} } }
+            }
+            if (workAgent && workAgent.running) { try { workAgent.abort() } catch {} }
+          } catch {}
+        }
+      })
+      captureMgr.init()
+
+      // ===== 聊天框粘贴图片：剪贴板有图 → 存工作区「截图/粘贴」→ 返回路径给渲染层挂引用胶囊 =====
+      ipcMain.handle('chat:save-clipboard-image', () => {
+        try {
+          const img = clipboard.readImage()
+          if (!img || img.isEmpty()) return { ok: false, error: '剪贴板里没有图片' }
+          const dir = path.join(workspaceDir, 'MSMate生成', '截图')
+          fs.mkdirSync(dir, { recursive: true })
+          const d = new Date()
+          const p2 = (n) => String(n).padStart(2, '0')
+          const p = path.join(dir, `粘贴-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}.png`)
+          fs.writeFileSync(p, img.toPNG())
+          return { ok: true, path: p }
+        } catch (e) {
+          return { ok: false, error: e.message }
+        }
+      })
+
+      // browser_* 网页控制桥：主进程请求 → 渲染层工作台受控页签执行 → 结果回执
+      // 请求-响应模式（区别于 webchat-ask 的流式）：reqId 配对 resolve，超时兜底
+      const browserCtlPending = new Map()
+      ipcMain.on('ai:browser-ctl-result', (_e, data) => {
+        const pend = browserCtlPending.get(data && data.reqId)
+        if (pend) {
+          clearTimeout(pend.timer)
+          browserCtlPending.delete(data.reqId)
+          pend.resolve(data.result || { ok: false, error: '空回执' })
+        }
+      })
+      const browserCtl = (payload) => new Promise((resolve) => {
+        const reqId = 'bc-' + Date.now().toString(36) + '-' + Math.floor(Math.random() * 1e4)
+        const timer = setTimeout(() => {
+          browserCtlPending.delete(reqId)
+          resolve({ ok: false, error: `网页控制超时（${payload.op}，页面可能未加载完）` })
+        }, payload.timeout || 20000)
+        browserCtlPending.set(reqId, { resolve, timer })
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('ai:browser-ctl', { reqId, ...payload })
+        else {
+          clearTimeout(timer)
+          browserCtlPending.delete(reqId)
+          resolve({ ok: false, error: '工作台窗口不可用' })
+        }
+      })
+
       const tools = createTools({
         tcpAgent,
         snapshots,
@@ -400,6 +477,9 @@ function initServices() {
         getSetting,
         setSetting,
         log,
+        desktop: desktopCtl,
+        browserCtl,
+        controlOverlay: captureMgr.controlOverlay,
         // 下载进度 → 聊天框顶部进度条（渲染层）
         onDownloadProgress: (info) => {
           if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('ai:download-progress', info)
@@ -407,6 +487,10 @@ function initServices() {
         // AI 打开的文件/网址 → 渲染层工作台页签（Work 模式在工作台预览；互联模式渲染层自行回退系统打开）
         onWorkbenchOpen: (payload) => {
           if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('ai:workbench-open', payload)
+        },
+        // AI 改动了本地文件 → 工作台打开着该文件的页签自动刷新（老大要求"改完文件工作台刷新一遍"）
+        onFileChanged: (p) => {
+          if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('ai:file-changed', p)
         }
       })
       aiTools = tools
@@ -423,6 +507,10 @@ function initServices() {
           send: (event) => {
             if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('ai:event', { ...event, sessionId })
             if (petMgr) petMgr.petBroadcast(event) // 桌宠情绪状态机同源吃事件
+          },
+          // 回滚落盘后 → 工作台页签自动刷新（真实回退的最后一环，界面不残留旧内容）
+          onFileChanged: (p) => {
+            if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('ai:file-changed', p)
           },
           log,
           hostName: getSetting('deviceName') || os.hostname(),
@@ -1773,7 +1861,15 @@ ipcMain.handle('fs:read-text-file', async (event, { filePath, maxBytes = 1048576
     const stat = fs.statSync(filePath)
     if (!stat.isFile()) return { error: '不是文件' }
     if (stat.size > maxBytes) return { error: `文件超过 ${Math.round(maxBytes / 1048576)}MB，请用系统打开`, tooBig: true, size: stat.size }
-    const content = fs.readFileSync(filePath, 'utf8')
+    const raw = fs.readFileSync(filePath)
+    let content = raw.toString('utf8')
+    // GBK 兜底（用户实锤"看不见注释"：GBK 中文注释被 utf8 硬解成 U+FFFD 乱码方块）
+    if (content.includes('\uFFFD')) {
+      try {
+        const gbk = new TextDecoder('gbk').decode(raw)
+        if (!gbk.includes('\uFFFD')) content = gbk
+      } catch {}
+    }
     return { content, size: stat.size, mtimeMs: stat.mtimeMs }
   } catch (err) {
     return { error: err.message }
@@ -3244,6 +3340,12 @@ function registerAIIPC() {
     if (!agent) return { success: false, error: 'AI 功能未加载' }
     return agent.rollbackTo(msgIndex)
   })
+  // 回滚预览：这条消息之后会撤销哪些文件操作（Trae 式确认卡清单）
+  ipcMain.handle('ai:rollback-preview', async (event, { msgIndex, sessionId }) => {
+    const agent = getWorkAgent(sessionId)
+    if (!agent) return { success: false, error: 'AI 功能未加载', count: 0, items: [] }
+    try { return { success: true, ...agent.rollbackPreview(msgIndex) } } catch (e) { return { success: false, error: e.message, count: 0, items: [] } }
+  })
 }
 
 function listLocalDirectory(targetPath) {
@@ -3399,6 +3501,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   app.isQuitting = true
   stopPTTHotkey()
+  if (captureMgr) { try { captureMgr.destroy() } catch {} } // 注销截图全局快捷键
   embedManager.quit() // 内嵌文档窗口帮手：退出前把窗口还回桌面，文档不丢
   if (netRelay) { try { netRelay.stop() } catch { } }
   if (tcpAgent) tcpAgent.stop()

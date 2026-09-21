@@ -531,6 +531,10 @@ async function openPreview(item, opts) {
   }
 
   const url = fileToUrl(item.path)
+  if (kind === 'html') {
+    mountWbHtmlDual(item) // html 双模式：渲染预览（默认）⇄ 编辑源码，改完刷新即看效果（Trae 式）
+    return
+  }
   if (kind === 'text') {
     const ed = wbEditors[key]
     if (ed) {
@@ -560,6 +564,93 @@ async function openPreview(item, opts) {
     return
   }
   body.innerHTML = `<div class="wb-view-content" style="height:100%">${wbMediaHTML(kind, url)}</div>`
+}
+
+// html 双模式（Trae 式，老大要求）：渲染预览（默认）⇄ 编辑源码，改完切「预览」即看效果。
+// 预览引擎用 webview（iframe 跨 file:// 历史受限）：支持后退/前进/刷新/地址栏导航，对标正规浏览器
+// 编辑态自绘 textarea 复用 wbEditors 保存链路（wbSaveEdit：1.5s 防抖自动保存 + Ctrl+S + mtime 校验）
+const wbHtmlModes = {} // key -> 'preview' | 'edit'（切页签回来保持模式）
+async function mountWbHtmlDual(item) {
+  const key = wbKey(item)
+  const body = $('wbViewBody')
+  const mode = wbHtmlModes[key] || 'preview'
+  body.innerHTML = `
+    <div class="wb-view-content" style="height:100%;display:flex;flex-direction:column;">
+      <div style="display:flex;gap:6px;align-items:center;padding:6px 10px;border-bottom:1px solid var(--border-light,#e3e5eb);background:var(--bg-panel,#fff);flex-wrap:wrap;">
+        <button type="button" id="whm-back" class="tbtn" title="后退" style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border:none;background:transparent;border-radius:6px;cursor:pointer;color:var(--text,#333);">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        </button>
+        <button type="button" id="whm-fwd" class="tbtn" title="前进" style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border:none;background:transparent;border-radius:6px;cursor:pointer;color:var(--text,#333);">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </button>
+        <button type="button" id="whm-reload" class="tbtn" title="刷新" style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border:none;background:transparent;border-radius:6px;cursor:pointer;color:var(--text,#333);">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 11-2.64-6.36M21 3v6h-6"/></svg>
+        </button>
+        <input type="text" id="whm-url" placeholder="输入网址或本地路径回车打开"
+               style="flex:1;min-width:160px;padding:5px 10px;border:1px solid var(--border-light,#e3e5eb);border-radius:8px;font-size:12px;outline:none;background:var(--bg-active,#f7f8fa);color:var(--text,#222);">
+        <button type="button" id="whm-preview" class="btn btn-xs ${mode === 'preview' ? 'btn-primary' : ''}">预览</button>
+        <button type="button" id="whm-edit" class="btn btn-xs ${mode === 'edit' ? 'btn-primary' : ''}">编辑源码</button>
+        <span style="font-size:11px;color:var(--text-dim,#999);">改完源码切「预览」即看效果（自动保存）</span>
+      </div>
+      <div id="whm-body" style="flex:1;min-height:0;position:relative;"></div>
+    </div>`
+  const setTab = (which) => {
+    wbHtmlModes[key] = which
+    const pv = body.querySelector('#whm-preview'), ed = body.querySelector('#whm-edit')
+    if (pv) pv.classList.toggle('btn-primary', which === 'preview')
+    if (ed) ed.classList.toggle('btn-primary', which === 'edit')
+  }
+  const curWv = () => body.querySelector('#whm-body webview')
+  const syncUrl = () => {
+    const wv = curWv(), inp = body.querySelector('#whm-url')
+    try { if (wv && inp) inp.value = wv.getURL() } catch {}
+  }
+  const showPreview = (navUrl) => {
+    setTab('preview')
+    const c = body.querySelector('#whm-body')
+    if (!c) return
+    // webview 预览：历史导航（后退/前进/刷新）+ 地址栏回车导航，对标正规浏览器
+    c.innerHTML = `<webview src="${navUrl || fileToUrl(item.path) + '?t=' + Date.now()}" style="width:100%;height:100%;border:none;background:#fff;" webpreferences="backgroundThrottling=false"></webview>`
+    const wv = c.querySelector('webview')
+    wv.addEventListener('did-navigate', syncUrl)
+    wv.addEventListener('did-navigate-in-page', syncUrl)
+  }
+  const showEdit = async () => {
+    setTab('edit')
+    const c = body.querySelector('#whm-body')
+    if (!c) return
+    c.innerHTML = `<div class="empty-state" style="padding:20px"><div>正在读取…</div></div>`
+    const r = await _api.readTextFile(item.path).catch(() => null)
+    if (wbRenderedKey !== wbKey(item)) return
+    if (!r || r.content === undefined) {
+      c.innerHTML = `<div class="pv-fallback"><div>${escapeHtml((r && r.error) || '读取失败')}</div></div>`
+      return
+    }
+    if (!wbEditors[key]) wbEditors[key] = { saved: r.content, content: r.content, dirty: false, timer: null, mtimeMs: r.mtimeMs }
+    const ed = wbEditors[key]
+    c.innerHTML = ''
+    const cmHost = document.createElement('div')
+    cmHost.className = 'wb-cm-host'
+    cmHost.style.cssText = 'position:absolute;inset:0;' // #whm-body 是 relative，铺满即用
+    c.appendChild(cmHost)
+    wbCmMount(cmHost, item, key, ed)
+  }
+  // 导航控件：webview 存在时才生效（编辑态下点了不炸）
+  body.querySelector('#whm-back').addEventListener('click', () => { const w = curWv(); if (w && w.canGoBack()) w.goBack() })
+  body.querySelector('#whm-fwd').addEventListener('click', () => { const w = curWv(); if (w && w.canGoForward()) w.goForward() })
+  body.querySelector('#whm-reload').addEventListener('click', () => { const w = curWv(); if (w) { try { w.reload() } catch { showPreview() } } })
+  body.querySelector('#whm-url').addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return
+    let u = body.querySelector('#whm-url').value.trim()
+    if (!u) return
+    if (/^[a-zA-Z]:[\\/]/.test(u)) u = 'file:///' + u.replace(/\\/g, '/')
+    if (!/^(https?:\/\/|file:\/\/)/i.test(u)) u = 'https://' + u
+    const w = curWv()
+    if (w) { try { w.loadURL(u) } catch {} } else showPreview(u)
+  })
+  body.querySelector('#whm-preview').addEventListener('click', () => showPreview())
+  body.querySelector('#whm-edit').addEventListener('click', showEdit)
+  if (mode === 'edit') await showEdit(); else showPreview()
 }
 
 // 图片查看翻页（v2.4.73，老大要求"方便用户"）：同目录图片按名称排序，左右箭头/键盘 ←→ 切换，
@@ -1313,6 +1404,150 @@ function attachWbZoom(img) {
   img.addEventListener('dblclick', () => { scale = 1; tx = 0; ty = 0; apply() })
 }
 
+// === CodeMirror 编辑器（v2.8.5 手感升级，对标 Trae：行号+语法高亮+括号补全+活动行） ===
+// 扩展名 → CM mode；未识别的回落 null（纯文本），不炸
+function cmModeOf(name) {
+  const ext = String(name || '').split('.').pop().toLowerCase()
+  const map = {
+    js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'text/jsx',
+    ts: 'text/typescript', tsx: 'text/typescript',
+    json: { name: 'javascript', json: true },
+    css: 'css', scss: 'text/x-scss', less: 'text/x-less',
+    html: 'htmlmixed', htm: 'htmlmixed', vue: 'htmlmixed', xml: 'xml', svg: 'xml',
+    java: 'text/x-java', c: 'text/x-csrc', h: 'text/x-csrc',
+    cpp: 'text/x-c++src', cc: 'text/x-c++src', hpp: 'text/x-c++src', cs: 'text/x-csharp',
+    py: 'python', md: 'markdown', markdown: 'markdown',
+    sql: 'sql', sh: 'shell', bat: 'shell', ps1: 'shell'
+  }
+  return map[ext] || null
+}
+// 类型/注解复染层（学 Trae 的语义染色思路）：大写开头标识符=类（Java/JS 命名约定）、@开头=注解。
+// 字符串/注释里误命中由 CSS 双类规则恢复原色
+const cmTypeOverlay = {
+  token(stream) {
+    if (stream.match(/@[A-Za-z_$][\w$]*/)) return 'anno-x'
+    if (stream.match(/[A-Z][A-Za-z0-9_$]*/)) return 'type-x'
+    if (stream.match(/^[a-z_$][\w$]*|^\s+|^\d[\w.]*|^[^\w\s@A-Z]+/)) return null // 整段放过省正则
+    stream.next()
+    return null
+  }
+}
+// 语言显示名（状态条用）
+function cmLangLabel(name) {
+  const ext = String(name || '').split('.').pop().toLowerCase()
+  const map = { js: 'JavaScript', mjs: 'JavaScript', cjs: 'JavaScript', jsx: 'JSX', ts: 'TypeScript', tsx: 'TypeScript', json: 'JSON', css: 'CSS', scss: 'SCSS', less: 'Less', html: 'HTML', htm: 'HTML', vue: 'Vue', xml: 'XML', svg: 'SVG', java: 'Java', c: 'C', h: 'C', cpp: 'C++', cc: 'C++', hpp: 'C++', cs: 'C#', py: 'Python', md: 'Markdown', markdown: 'Markdown', sql: 'SQL', sh: 'Shell', bat: 'Batch', ps1: 'PowerShell' }
+  return map[ext] || '纯文本'
+}
+// 建 CodeMirror 实例并接上 wbEditors 状态链（内容/脏标/1.5s 防抖自动保存/Ctrl+S），
+// wbSaveEdit 只认 ed.content，所以换内核不换保存链路。onDoc 供 md 实时预览挂钩
+function wbCmMount(host, item, key, ed, onDoc) {
+  const isMd = /\.(md|markdown)$/i.test(item.name || '')
+  const baseSpec = cmModeOf(item.name)
+  const cm = CodeMirror(host, {
+    value: ed.content || '',
+    mode: baseSpec,
+    theme: 'msmate', // .cm-s-msmate 固定深色（黑码/白纸分区）
+    lineNumbers: true,
+    lineWrapping: isMd,
+    indentUnit: 4,
+    tabSize: 4,
+    autoCloseBrackets: true,
+    matchBrackets: true,
+    styleActiveLine: true,
+    foldGutter: !isMd, // md 不折叠（散文折叠没意义），代码折叠
+    gutters: ['CodeMirror-linenumbers', 'CodeMirror-foldgutter']
+  })
+  // 语义复染层（学 Trae：大写开头=类名、@开头=注解）——实例级 addOverlay，字符串/注释误染由 CSS 双类规则恢复
+  if (baseSpec) { try { cm.addOverlay(cmTypeOverlay) } catch (e) { console.warn('addOverlay 失败', e) } }
+  ed.cm = cm // 实例回挂编辑态（报错行号跳转 wbGotoFileLine 用）
+  cm.setSize('100%', '100%')
+  // 缩进参考线（Trae 语义）：按行实际缩进档画竖线段，顶格行不画——线是给层级指路的
+  if (!isMd) {
+    cm.on('renderLine', (c, line, el) => {
+      const text = line.text || ''
+      let col = 0
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i]
+        if (ch === ' ') col++
+        else if (ch === '\t') col += 4 - (col % 4)
+        else break
+      }
+      const levels = Math.floor(col / 4)
+      if (levels < 1) return
+      const cw = c.defaultCharWidth() || 8
+      const imgs = [], sizes = [], poss = []
+      for (let l = 1; l <= levels; l++) {
+        imgs.push('linear-gradient(rgba(205,214,244,0.09), rgba(205,214,244,0.09))')
+        sizes.push('1px 100%')
+        poss.push(Math.round(l * 4 * cw) + 'px 0')
+      }
+      el.style.backgroundImage = imgs.join(',')
+      el.style.backgroundRepeat = 'no-repeat'
+      el.style.backgroundSize = sizes.join(',')
+      el.style.backgroundPosition = poss.join(',')
+    })
+  }
+  cm.on('change', () => {
+    const cur = wbEditors[key]
+    if (!cur) return
+    cur.content = cm.getValue()
+    cur.dirty = cur.content !== cur.saved
+    wbRefreshToolbar(getWbActive())
+    if (onDoc) onDoc()
+    if (cur.timer) clearTimeout(cur.timer)
+    cur.timer = setTimeout(() => wbSaveEdit(false), 1500)
+  })
+  cm.setOption('extraKeys', {
+    'Ctrl-S': () => wbSaveEdit(),
+    'Cmd-S': () => wbSaveEdit(),
+    // 单词补全：Ctrl+Space 或 Alt+/ 手动触发（打字自动弹容易烦，键控更稳）
+    'Ctrl-Space': (c) => c.showHint({ hint: CodeMirror.hint.anyword, completeSingle: false }),
+    'Alt-/': (c) => c.showHint({ hint: CodeMirror.hint.anyword, completeSingle: false })
+  })
+  // 打字自动补全：非 md、新输入 ≥3 个词字符时弹单词候选（本文档内词，anyword）
+  let hintTimer = null
+  cm.on('inputRead', (c, change) => {
+    if (isMd || !change || !change.text || !change.text.length) return
+    const ins = change.text[change.text.length - 1] || ''
+    if (!/[\wA-Za-z0-9_$]/.test(ins.slice(-1))) return // 只认词字符结尾的输入
+    if (hintTimer) clearTimeout(hintTimer)
+    hintTimer = setTimeout(() => {
+      if (hintTimer) hintTimer = null
+      const tok = c.getTokenAt(c.getCursor())
+      if ((tok.string || '').trim().length < 3) return // 3 字符起弹，防烦
+      if (c.state.completionActive) return
+      c.showHint({ hint: CodeMirror.hint.anyword, completeSingle: false, closeOnUnfocus: true })
+    }, 180)
+  })
+  // 状态条（Trae 同款）：行:列 · 语言 · 缩进档，深色底右下角
+  const status = document.createElement('div')
+  status.className = 'wb-cm-status'
+  host.appendChild(status)
+  const updStatus = () => {
+    const c = cm.getCursor()
+    status.textContent = `行 ${c.line + 1}, 列 ${c.ch + 1} · ${cmLangLabel(item.name)} · 空格缩进 4`
+  }
+  cm.on('cursorActivity', updStatus)
+  updStatus()
+  return cm
+}
+// CodeMirror 版划词胶囊：选区取 cm.getSelection()，单例胶囊体系复用（_wbQuote*）
+function attachWbCmQuote(cm, fileName) {
+  const wrap = cm.getWrapperElement()
+  if (wrap._wbQuoteBound) return
+  wrap._wbQuoteBound = true
+  wrap.addEventListener('mouseup', (e) => {
+    setTimeout(() => {
+      _wbQuoteText = String(cm.getSelection() || '').trim()
+      _wbQuoteFile = fileName
+      if (!_wbQuoteText) return wbQuoteHide()
+      wbQuoteShowAt(e.clientX, e.clientY + 10)
+    }, 0)
+  })
+  cm.on('blur', wbQuoteHide)
+  cm.on('scroll', wbQuoteHide)
+}
+
 // 把编辑器挂进预览区（编辑态在 wbEditors，切页不丢；md 文件左编辑右实时预览）
 function mountWbEditor(item) {
   const key = wbKey(item)
@@ -1327,47 +1562,24 @@ function mountWbEditor(item) {
     holder.appendChild(renderMarkdownFrag(ed.content))
     previewEl.innerHTML = holder.innerHTML || '<p style="color:var(--text-muted)">（空文档）</p>'
   }
-  const ta = document.createElement('textarea')
-  ta.className = 'wb-editor'
-  ta.spellcheck = false
-  ta.value = ed.content
-  ta.addEventListener('input', () => {
-    const cur = wbEditors[key]
-    if (!cur) return
-    cur.content = ta.value
-    cur.dirty = ta.value !== cur.saved
-    wbRefreshToolbar(getWbActive())
-    refreshMd()
-    // 停顿 1.5s 自动保存（不打断输入）
-    if (cur.timer) clearTimeout(cur.timer)
-    cur.timer = setTimeout(() => wbSaveEdit(false), 1500)
-  })
-  ta.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-      e.preventDefault()
-      wbSaveEdit()
-    }
-    // Tab 缩进：插入 4 空格不丢焦点
-    if (e.key === 'Tab') {
-      e.preventDefault()
-      const s = ta.selectionStart
-      ta.setRangeText('    ', s, ta.selectionEnd, 'end')
-      ta.dispatchEvent(new Event('input'))
-    }
-  })
+  const cmHost = document.createElement('div')
+  cmHost.className = 'wb-cm-host'
+  let cm = null
   if (isMd) {
     const wrap = document.createElement('div')
     wrap.className = 'wb-md-wrap wb-view-content'
-    wrap.appendChild(ta)
+    wrap.appendChild(cmHost)
     previewEl = document.createElement('div')
     previewEl.className = 'wb-md-preview'
     wrap.appendChild(previewEl)
     body.appendChild(wrap)
+    cm = wbCmMount(cmHost, item, key, ed, refreshMd)
     refreshMd()
   } else {
-    body.appendChild(ta)
+    body.appendChild(cmHost)
+    cm = wbCmMount(cmHost, item, key, ed)
   }
-  attachWbTextQuote(ta, item.name)
+  attachWbCmQuote(cm, item.name)
   wbRefreshToolbar(item)
 }
 
@@ -1840,6 +2052,28 @@ function initWorkbenchUI() {
           }).catch(() => _api.openExternalFallback({ path: payload.path }).catch(() => {}))
         }
       } catch (e) { console.warn('workbench-open 处理失败', e) }
+    })
+  }
+  // ===== AI 改动了本地文件 → 工作台打开着该文件的页签自动刷新（老大要求"改完刷新一遍"）=====
+  // 磁盘为准：清编辑态/表格态/双模式态重载；正打开的页签立即重挂，后台页签清缓存下次点开重读
+  if (_api.onAiFileChanged) {
+    _api.onAiFileChanged((p) => {
+      try {
+        if (!p) return
+        const norm = String(p).replace(/[\\/]+$/, '').toLowerCase()
+        const it = state.wbItems.find((w) => w.origin === 'local' && String(w.path || '').replace(/[\\/]+$/, '').toLowerCase() === norm)
+        if (!it) return
+        const key = wbKey(it)
+        const wasDirty = !!(wbEditors[key] && wbEditors[key].dirty)
+        delete wbEditors[key]; delete wbGrids[key]; delete wbHtmlModes[key]
+        if (wbEmbed.key === key) wbEmbedKill() // 内嵌 WPS/Word 窗口收掉，重开即读新内容
+        if (wbActiveKey === key && work.mode === 'work') {
+          openPreview(it, /\.(png|jpe?g|gif|webp|bmp)$/i.test(it.name || '') ? { bust: true } : undefined)
+          if (wasDirty) showToast('AI 改了此文件，已按磁盘内容刷新', 'info')
+        } else if (wasDirty) {
+          showToast(`AI 改了 ${it.name}，点开页签显示最新内容`, 'info')
+        }
+      } catch (e) { console.warn('ai:file-changed 刷新失败', e) }
     })
   }
   // 拖拽进入工作台任意区域（本地/远程面板拖来的文件都收）

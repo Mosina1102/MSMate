@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>截图</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+  #cv { position: absolute; inset: 0; width: 100vw; height: 100vh; cursor: crosshair; }
+  #bar { position: absolute; display: none; gap: 4px; background: #ffffff; border: 1px solid #e3e5eb;
+         border-radius: 10px; padding: 6px; box-shadow: 0 6px 24px rgba(0,0,0,0.28); z-index: 10; }
+  .tbtn { width: 34px; height: 34px; border: none; background: transparent; border-radius: 7px; cursor: pointer;
+          display: flex; align-items: center; justify-content: center; font-size: 15px; color: #333; }
+  .tbtn:hover { background: #f0f1f5; }
+  .tbtn.on { background: #e9e6ff; color: #6b4ee6; }
+  .tsep { width: 1px; background: #e3e5eb; margin: 4px 2px; }
+  .tok { background: #6b4ee6; color: #fff; }
+  .tok:hover { background: #5b3fd6; }
+  .tcancel { background: #fdecec; color: #d05560; }
+  .tcancel:hover { background: #f9dcdc; }
+  #txtInput { position: absolute; display: none; z-index: 12; border: 2px solid #ff4d4f; border-radius: 6px;
+              font-size: 16px; padding: 4px 8px; outline: none; background: #fff; min-width: 140px; }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div id="bar"></div>
+<input id="txtInput" placeholder="输入文字，回车确认">
+<script>
+'use strict'
+// ===== 内置截图渲染层：背景快照 + 选区 + 标注（箭头/矩形/椭圆/画笔/文字） =====
+// 坐标全程物理像素（CSS 坐标 × scaleFactor），导出无损裁剪选区
+const cv = document.getElementById('cv')
+const ctx = cv.getContext('2d')
+const bar = document.getElementById('bar')
+const txtInput = document.getElementById('txtInput')
+const RED = '#ff4d4f'
+
+let bgImg = null, scale = 1, W = 0, H = 0           // 物理尺寸
+let sel = null                                       // 选区 {x,y,w,h} 物理坐标
+let dragStart = null                                 // 拖选区起点
+let tool = 'arrow'                                   // arrow/rect/ellipse/pen/text
+let marks = []                                       // 已落标注 {type,...}
+let cur = null                                       // 进行中标注
+
+function ipc() { return window.api || null }
+
+// ===== 工具栏 =====
+const ICONS = {
+  arrow: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19L19 5M19 5h-8M19 5v8"/></svg>',
+  rect: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4" y="5" width="16" height="14" rx="1.5"/></svg>',
+  ellipse: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><ellipse cx="12" cy="12" rx="8.5" ry="6.5"/></svg>',
+  pen: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3l4 4L8 20l-5 1 1-5L17 3z"/></svg>',
+  text: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 6h14M12 6v13"/></svg>',
+  undo: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 016 6v1"/></svg>',
+  ok: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5.5 5.5L20 6.5"/></svg>',
+  cancel: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>'
+}
+function buildBar() {
+  bar.innerHTML = ''
+  const mk = (id, tip, cls) => {
+    const b = document.createElement('button')
+    b.className = 'tbtn' + (cls ? ' ' + cls : '')
+    b.id = 't-' + id
+    b.title = tip
+    b.innerHTML = ICONS[id] || tip
+    bar.appendChild(b)
+    return b
+  }
+  ;['arrow', 'rect', 'ellipse', 'pen', 'text'].forEach((t) => {
+    const tips = { arrow: '箭头', rect: '矩形框选', ellipse: '椭圆', pen: '画笔', text: '文字' }
+    mk(t, tips[t]).addEventListener('click', () => { tool = t; syncBar() })
+  })
+  bar.appendChild(Object.assign(document.createElement('span'), { className: 'tsep' }))
+  mk('undo', '撤销').addEventListener('click', () => { marks.pop(); redraw() })
+  mk('ok', '完成（双击/Enter）', 'tok').addEventListener('click', finish)
+  mk('cancel', '取消（Esc）', 'tcancel').addEventListener('click', cancel)
+  syncBar()
+}
+function syncBar() {
+  ;['arrow', 'rect', 'ellipse', 'pen', 'text'].forEach((t) => {
+    const b = document.getElementById('t-' + t)
+    if (b) b.classList.toggle('on', tool === t)
+  })
+}
+
+// ===== 绘制 =====
+function drawMark(c, k) {
+  c.strokeStyle = RED; c.fillStyle = RED; c.lineWidth = 4 * scale; c.lineCap = 'round'; c.lineJoin = 'round'
+  if (k.type === 'arrow') {
+    const { x1, y1, x2, y2 } = k
+    c.beginPath(); c.moveTo(x1, y1); c.lineTo(x2, y2); c.stroke()
+    const ang = Math.atan2(y2 - y1, x2 - x1), hl = 14 * scale
+    c.beginPath(); c.moveTo(x2, y2)
+    c.lineTo(x2 - hl * Math.cos(ang - 0.45), y2 - hl * Math.sin(ang - 0.45))
+    c.lineTo(x2 - hl * Math.cos(ang + 0.45), y2 - hl * Math.sin(ang + 0.45))
+    c.closePath(); c.fill()
+  } else if (k.type === 'rect') {
+    c.strokeRect(Math.min(k.x1, k.x2), Math.min(k.y1, k.y2), Math.abs(k.x2 - k.x1), Math.abs(k.y2 - k.y1))
+  } else if (k.type === 'ellipse') {
+    c.beginPath()
+    c.ellipse((k.x1 + k.x2) / 2, (k.y1 + k.y2) / 2, Math.abs(k.x2 - k.x1) / 2, Math.abs(k.y2 - k.y1) / 2, 0, 0, Math.PI * 2)
+    c.stroke()
+  } else if (k.type === 'pen') {
+    c.beginPath(); k.pts.forEach((pt, i) => i ? c.lineTo(pt.x, pt.y) : c.moveTo(pt.x, pt.y)); c.stroke()
+  } else if (k.type === 'text') {
+    c.font = (18 * scale) + 'px "Microsoft YaHei", sans-serif'
+    c.fillText(k.text, k.x, k.y)
+  }
+}
+function drawSelUI() {
+  if (!sel) return
+  // 选区外遮罩（clip 反选），选区内保持原图清晰
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(0, 0, W, H)
+  ctx.rect(sel.x + sel.w, sel.y, -sel.w, sel.h)
+  ctx.clip()
+  ctx.fillStyle = 'rgba(0,0,0,0.45)'
+  ctx.fillRect(0, 0, W, H)
+  ctx.restore()
+  // 边框 + 四角点
+  ctx.strokeStyle = '#6b4ee6'; ctx.lineWidth = 2 * scale
+  ctx.strokeRect(sel.x, sel.y, sel.w, sel.h)
+  ctx.fillStyle = '#6b4ee6'
+  const cs = 5 * scale
+  ;[[sel.x, sel.y], [sel.x + sel.w, sel.y], [sel.x, sel.y + sel.h], [sel.x + sel.w, sel.y + sel.h]].forEach(([x, y]) => {
+    ctx.fillRect(x - cs, y - cs, cs * 2, cs * 2)
+  })
+  // 尺寸提示
+  const info = Math.round(sel.w / scale) + ' × ' + Math.round(sel.h / scale)
+  ctx.font = (12 * scale) + 'px "Microsoft YaHei", sans-serif'
+  const tw = ctx.measureText(info).width + 12 * scale
+  ctx.fillStyle = 'rgba(0,0,0,0.65)'
+  ctx.fillRect(sel.x, Math.max(0, sel.y - 26 * scale), tw, 22 * scale)
+  ctx.fillStyle = '#fff'
+  ctx.fillText(info, sel.x + 6 * scale, Math.max(13 * scale, sel.y - 9 * scale))
+}
+function redraw() {
+  ctx.clearRect(0, 0, W, H)
+  if (bgImg) ctx.drawImage(bgImg, 0, 0, W, H)
+  else { ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H) }
+  marks.forEach((k) => drawMark(ctx, k))
+  if (cur) drawMark(ctx, cur)
+  drawSelUI()
+}
+
+// ===== 选区 / 标注交互 =====
+const px = (e) => Math.round(e.clientX * scale)
+const py = (e) => Math.round(e.clientY * scale)
+const inSel = (x, y) => sel && x >= sel.x && x <= sel.x + sel.w && y >= sel.y && y <= sel.y + sel.h
+const posBar = () => {
+  if (!sel) return
+  bar.style.display = 'flex'
+  const bw = bar.offsetWidth, bh = bar.offsetHeight
+  let x = sel.x + sel.w - bw
+  x = Math.max(8 * scale, Math.min(x, W - bw - 8 * scale))
+  let y = sel.y + sel.h + 10 * scale
+  if (y + bh > H - 8 * scale) y = Math.max(8 * scale, sel.y - bh - 10 * scale)
+  bar.style.left = x / scale + 'px'
+  bar.style.top = y / scale + 'px'
+}
+cv.addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return
+  hideTxt()
+  const x = px(e), y = py(e)
+  if (!inSel(x, y)) { // 选区外重新选（清标注，与 QQ 一致）
+    sel = null; marks = []; bar.style.display = 'none'
+    dragStart = { x, y }
+    cur = { type: 'rect', x1: x, y1: y, x2: x, y2: y }
+  } else if (tool === 'arrow' || tool === 'rect' || tool === 'ellipse') {
+    cur = { type: tool, x1: x, y1: y, x2: x, y2: y }
+  } else if (tool === 'pen') {
+    cur = { type: 'pen', pts: [{ x, y }] }
+  } else if (tool === 'text') {
+    showTxt(x, y)
+  }
+  e.preventDefault()
+})
+window.addEventListener('mousemove', (e) => {
+  const x = px(e), y = py(e)
+  if (dragStart) { cur = { type: 'rect', x1: dragStart.x, y1: dragStart.y, x2: x, y2: y }; redraw(); return }
+  if (cur) {
+    if (cur.type === 'pen') cur.pts.push({ x, y })
+    else { cur.x2 = x; cur.y2 = y }
+    redraw()
+  }
+})
+window.addEventListener('mouseup', () => {
+  if (dragStart) {
+    dragStart = null
+    if (cur && Math.abs(cur.x2 - cur.x1) > 8 && Math.abs(cur.y2 - cur.y1) > 8) {
+      sel = { x: Math.min(cur.x1, cur.x2), y: Math.min(cur.y1, cur.y2), w: Math.abs(cur.x2 - cur.x1), h: Math.abs(cur.y2 - cur.y1) }
+      cur = null
+      redraw()
+      posBar()
+    } else { cur = null; redraw() }
+    return
+  }
+  if (cur) {
+    const big = cur.type === 'pen' ? cur.pts.length > 1 : (Math.abs(cur.x2 - cur.x1) > 6 || Math.abs(cur.y2 - cur.y1) > 6)
+    if (big) marks.push(cur)
+    cur = null
+    redraw()
+  }
+})
+cv.addEventListener('dblclick', () => { if (sel) finish() })
+
+// 文字标注
+function showTxt(x, y) {
+  txtInput.style.display = 'block'
+  txtInput.style.left = x / scale + 'px'
+  txtInput.style.top = y / scale + 'px'
+  txtInput.value = ''
+  txtInput._pos = { x, y }
+  setTimeout(() => txtInput.focus(), 30)
+}
+function hideTxt() { txtInput.style.display = 'none' }
+txtInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && txtInput.value.trim()) {
+    marks.push({ type: 'text', x: txtInput._pos.x, y: txtInput._pos.y + 18 * scale, text: txtInput.value.trim() })
+    hideTxt(); redraw()
+  } else if (e.key === 'Escape') hideTxt()
+  e.stopPropagation()
+})
+
+// ===== 完成 / 取消 =====
+function finish() {
+  if (!sel || sel.w < 4 || sel.h < 4) return cancel()
+  const off = document.createElement('canvas')
+  off.width = sel.w; off.height = sel.h
+  const c = off.getContext('2d')
+  if (bgImg) c.drawImage(bgImg, sel.x, sel.y, sel.w, sel.h, 0, 0, sel.w, sel.h)
+  else { c.fillStyle = '#111'; c.fillRect(0, 0, sel.w, sel.h) }
+  c.save()
+  c.translate(-sel.x, -sel.y)
+  marks.filter((k) => markInSel(k)).forEach((k) => drawMark(c, k))
+  c.restore()
+  const api = ipc()
+  if (api && api.captureDone) api.captureDone(off.toDataURL('image/png'))
+}
+function markInSel(k) {
+  const inR = (x, y) => x >= sel.x && x <= sel.x + sel.w && y >= sel.y && y <= sel.y + sel.h
+  if (k.type === 'pen') return k.pts.some((p) => inR(p.x, p.y))
+  if (k.type === 'text') return inR(k.x, k.y)
+  return inR(k.x1, k.y1) || inR(k.x2, k.y2)
+}
+function cancel() { const api = ipc(); if (api && api.captureCancel) api.captureCancel() }
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') cancel()
+  if (e.key === 'Enter' && sel && txtInput.style.display !== 'block') finish()
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { marks.pop(); redraw() }
+})
+
+// ===== 启动：收背景 =====
+if (ipc() && ipc().onCaptureBg) {
+  ipc().onCaptureBg((shot) => {
+    scale = Number(shot.scale) || 1
+    const img = new Image()
+    img.onload = () => {
+      bgImg = img
+      W = cv.width = img.width
+      H = cv.height = img.height
+      redraw()
+      buildBar()
+    }
+    img.src = shot.dataURL
+  })
+}
+</script>
+</body>
+</html>

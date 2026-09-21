@@ -2007,10 +2007,10 @@ function readBody(req, maxBytes) {
 // ─────────────────── 服务器 ───────────────────
 
 const LATEST = {
-  version: '2.7.27',
+  version: '2.8.6',
   url: 'https://github.com/Mosina1102/MSMate/releases/latest',
-  notes: '修复"改个文字却重写整篇导致格式全乱"：AI 行为矫正——改文字一律精准替换（edit），禁止图省事重建整篇（重建=封面/页眉/分节/样式全丢）；新增改动量分级铁律。另：WPS 文档转 PDF 加固防打扰（强制后台隐形，防个别版本带出主界面）',
-  publishedAt: '2026-09-13'
+  notes: 'AI 代码开发大版本：CodeMirror 编辑器全家桶（折叠/搜索替换/状态条/单词补全/缩进参考线/类型染色/选区负片）；开发三主件（报错行号可点击直达、dev_server 长驻进程、git 版本底座）；回档完善（内嵌确认卡+回滚并重跑+真实回退）；AI 改文件工作台自动刷新',
+  publishedAt: '2026-09-22'
 }
 
 const server = http.createServer(async (req, res) => {
