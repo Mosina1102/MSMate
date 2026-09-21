@@ -890,7 +890,8 @@ async function autoTitleSession(sid, text) {
   const meta = sessionMeta(sid)
   if (!meta) return
   const t = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 20)
-  if (!t || (meta.title && meta.title !== '新会话' && meta.title !== '')) return
+  // 默认名（主进程建会话时是"新对话"，历史上还有"新会话"）都不算已命名，首条消息来了就自动取名
+  if (!t || ['', '新会话', '新对话', '未命名会话'].includes(meta.title)) return
   meta.title = t
   try { await _api.aiSessionRename(sid, t) } catch {}
   renderSessionBar()

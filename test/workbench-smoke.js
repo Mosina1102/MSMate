@@ -191,6 +191,9 @@ ok(mainSrc.includes('TextDecoder(') && mainSrc.includes('gbk'), '工作台读文
 ok(appjs.includes('wb-err-line') && appjs.includes('addLineClass'), '报错行红标（跳转挂标，行背景+行号红）')
 ok(appjs.includes('DEV_URL_RE') && appjs.includes("addUrlTab(url.dataset.url)"), 'dev_server 端口一键预览（localhost 可点击开 AI 浏览器）')
 ok(appjs.includes('rbRerun') && appjs.includes('回滚并重跑') && appjs.includes('send.click()'), '回滚并重跑（Trae 回退即重新开始）')
+ok(toolsSrc.includes('impl[name].call(impl, clean)'), '工具调用保住 this（desktop_* 不再全瘫）')
+ok(appjs.includes('getWebContentsId() === payload.wcId') && mainSrc.includes('wcId: wc.id'), '受控页签内导航（AI 感知得到新窗口）')
+ok(appjs.includes("'新对话', '未命名会话']"), '会话自动取名豁免对齐主进程默认名')
 
 console.log('— v2.4.33：卡片进工作台 + 资源管理器定位 + 划词胶囊 —')
 ok(appjs.includes('点击加入工作台预览'), '聊天文件卡片点击改为加入工作台')
@@ -680,7 +683,7 @@ console.log('— v2.4.45：小任务禁建板 + AI 打开默认进工作台 + �
   ok(mainjs.includes("ipcMain.handle('sys:open-external'"), 'main 系统打开回退通道')
   ok(preload.includes('onAiWorkbenchOpen:') && preload.includes('openExternalFallback:'), 'preload 暴露工作台打开/回退 API')
   ok(appjs.includes('function addUrlTab') && appjs.includes("it.kind === 'urltab'"), 'app.js 通用网页页签（urltab）')
-  ok(appjs.includes('work.mode === \'work\') addUrlTab'), 'Work 模式网址开工作台页签')
+  ok(appjs.includes("browserNavigate(payload.url).catch(() => {})") && appjs.includes('else addUrlTab(payload.url)'), '网址进工作台：受控页签内导航/普通页签分流')
   // ③ 网页版新任务自动开新会话（甩掉旧上下文污染）
   ok(agent.includes('newSession: firstTurn') && agent.includes('_webConvStarted'), 'agent 用户消息轮只在首次开新网页会话（后续复用保上下文）')
   ok(webchat.includes('async function send(web, prompt, handlers, attachments, newSession, resumeUrl)'), 'webchat send 接收 newSession + resumeUrl（恢复对话导航）')

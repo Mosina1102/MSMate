@@ -2031,8 +2031,15 @@ function initWorkbenchUI() {
       try {
         if (!payload) return
         if (payload.kind === 'url') {
-          if (work.mode === 'work') addUrlTab(payload.url)
-          else _api.openExternalFallback({ url: payload.url }).catch(() => {})
+          if (work.mode === 'work') {
+            // 受控页签（AI 浏览）里点开的新窗口 → 受控页签内导航：AI 的 snapshot 永远跟得上（实锤"多跳一个网页 AI 就瞎了"）
+            const aiEl = (typeof aiWebView === 'function') ? aiWebView() : null
+            const isAiCtl = !!(payload.wcId && aiEl && aiEl.getWebContentsId && aiEl.getWebContentsId() === payload.wcId)
+            if (isAiCtl && typeof browserNavigate === 'function') browserNavigate(payload.url).catch(() => {})
+            else addUrlTab(payload.url)
+          } else {
+            _api.openExternalFallback({ url: payload.url }).catch(() => {})
+          }
           return
         }
         if (work.mode === 'work') {

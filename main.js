@@ -3433,7 +3433,8 @@ app.on('web-contents-created', (e, wc) => {
     if (wc.getType() !== 'webview') return
     wc.setWindowOpenHandler(({ url }) => {
       if (/^https?:/i.test(String(url || '')) && mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('ai:workbench-open', { kind: 'url', url: String(url) })
+        // wcId 带回去：AI 受控页签（AI 浏览）里点开的新窗口走受控页签内导航，AI 的 snapshot 才跟得上
+        mainWindow.webContents.send('ai:workbench-open', { kind: 'url', url: String(url), wcId: wc.id })
       }
       return { action: 'deny' } // 一律不开真窗口：进页签或丢弃
     })

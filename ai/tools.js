@@ -4264,7 +4264,8 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       return { ok: false, message: `参数 ${badArr.join('、')} 不能传数组（只接受单个值）。要批量操作（如下载多张图）就发多个 ${name} 调用，一轮里可以同时发多个并行执行，每个调用各传各的参数` }
     }
     try {
-      const result = guardToolOutput(name, await fn(clean))
+      // .call(impl)：impl 方法内部有 this.xxx 互调（如 desktopGuard），裸调用会丢 this（实锤 desktop_* 全瘫）
+      const result = guardToolOutput(name, await impl[name].call(impl, clean))
       // 改动文件成功 → 通知渲染层刷新工作台对应页签（仅本地；远程路径对不上工作台本机项）
       if (result && result.ok && onFileChanged && FILE_CHANGE_TOOLS.has(name)) {
         const targetLocal = !clean.target || clean.target === 'local'
