@@ -2007,9 +2007,9 @@ function readBody(req, maxBytes) {
 // ─────────────────── 服务器 ───────────────────
 
 const LATEST = {
-  version: '2.8.6',
+  version: '2.8.7',
   url: 'https://github.com/Mosina1102/MSMate/releases/latest',
-  notes: 'AI 代码开发大版本：CodeMirror 编辑器全家桶（折叠/搜索替换/状态条/单词补全/缩进参考线/类型染色/选区负片）；开发三主件（报错行号可点击直达、dev_server 长驻进程、git 版本底座）；回档完善（内嵌确认卡+回滚并重跑+真实回退）；AI 改文件工作台自动刷新',
+  notes: 'AI 控制电脑可靠性大修：修复 desktop_* 工具全瘫（this 丢失）、UIA 控件名册读不出、双击/右键参数丢失；新增用户占用避让（你动鼠标 AI 自动停手）；控制遮罩提示请勿操作鼠标键盘；会话自动命名修复；AI 浏览新窗口受控页签内导航',
   publishedAt: '2026-09-22'
 }
 

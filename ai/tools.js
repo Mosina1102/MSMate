@@ -3685,7 +3685,7 @@ function createTools({ tcpAgent, snapshots, desktopDir, tmpDir, workspaceDir, ge
       if (!hasNorm && (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0)) {
         return { ok: false, message: '坐标非法。两种传法：① nx/ny 归一化坐标（0-1000，view_image 让视觉模型输出目标中心点归一化坐标后直接传，推荐最稳）② x/y 绝对像素（= 截图里的物理像素位置）' }
       }
-      const r = await desktop.click(hasNorm ? { nx: args.nx, ny: args.ny } : { x, y }, { button: args.button === 'right' ? 'right' : (args.button === 'middle' ? 'middle' : 'left'), double: !!args.double })
+      const r = await desktop.click({ ...(hasNorm ? { nx: args.nx, ny: args.ny } : { x, y }), button: args.button, double: !!args.double })
       return r.ok
         ? { ok: true, message: `已点击 ${r.x ? `(${r.x},${r.y})` : '目标位置'}${args.double ? ' 双击' : ''}${args.button === 'right' ? '（右键）' : ''}。若目标窗口之前不在前台，先 desktop_window activate；不确定点没点中就再截屏看一眼` }
         : { ok: false, message: r.error }

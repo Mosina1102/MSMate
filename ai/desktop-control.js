@@ -194,7 +194,7 @@ while ($true) {
           if ($h -eq [IntPtr]::Zero) { throw '取前台窗口失败' }
           $target = $AE::FromHandle($h)
         }
-        $els = $target.FindAll([System.Windows.Automation.TreeScope]::Descendants, $AE::TrueCondition)
+        $els = $target.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
         $items = @()
         $i = 0
         $kw = if ($cmd.filter) { B64Dec $cmd.filter } else { '' }
@@ -223,7 +223,7 @@ while ($true) {
 }
 `
 
-const BOOT_VER = 'msdesk-v3' // 改引导脚本必升版本：旧文件靠 includes 判定不重写
+const BOOT_VER = 'msdesk-v4' // 改引导脚本必升版本：旧文件靠 includes 判定不重写（v4：修 TrueCondition 取错类导致 UIA 名册全挂）
 
 class DesktopControl {
   constructor(log) {
@@ -232,6 +232,7 @@ class DesktopControl {
     this.pending = new Map()   // id -> { resolve, timer }
     this.reqId = 0
     this.starting = null
+    this._lastMouse = null     // 上次键鼠 op 落点（用户占用避让的基线）
   }
 
   // 引导脚本落盘（userData 内；内容版本没变就复用，避免每次启动重写）
@@ -324,10 +325,26 @@ class DesktopControl {
     return this._exec(op, params, timeoutMs)
   }
 
+  // 用户占用避让（老大场景实锤：用户全屏 WPS 办公时 AI 同时接管键鼠 → 互相打架，AI 的字可能灌进用户表格）。
+  // 键鼠 op 前对比鼠标位置与上次 AI 操作落点：动了 = 用户在操作 → 拒绝执行并把新位置记为基线
+  // （用户停手后 AI 重试即放行，不死锁）。AI 自己的 click/scroll 会更新基线，不会自我误判
+  async _checkUserBusy() {
+    try {
+      const r = await this._exec('cursor', {}, 3000)
+      if (!r.ok) return false
+      const cur = { x: r.x, y: r.y }
+      const last = this._lastMouse
+      this._lastMouse = cur
+      if (!last) return false // 首次无基线（本次只是建档）
+      return Math.abs(cur.x - last.x) + Math.abs(cur.y - last.y) > 24
+    } catch { return false }
+  }
+
   // 以下方法返回统一错误体（tools.js 直接透传给 AI）
   // 归一化坐标优先（nx/ny 0-1000，Anthropic computer-use 同款协议）：视觉模型输出归一化坐标
   // 是其强项，绝对像素易受截图缩放/DPI 影响——nx/ny × 主屏物理尺寸 = 精确定位
   async click(params) {
+    if (await this._checkUserBusy()) return { ok: false, userBusy: true, error: '检测到鼠标正在移动（用户可能正在操作电脑）。已暂停本次键鼠操作避免互相干扰。用户停手后重试即可；连续出现请 ask_user 询问用户是否在用电脑' }
     const { x, y, button = 'left', double = false, nx, ny } = params || {}
     let cx = x, cy = y
     if (nx != null || ny != null) {
@@ -338,15 +355,18 @@ class DesktopControl {
     cx = Math.round(cx); cy = Math.round(cy)
     if (!Number.isFinite(cx) || !Number.isFinite(cy) || cx < 0 || cy < 0) return { ok: false, error: '坐标非法' }
     const r = await this._run('click', { x: cx, y: cy, button: button === 'right' ? 2 : (button === 'middle' ? 1 : 0), clicks: double ? 2 : 1 })
-    return r.ok ? { ok: true, x: cx, y: cy } : { ok: false, error: b64dec(r.err) || '点击失败' }
+    if (r.ok) { this._lastMouse = { x: cx, y: cy }; return { ok: true, x: cx, y: cy } }
+    return { ok: false, error: b64dec(r.err) || '点击失败' }
   }
 
   async type(text) {
+    if (await this._checkUserBusy()) return { ok: false, userBusy: true, error: '检测到鼠标正在移动（用户可能正在操作电脑）。已暂停本次键鼠操作避免互相干扰。用户停手后重试即可；连续出现请 ask_user 询问用户是否在用电脑' }
     const r = await this._run('type', { text: b64(String(text || '')) }, 30000)
     return r.ok ? { ok: true } : { ok: false, error: b64dec(r.err) || '输入失败' }
   }
 
   async key(keys) {
+    if (await this._checkUserBusy()) return { ok: false, userBusy: true, error: '检测到鼠标正在移动（用户可能正在操作电脑）。已暂停本次键鼠操作避免互相干扰。用户停手后重试即可；连续出现请 ask_user 询问用户是否在用电脑' }
     // 键名逐个 b64 传输（PS 侧解码后进 Combo），如 ["ctrl","s"]
     const arr = (Array.isArray(keys) ? keys : [keys]).map((k) => b64(String(k).trim()))
     const r = await this._run('key', { keys: arr }, 10000)
@@ -354,9 +374,11 @@ class DesktopControl {
   }
 
   async scroll(x, y, amount) {
+    if (await this._checkUserBusy()) return { ok: false, userBusy: true, error: '检测到鼠标正在移动（用户可能正在操作电脑）。已暂停本次键鼠操作避免互相干扰。用户停手后重试即可；连续出现请 ask_user 询问用户是否在用电脑' }
     // amount: 正=向上滚，负=向下滚（WHEEL delta 单位，一格≈120）
     const r = await this._run('scroll', { x: Math.round(x), y: Math.round(y), amount: Math.round(amount) })
-    return r.ok ? { ok: true } : { ok: false, error: b64dec(r.err) || '滚动失败' }
+    if (r.ok) { this._lastMouse = { x: Math.round(x), y: Math.round(y) }; return { ok: true } }
+    return { ok: false, error: b64dec(r.err) || '滚动失败' }
   }
 
   async cursor() {

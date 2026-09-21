@@ -194,6 +194,9 @@ ok(appjs.includes('rbRerun') && appjs.includes('回滚并重跑') && appjs.inclu
 ok(toolsSrc.includes('impl[name].call(impl, clean)'), '工具调用保住 this（desktop_* 不再全瘫）')
 ok(appjs.includes('getWebContentsId() === payload.wcId') && mainSrc.includes('wcId: wc.id'), '受控页签内导航（AI 感知得到新窗口）')
 ok(appjs.includes("'新对话', '未命名会话']"), '会话自动取名豁免对齐主进程默认名')
+ok(fs.readFileSync(path.join(ROOT, 'ai/desktop-control.js'), 'utf8').includes('_checkUserBusy') && fs.readFileSync(path.join(ROOT, 'ai/desktop-control.js'), 'utf8').includes('userBusy: true'), 'desktop_* 用户占用避让（鼠标动了就停手）')
+ok(fs.readFileSync(path.join(ROOT, 'src/control-overlay.html'), 'utf8').includes('请勿操作鼠标键盘'), '控制遮罩提示"请勿操作鼠标键盘"')
+ok(fs.readFileSync(path.join(ROOT, 'ai/manuals/电脑控制.md'), 'utf8').includes('前台占用铁律'), '手册：前台占用铁律（浏览器任务走 browser_*）')
 
 console.log('— v2.4.33：卡片进工作台 + 资源管理器定位 + 划词胶囊 —')
 ok(appjs.includes('点击加入工作台预览'), '聊天文件卡片点击改为加入工作台')
@@ -2241,7 +2244,7 @@ console.log('— v2.4.82：钩子半残中毒修复（第二句话起永久瞎�
     } catch (e) {
       ok(false, `套模板测试失败: ${(e.stdout || e.message).toString().slice(-150)}`)
     }
-    ok(pkg.version === '2.8.6', `package.json 版本 2.8.6（实际 ${pkg.version}）`)
+    ok(pkg.version === '2.8.7', `package.json 版本 2.8.7（实际 ${pkg.version}）`)
   }
 
   // ===== v2.6.0：工具手册化（渐进式披露：主规则瘦身，深度说明迁 ai/manuals 六册）=====
