@@ -21,7 +21,7 @@ relay/*.pem
 
 # 测试临时产物
 test/tmp-*/
-test/.tmp-*/
+test/.tmp-*
 test/userData-*/
 test/*.log
 
