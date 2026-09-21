@@ -2007,9 +2007,9 @@ function readBody(req, maxBytes) {
 // ─────────────────── 服务器 ───────────────────
 
 const LATEST = {
-  version: '2.8.7',
+  version: '2.8.8',
   url: 'https://github.com/Mosina1102/MSMate/releases/latest',
-  notes: 'AI 控制电脑可靠性大修：修复 desktop_* 工具全瘫（this 丢失）、UIA 控件名册读不出、双击/右键参数丢失；新增用户占用避让（你动鼠标 AI 自动停手）；控制遮罩提示请勿操作鼠标键盘；会话自动命名修复；AI 浏览新窗口受控页签内导航',
+  notes: 'AI 控制电脑技能补齐：新增鼠标拖拽（拖文件/滑块/选文字/框选）、悬停（tooltip/悬停菜单）、横向滚轮、按住 Ctrl/Shift 点击多选——用户会的键鼠操作它都会了',
   publishedAt: '2026-09-22'
 }
 
