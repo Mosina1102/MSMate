@@ -70,6 +70,13 @@ for (const t of ["'image'", "'video'", "'audio'", "'pdf'", "'docx'", "'xlsx'", "
   ok(appjs.includes(`=== ${t}`) || appjs.includes(`kind === ${t}`) || appjs.includes(`return ${t === 'text' ? "'text'" : t}`), `预览支持 ${t}`)
 }
 
+console.log('— pptx 内置预览（pptx-preview） —')
+ok(html.includes('vendor/pptx-preview.min.js') && html.includes('vendor/jszip.min.js')
+  && fs.existsSync(path.join(ROOT, 'src/vendor/pptx-preview.min.js')) && fs.existsSync(path.join(ROOT, 'src/vendor/jszip.min.js')),
+  'pptx-preview/jszip UMD 预埋 index.html + vendor 落盘')
+ok(appjs.includes("kind === 'pptx'") && appjs.includes('function mountWbPptxPreview') && appjs.includes('function _wbPptxRepair'),
+  'pptx 页签内预览分支（渲染 + 0 页修复重试链路）')
+
 console.log('— main.js / preload.js —')
 ok(mainjs.includes("ipcMain.handle('fs:read-text-file'"), 'main 有 fs:read-text-file')
 ok(mainjs.includes("ipcMain.handle('fs:write-text-file'"), 'main 有 fs:write-text-file（编辑保存）')
@@ -197,10 +204,24 @@ ok(appjs.includes("'新对话', '未命名会话']"), '会话自动取名豁免�
 ok(fs.readFileSync(path.join(ROOT, 'ai/desktop-control.js'), 'utf8').includes('_checkUserBusy') && fs.readFileSync(path.join(ROOT, 'ai/desktop-control.js'), 'utf8').includes('userBusy: true'), 'desktop_* 用户占用避让（鼠标动了就停手）')
 ok(fs.readFileSync(path.join(ROOT, 'src/control-overlay.html'), 'utf8').includes('请勿操作鼠标键盘'), '控制遮罩提示"请勿操作鼠标键盘"')
 ok(fs.readFileSync(path.join(ROOT, 'ai/manuals/电脑控制.md'), 'utf8').includes('前台占用铁律'), '手册：前台占用铁律（浏览器任务走 browser_*）')
+ok(fs.readFileSync(path.join(ROOT, 'ai/manuals/电脑控制.md'), 'utf8').includes('desktop_uia') && fs.readFileSync(path.join(ROOT, 'ai/manuals/电脑控制.md'), 'utf8').includes('免截图拿坐标'), '手册：desktop_uia 定位捷径章节（原生程序免截图）')
 ok(toolsSrc.includes("name: 'desktop_drag'") && toolsSrc.includes("name: 'desktop_move'"), 'desktop_drag 拖拽 + desktop_move 悬停工具')
-ok(fs.readFileSync(path.join(ROOT, 'ai/desktop-control.js'), 'utf8').includes('public static string Drag(') && fs.readFileSync(path.join(ROOT, 'ai/desktop-control.js'), 'utf8').includes("const BOOT_VER = 'msdesk-v5'"), '引擎拖拽原语（分步移动）+ BOOT_VER v5')
+ok(fs.readFileSync(path.join(ROOT, 'ai/desktop-control.js'), 'utf8').includes('public static string Drag(') && fs.readFileSync(path.join(ROOT, 'ai/desktop-control.js'), 'utf8').includes("const BOOT_VER = 'msdesk-v7'"), '引擎拖拽原语（分步移动）+ BOOT_VER v7（UIA 后台操作+窗口截图）')
+ok(fs.readFileSync(path.join(ROOT, 'ai/desktop-control.js'), 'utf8').includes("'uiainvoke'") && fs.readFileSync(path.join(ROOT, 'ai/desktop-control.js'), 'utf8').includes("'winshot'") && fs.readFileSync(path.join(ROOT, 'ai/desktop-control.js'), 'utf8').includes('PrintWindow'), '引擎后台原语：uiainvoke（UIA 零干扰操作）+ winshot（PrintWindow 窗口截图）')
+ok(fs.readFileSync(path.join(ROOT, 'ai/desktop-control.js'), 'utf8').includes('async uiaInvoke') && fs.readFileSync(path.join(ROOT, 'ai/desktop-control.js'), 'utf8').includes('async windowShot'), 'JS 包装：uiaInvoke + windowShot（故意不做占用检测——后台通道零干扰）')
+ok(toolsSrc.includes("name: 'desktop_invoke'") && toolsSrc.includes("scope === 'window'"), 'desktop_invoke 工具 + screenshot scope:"window"（CUA 后台通道）')
+ok(fs.readFileSync(path.join(ROOT, 'ai/manuals/电脑控制.md'), 'utf8').includes('零干扰后台通道') && fs.readFileSync(path.join(ROOT, 'ai/manuals/电脑控制.md'), 'utf8').includes('操作通道优先级'), '手册：零干扰后台通道 + 通道优先级')
+ok(fs.readFileSync(path.join(ROOT, 'src/js/work.js'), 'utf8').includes('autoTitleSession(work.active, full)'), '会话自动取名挂发送侧（不依赖事件回环）')
+ok(fs.readFileSync(path.join(ROOT, 'capture.js'), 'utf8').includes('setIgnoreMouseEvents(true, { forward: true })'), '遮罩鼠标穿透显式设置（构造参数不可靠）')
 ok(fs.readFileSync(path.join(ROOT, 'ai/desktop-control.js'), 'utf8').includes("horizontal ? 'wheelh' : 'scroll'"), '横向滚轮')
 ok(toolsSrc.includes('holdKeys: Array.isArray(args.hold_keys)'), '修饰键按住点击（hold_keys）')
+
+console.log('— v2.8.8 补：截图 scope 引导 / 点击落点回显 / 遮罩实时进度 —')
+ok(toolsSrc.includes('看 MSMate 自己的界面') && toolsSrc.includes('用它永远截不到 MSMate 自己'), 'screenshot 三档引导：看自己必须 scope:"app"')
+ok(toolsSrc.includes('落点回显') && toolsSrc.includes('captureScreenShot(el)') && toolsSrc.includes('img.crop('), 'desktop_click 落点回显（点击后裁落点局部实拍）')
+ok(toolsSrc.includes('updateOverlayAction') && (toolsSrc.match(/desktopGuard\(args, /g) || []).length >= 7, 'desktop_* 全员挂遮罩实时动作（guard 第二参）')
+ok(fs.readFileSync(path.join(ROOT, 'capture.js'), 'utf8').includes('function updateOverlayAction') && fs.readFileSync(path.join(ROOT, 'capture.js'), 'utf8').includes('updateOverlayAction,'), 'capture.js 导出 updateOverlayAction（executeJavaScript 推动作）')
+ok(fs.readFileSync(path.join(ROOT, 'src/control-overlay.html'), 'utf8').includes('function setAction') && fs.readFileSync(path.join(ROOT, 'src/control-overlay.html'), 'utf8').includes('actspin'), '遮罩动作行 + 转圈动画（setAction）')
 
 console.log('— v2.4.33：卡片进工作台 + 资源管理器定位 + 划词胶囊 —')
 ok(appjs.includes('点击加入工作台预览'), '聊天文件卡片点击改为加入工作台')
@@ -2215,8 +2236,8 @@ console.log('— v2.4.82：钩子半残中毒修复（第二句话起永久瞎�
     // 节判定预处理必须"清洗后重算 kind"（splitTplSections 切节时基于原始 paras 定 kind——不重算=白清洗）
     ok(/sec\.paras = kept[\s\S]{0,400}sec\.kind = classifyTplSection\(sec\.paras, prevKind\)/.test(officeJs), '清洗后重判节类型（kind 重算）')
     ok(officeJs.includes('/^注\\s*意\\s*事\\s*项/') && officeJs.includes('本科毕业论文.{0,8}(原创性声明|版权使用授权书)'), '注意事项剔除（"定稿删除此页"不进产出，声明标题段才解禁）')
-    ok(/题\\s\*目/.test(toolsJs) === false && toolsJs.includes('改论文格式禁用本工具'), 'apply_word_format desc 论文场景警示（防拿另一篇论文当参考）')
-    ok(readManual('Word排版.md').includes('校徽等封面图片、原创性声明/授权页自动迁入') && readManual('Word排版.md').includes('改论文格式必须走本工具'), 'apply_word_template desc 固化正确工作流 → 手册 Word排版.md')
+    ok(toolsJs.includes('仅限用户明确给了格式参考文件的场景') && toolsJs.includes('用户口述了具体格式要求时逐条 style_word 遵从用户'), 'apply_word_format desc 论文场景分流（口述要求=style_word 遵从用户）')
+    ok(readManual('Word排版.md').includes('校徽等封面图片、原创性声明/授权页自动迁入') && readManual('Word排版.md').includes('格式要求冲突时优先级'), 'apply_word_template 场景限定 + 用户要求最高优先级 → 手册 Word排版.md')
     // 真跑套模板测试（含真素材全链路；素材缺失 SKIP）
     const { execSync } = require('child_process')
     try {
@@ -2248,7 +2269,7 @@ console.log('— v2.4.82：钩子半残中毒修复（第二句话起永久瞎�
     } catch (e) {
       ok(false, `套模板测试失败: ${(e.stdout || e.message).toString().slice(-150)}`)
     }
-    ok(pkg.version === '2.8.8', `package.json 版本 2.8.8（实际 ${pkg.version}）`)
+    ok(pkg.version === '2.8.9', `package.json 版本 2.8.9（实际 ${pkg.version}）`)
   }
 
   // ===== v2.6.0：工具手册化（渐进式披露：主规则瘦身，深度说明迁 ai/manuals 六册）=====
@@ -2264,7 +2285,7 @@ console.log('— v2.4.82：钩子半残中毒修复（第二句话起永久瞎�
     ok(manualNames.every((n) => { try { return fs.statSync(path.join(manualDir, n)).size > 2000 } catch { return false } }), '手册十一册落盘且非空（>2KB，含 电脑控制/开发）')
     // ② TOOL_DEFS manual 字段计数（brief 瘦身 + 手册指向；行尾手册路径=双轨渲染）
     const manualCount = (toolsDef.match(/manual: '/g) || []).length
-    ok(manualCount === 56, `TOOL_DEFS manual 字段计数 = 56（实际 ${manualCount}）`)
+    ok(manualCount === 58, `TOOL_DEFS manual 字段计数 = 58（实际 ${manualCount}）`)
     ok(toolsDef.includes("case 'remove_bg': return") && toolsDef.includes("'抠图引擎（onnxruntime-node）不可用"), 'remove_bg 实现+审批+describe 三处注册（本地 u2netp 抠图）')
     ok(toolsDef.includes("name: 'merge_pdf'") && toolsDef.includes("name: 'split_pdf'") && toolsDef.includes('STRUCTURAL_ARRAY_PARAMS') && toolsDef.includes("'paths'"), 'PDF 合并/拆分工具注册（pdf-lib，paths 数组白名单）')
     ok(toolsDef.includes("manual: 'ppt文档'") && toolsDef.includes("name: 'create_pptx'") && toolsDef.includes("name: 'read_pptx'") && toolsDef.includes("name: 'edit_pptx'"), 'PPT 三件套注册（create_pptx/read_pptx/edit_pptx → 手册：ppt文档）')

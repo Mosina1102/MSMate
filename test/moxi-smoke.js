@@ -75,16 +75,21 @@ async function main() {
   for (const ev of ['user_msg', 'tool_call', 'tool_result', 'run_done', 'media_done', 'transfer_complete', 'error']) {
     ok(`事件映射 ${ev}`, new RegExp(`^      ${ev}:`, 'm').test(petHtml))
   }
-  ok('工作中姿势轮播', /startWork[\s\S]*?WORK_ROTATE/.test(petHtml))
+  ok('工作中播打字主体段循环（多序列播放器）', /startWork[\s\S]*?playSeq\('typing', \{ loop: true, from: 0, to: 11 \}\)/.test(petHtml) && /seqTimer = setTimeout\(step, gap\)/.test(petHtml))
+  // 睡眠三段式（老大定调）：入睡段(0-3)播一遍→深睡循环(4-7 慢速 loop)→30s 后苏醒段(8-15)→回待机重计空闲
+  ok('睡觉/摸摸头序列接入（空闲循环+双击一轮）', /SEQ_LIB[\s\S]*?sleep-loop[\s\S]*?petting-loop/.test(petHtml) && /playSeq\('sleep', \{ from: 0, to: 3, interval: 220/.test(petHtml) && /playSeq\('sleep', \{ loop: true, from: 4, to: 7/.test(petHtml) && /playSeq\('petting'/.test(petHtml))
+  ok('睡眠三段式：入睡→深睡循环→苏醒→重计空闲', /sleepDeep/.test(petHtml) && /30 \* 1000/.test(petHtml) && /from: 8, to: 15/.test(petHtml) && /armIdle\(\) \/\/ 回待机/.test(petHtml))
+  ok('判定框穿透：默认全穿+悬停角色框内恢复（气泡不算判定框）', /setIgnoreMouseEvents\(true, \{ forward: true \}\)/.test(read('pet.js')) && /petMouseIgnore/.test(petHtml) && /getBoundingClientRect/.test(petHtml) && /pet:mouse-ignore/.test(read('main.js')))
+  ok('干活念叨：准备/成功带摘要+desktop 动作经 petAction 直连（send 不可达实锤修复）', /准备：\$\{s\}/.test(petHtml) && /成功：\$\{s\}/.test(petHtml) && /petAction/.test(read('main.js')) && /typeof petAction === 'function'/.test(read('ai/tools.js')))
   ok('换帧 crossfade 双层过渡', /activeLayer/.test(petHtml) && /opacity.*transition|transition.*opacity/.test(petHtml))
   ok('呼吸浮动（待机/干活双速）', /@keyframes bob/.test(petHtml) && /actor\.working/.test(petHtml))
-  ok('打字随机节奏（600~1500ms）', /600 \+ Math\.random\(\) \* 900/.test(petHtml))
+  ok('序列节奏可调（默认 160ms/完成段 350ms）', /opts\.interval \|\| 160/.test(petHtml) && /interval: 350/.test(petHtml))
   ok('ask_user → 问号帧', /name === 'ask_user'[\s\S]*?FRAME\.question/.test(petHtml))
   ok('90s 空闲 ZZZ 帧', /90 \* 1000/.test(petHtml) && /FRAME\.sleep/.test(petHtml))
   ok('失败两级：单败乱线/连败无语', /FRAME\.stressed/.test(petHtml) && /FRAME\.speechless/.test(petHtml))
   ok('气泡短句（寡言人设）', /'收到。'/.test(petHtml) && /'完事了。'/.test(petHtml))
   const preload = read('preload.js')
-  ok('preload 桌宠 API 八件套', ['onPetEvent', 'onPetScale', 'petDragStart', 'petDragMove', 'petClick', 'petFileDrop', 'petGetEnabled', 'petSetEnabled'].every((k) => preload.includes(`${k}:`)))
+  ok('preload 桌宠 API 九件套', ['onPetEvent', 'onPetScale', 'petDragStart', 'petDragMove', 'petMouseIgnore', 'petClick', 'petFileDrop', 'petGetEnabled', 'petSetEnabled'].every((k) => preload.includes(`${k}:`)))
   // 桌宠大小可调：四档 scale + body.zoom 缩放（精灵图 background-size 写死定律不动）
   const petjs = read('pet.js')
   ok('桌宠四档尺寸 + 持久化', /PET_SCALES/.test(petjs) && /setPetScale/.test(petjs) && /petScale\('petScale'\)|getSetting\('petScale'\)/.test(petjs))

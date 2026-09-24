@@ -61,13 +61,62 @@ window.convertTask = async (dataUrl, opts) => {
   if (!opts.opaque) window.edgeFix(x, tw, th)
   return { w: tw, h: th, data: c.toDataURL('image/webp', opts.q || 0.92) }
 }
-// 动作帧：4×4 切格（右移 8 + 底收 10，固定偏移）→ 内容归一化（水平居中+底边基线+大小贴中位数）→ 拼条
-// 注：逐帧迭代校准试过不如这版（会误切），勿回加
+// 色键抠图（网格多主体专用）：背景是均匀浅色 → 四角采背景色 → 从边缘 flood fill 只抠"与边缘连通的
+// 近背景像素"——角色内部的白色围裙/浅色高光不被误抠（u2netp 对 16 主体网格分割不稳，实测多格误抠）
+window.colorKeyCut = async (dataUrl) => {
+  const im = await window.loadImg(dataUrl)
+  const c = document.createElement('canvas')
+  c.width = im.width; c.height = im.height
+  const x = c.getContext('2d')
+  x.drawImage(im, 0, 0)
+  const d = x.getImageData(0, 0, im.width, im.height)
+  const p = d.data
+  const W = im.width, H = im.height
+  const corners = []
+  const grab = (x0, y0) => { for (let y = y0; y < y0 + 8 && y < H; y++) for (let xx = x0; xx < x0 + 8 && xx < W; xx++) corners.push([p[(y * W + xx) * 4], p[(y * W + xx) * 4 + 1], p[(y * W + xx) * 4 + 2]]) }
+  grab(0, 0); grab(W - 8, 0); grab(0, H - 8); grab(W - 8, H - 8)
+  const med = (i) => { const v = corners.map((a) => a[i]).sort((a, b) => a - b); return v[Math.floor(v.length / 2)] }
+  const bg = [med(0), med(1), med(2)]
+  const dist2 = (i) => { const dr = p[i] - bg[0], dg = p[i + 1] - bg[1], db = p[i + 2] - bg[2]; return dr * dr + dg * dg + db * db }
+  const TH2 = 30 * 30
+  const visited = new Uint8Array(W * H)
+  const queue = []
+  const push = (x, y) => { const i = y * W + x; if (!visited[i] && dist2(i * 4) < TH2) { visited[i] = 1; queue.push(i) } }
+  for (let xx = 0; xx < W; xx++) { push(xx, 0); push(xx, H - 1) }
+  for (let yy = 0; yy < H; yy++) { push(0, yy); push(W - 1, yy) }
+  while (queue.length) {
+    const i = queue.pop()
+    const x = i % W, y = (i / W) | 0
+    if (x > 0) push(x - 1, y)
+    if (x < W - 1) push(x + 1, y)
+    if (y > 0) push(x, y - 1)
+    if (y < H - 1) push(x, y + 1)
+  }
+  for (let i = 0; i < W * H; i++) if (visited[i]) p[i * 4 + 3] = 0
+  x.putImageData(d, 0, 0)
+  window.edgeFix(x, W, H)
+  return { w: W, h: H, data: c.toDataURL('image/png') }
+}
+// 动作帧：4×4 切格 → 内容归一化（水平居中+底边基线+大小贴中位数）→ 拼条
+// 注：切格前先按整图内容包围盒裁剪（AI 网格图四周留白不均，满幅等分会切歪）
 window.cutStrip = async (dataUrl) => {
   const im = await window.loadImg(dataUrl)
-  const cw = Math.floor(im.width / 4), ch = Math.floor(im.height / 4)
-  const shift = 8  // 窗口右移：切掉左缘的上一帧尾巴残留
-  const shiftY = 10 // 底部收窄：切掉下一行顶部渗入
+  // 整图内容包围盒（alpha 投影）：AI 网格图四周常有留白且不均匀，满幅等分会切歪格——先裁到内容再等分
+  const pc = document.createElement('canvas')
+  pc.width = im.width; pc.height = im.height
+  const pd = pc.getContext('2d').getImageData(0, 0, im.width, im.height).data
+  let cMinX = im.width, cMinY = im.height, cMaxX = -1, cMaxY = -1
+  for (let y = 0; y < im.height; y++) for (let x = 0; x < im.width; x++) {
+    if (pd[(y * im.width + x) * 4 + 3] > 12) {
+      if (x < cMinX) cMinX = x; if (x > cMaxX) cMaxX = x
+      if (y < cMinY) cMinY = y; if (y > cMaxY) cMaxY = y
+    }
+  }
+  if (cMaxX < 0) { cMinX = 0; cMinY = 0; cMaxX = im.width - 1; cMaxY = im.height - 1 }
+  const bw = cMaxX - cMinX + 1, bh = cMaxY - cMinY + 1
+  const cw = Math.floor(bw / 4), ch = Math.floor(bh / 4)
+  const shift = 4  // 窗口右移小量：切掉左缘的上一帧尾巴残留（包围盒已贴合，无需大偏移）
+  const shiftY = 4 // 底部收窄小量：切掉下一行顶部渗入
   const cellW = cw - shift
   const cellH = ch - shiftY
   const cut = () => {
@@ -78,7 +127,7 @@ window.cutStrip = async (dataUrl) => {
   const cells = []
   for (let i = 0; i < 16; i++) {
     const c = cut()
-    c.getContext('2d').drawImage(im, (i % 4) * cw + shift, Math.floor(i / 4) * ch, cellW, cellH, 0, 0, cellW, cellH)
+    c.getContext('2d').drawImage(im, cMinX + (i % 4) * cw + (shift >> 1), cMinY + Math.floor(i / 4) * ch + (shiftY >> 1), cellW, cellH, 0, 0, cellW, cellH)
     cells.push(c)
   }
   // 每格内容包围盒（alpha > 24 视为实体）
@@ -94,9 +143,12 @@ window.cutStrip = async (dataUrl) => {
     }
     return maxX < 0 ? null : { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 }
   })
-  // 大小基准 = 有效帧包围盒高的中位数
+  // 大小基准：统一 scale（全帧同一个，按"中位数高/最大包围盒高"算）——
+  // 逐帧独立缩放会把举手/欢呼帧缩小、低帧放大 → 播放时"大小大小"抖动（老大实锤）
   const hs = boxes.filter(Boolean).map((b) => b.h).sort((a, b) => a - b)
   const baseH = hs.length ? hs[Math.floor(hs.length / 2)] : cellH
+  const maxH = hs.length ? hs[hs.length - 1] : cellH
+  const scale = Math.min(1.22, Math.max(0.82, baseH / maxH)) // 统一缩放限幅防糊
   const out = document.createElement('canvas')
   out.width = cellW * 16; out.height = cellH
   const ox = out.getContext('2d')
@@ -104,7 +156,6 @@ window.cutStrip = async (dataUrl) => {
     const c = cells[i], b = boxes[i]
     const x = c.getContext('2d')
     if (!b) { ox.drawImage(c, i * cellW, 0); continue } // 空格原样
-    const scale = Math.min(1.22, Math.max(0.82, baseH / b.h)) // 大小贴基准，限幅防糊防过度
     const dw = Math.round(b.w * scale), dh = Math.round(b.h * scale)
     const dx = Math.round((cellW - dw) / 2)      // 水平居中
     const dy = Math.max(0, cellH - 2 - dh)       // 垂直底边对齐（统一坐姿基线，留 2px）
@@ -138,10 +189,13 @@ async function main() {
     return raw.length
   }
 
-  // --motion <路径>：外部连续动作网格（4×4）→ 白底自动过本地抠图 → 切帧 → typing-loop.webp（一条龙）
+  // --motion <路径>：外部连续动作网格（4×4）→ 色键抠图 → 切帧 → 序列条带（一条龙）
+  // --out <名字>：输出文件名（默认 typing-loop.webp；睡觉图传 sleep-loop.webp 等）
   const motionIdx = process.argv.indexOf('--motion')
   if (motionIdx > -1 && process.argv[motionIdx + 1]) {
     const src = path.resolve(process.argv[motionIdx + 1])
+    const outIdx = process.argv.indexOf('--out')
+    const OUT_NAME = (outIdx > -1 && process.argv[outIdx + 1]) || 'typing-loop.webp'
     if (!fs.existsSync(src)) { console.error('FAIL 源图不存在:', src); app.exit(1) }
     try {
       let cutSrc = src
@@ -158,25 +212,15 @@ async function main() {
       })()`)
       ok(`源图 ${path.basename(src)} ${probe.w}x${probe.h}`, true)
       if (!probe.hasAlpha) {
-        console.log('源图无透明通道 → 本地 remove_bg 抠图…')
-        const os = require('os')
-        const { createTools } = require('../ai/tools')
-        const settingsDir = [process.env.MSC_USER_DATA, path.join(os.homedir(), 'AppData', 'Roaming', 'MSMate-moxi-test'), path.join(os.homedir(), 'AppData', 'Roaming', 'MSWork'), path.join(os.homedir(), 'AppData', 'Roaming', 'MSMate')].filter(Boolean).find((d) => fs.existsSync(path.join(d, 'settings.json')))
-        const readS = () => { try { return JSON.parse(fs.readFileSync(path.join(settingsDir, 'settings.json'), 'utf8')) } catch { return {} } }
-        const tools = createTools({
-          tcpAgent: { getConnectedDevices: () => [], uploadFile: async () => ({ success: true }), downloadFile: async () => ({ success: true }) },
-          snapshots: { backupLocal: () => ({ ok: false }) },
-          desktopDir: OUT, tmpDir: OUT, workspaceDir: OUT,
-          getSetting: (k) => readS()[k], setSetting: () => true, log: () => {}
-        })
-        const rb = await tools.execute('remove_bg', { path: src, out: path.join(OUT, '.tmp-motion-cut.png') })
-        if (!rb.ok) { ok('白底抠图', false, rb.message.slice(0, 120)); app.exit(1) }
+        console.log('源图无透明通道 → 色键抠图（边缘 flood fill，网格多主体比 AI 抠图稳）…')
+        const ck = await win.webContents.executeJavaScript(`colorKeyCut(${JSON.stringify(b64(src))})`)
         cutSrc = path.join(OUT, '.tmp-motion-cut.png')
-        ok('白底自动抠图', fs.existsSync(cutSrc))
+        fs.writeFileSync(cutSrc, Buffer.from(ck.data.slice(ck.data.indexOf(',') + 1), 'base64'))
+        ok('色键抠图', fs.existsSync(cutSrc))
       }
       const s = await win.webContents.executeJavaScript(`cutStrip(${JSON.stringify(b64(cutSrc))})`)
-      const ssize = save('typing-loop.webp', s.data)
-      ok(`typing-loop.webp ${s.w}x${s.h}（格 ${s.cellW}x${s.cellH}）`, ssize > 3000, (ssize / 1024).toFixed(0) + 'KB')
+      const ssize = save(OUT_NAME, s.data)
+      ok(`${OUT_NAME} ${s.w}x${s.h}（格 ${s.cellW}x${s.cellH}）`, ssize > 3000, (ssize / 1024).toFixed(0) + 'KB')
       fs.writeFileSync(path.join(__dirname, '.tmp-moxi-strip-preview.webp'), Buffer.from(s.data.slice(s.data.indexOf(',') + 1), 'base64'))
       console.log(`\n${fail === 0 ? 'MOTION_OK' : 'MOTION_FAIL'} (${pass}/${pass + fail})`)
       app.exit(fail ? 1 : 0)

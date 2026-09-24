@@ -737,6 +737,68 @@ async function modifyDocx(filePath, content, mode) {
   return buffer.length
 }
 
+// ===== 已有文档插图（v2.9：add_word_image）=====
+// 在含 afterText 的段落后插入图片（居中）；找不到 afterText 就插到文档末尾。widthCm 控制显示宽。
+// 复用追加路径的图片注入管线（media 文件 + rels 注册 + ContentTypes）
+async function addWordImage(filePath, imagePath, opts = {}) {
+  const info = loadImage(imagePath, 10000, 10000, null)   // 不缩放拿原始尺寸（widthCm 精确控宽）
+  if (!info) throw new Error(`图片读取失败：${imagePath}`)
+  const afterText = String(opts.afterText || '').trim()
+  const widthCm = Number(opts.widthCm) > 0 ? Number(opts.widthCm) : null
+  let cx, cy
+  if (widthCm) {
+    cx = Math.round(widthCm * 360000)
+    cy = Math.round(cx * info.height / info.width)
+  } else {
+    // 未指定宽度：沿用追加路径的默认上限（560px ≈ 14.8cm）
+    cx = info.width * 9525
+    cy = info.height * 9525
+  }
+
+  const zip = await JSZip.loadAsync(fs.readFileSync(filePath))
+  const doc = zip.file('word/document.xml')
+  if (!doc) throw new Error('不是有效的 Word 文档（缺少 document.xml）')
+  let xml = await doc.async('string')
+
+  // 注入 media + rels + ContentTypes
+  let relsF = zip.file('word/_rels/document.xml.rels')
+  let relsXml = relsF ? await relsF.async('string') : '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>'
+  let maxRid = 0
+  for (const m of relsXml.matchAll(/Id="rId(\d+)"/g)) maxRid = Math.max(maxRid, parseInt(m[1], 10))
+  const mediaFiles = zip.file(/^word\/media\//) || []
+  const mediaIdx = mediaFiles.length + 1
+  const ext = IMG_CT[info.type] ? info.type : 'png'
+  const rId = `rId${maxRid + 1}`
+  relsXml = relsXml.replace('</Relationships>', `<Relationship Id="${rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image${mediaIdx}.${ext}"/></Relationships>`)
+  zip.file(`word/media/image${mediaIdx}.${ext}`, info.buffer)
+  let ctXml = await zip.file('[Content_Types].xml').async('string')
+  if (!ctXml.includes(`Extension="${ext}"`)) ctXml = ctXml.replace('</Types>', `<Default Extension="${ext}" ContentType="${IMG_CT[ext]}"/></Types>`)
+  zip.file('[Content_Types].xml', ctXml)
+  zip.file('word/_rels/document.xml.rels', relsXml)
+
+  const imgPara = inlineDrawingParaXml({ cx, cy }, 100 + Math.floor(Math.random() * 900), rId)
+  if (afterText) {
+    // 定位含 afterText 的段落，插到它后面（图片段 + 可选题注位留给用户自己加）
+    let inserted = false
+    xml = xml.replace(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g, (pXml) => {
+      if (inserted) return pXml
+      const texts = [...pXml.matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g)].map((m2) => decodeEntities(m2[1])).join('')
+      if (!texts.includes(afterText)) return pXml
+      inserted = true
+      return pXml + imgPara
+    })
+    if (!inserted) throw new Error(`没找到含「${afterText.slice(0, 30)}」的段落——先 read_word 看内容再定位`)
+  } else {
+    if (xml.includes('<w:sectPr')) xml = xml.replace('<w:sectPr', imgPara + '<w:sectPr')
+    else xml = xml.replace('</w:body>', imgPara + '</w:body>')
+  }
+  zip.file('word/document.xml', xml)
+  const buffer = await zip.generateAsync({ type: 'nodebuffer' })
+  fs.writeFileSync(filePath, buffer)
+  await validateDocx(filePath, { throwOnError: true })
+  return { widthCm: +(cx / 360000).toFixed(2), size: buffer.length }
+}
+
 // ===== 指令式格式修改（style_word 底层）：治"单独改格式费劲且改不好" =====
 // ops 直接说意图：{ target, align, color, font, sizePt, bold, firstLine }
 // target: 'title'文档大标题 | 'h1'/'h2'/'h3'各级标题 | 'all'全部段落 | { contains:'文本' } 按内容定位
@@ -788,6 +850,115 @@ async function styleDocx(filePath, ops) {
   let titleIdx = segs.findIndex((s) => pStyleOf(s.xml) === 'Title')
   if (titleIdx < 0) titleIdx = segs.findIndex((s) => pTextOf(s.xml).trim())
 
+  // 页面级指令（target:"page"）：页边距 cm（sectPr 层，与段落无关，先处理）
+  for (const op of list) {
+    if (op.target !== 'page') continue
+    const mt = op.marginTopCm != null ? Math.round(Number(op.marginTopCm) * 567) : null
+    const mb = op.marginBottomCm != null ? Math.round(Number(op.marginBottomCm) * 567) : null
+    const ml = op.marginLeftCm != null ? Math.round(Number(op.marginLeftCm) * 567) : null
+    const mr = op.marginRightCm != null ? Math.round(Number(op.marginRightCm) * 567) : null
+    if (mt == null && mb == null && ml == null && mr == null) throw new Error('target:"page" 需要 margin{Top,Bottom,Left,Right}Cm 至少一项（单位 cm）')
+    xml = xml.replace(/<w:pgMar\b[^>]*\/>/, (pm) => {
+      let s = pm
+      if (mt != null) s = /w:top="/.test(s) ? s.replace(/w:top="\d+"/, `w:top="${mt}"`) : s.replace(/<w:pgMar\b/, `<w:pgMar w:top="${mt}"`)
+      if (mb != null) s = /w:bottom="/.test(s) ? s.replace(/w:bottom="\d+"/, `w:bottom="${mb}"`) : s.replace(/<w:pgMar\b/, `<w:pgMar w:bottom="${mb}"`)
+      if (ml != null) s = /w:left="/.test(s) ? s.replace(/w:left="\d+"/, `w:left="${ml}"`) : s.replace(/<w:pgMar\b/, `<w:pgMar w:left="${ml}"`)
+      if (mr != null) s = /w:right="/.test(s) ? s.replace(/w:right="\d+"/, `w:right="${mr}"`) : s.replace(/<w:pgMar\b/, `<w:pgMar w:right="${mr}"`)
+      return s
+    })
+    op.__pageHit = /w:pgMar\b/.test(xml)
+  }
+
+  // 页眉/页脚文字指令（target:"header"/"footer" + text）：有部件改文字（首个段落替换、其余段保留），
+  // 没有部件就创建标准部件 + ContentTypes/rels/sectPr 引用三件套注册
+  for (const op of list) {
+    if (op.target !== 'header' && op.target !== 'footer') continue
+    if (op.text == null) throw new Error(`target:"${op.target}" 需要 text（"" = 清空）`)
+    const kind = op.target
+    const isHdr = kind === 'header'
+    const rootTag = isHdr ? 'w:hdr' : 'w:ftr'
+    const relType = `http://schemas.openxmlformats.org/officeDocument/2006/relationships/${kind}`
+    const partPrefix = isHdr ? 'header' : 'footer'
+    const sectXml = (xml.match(/<w:sectPr[\s\S]*?<\/w:sectPr>/) || [])[0] || ''
+    const refRe = new RegExp(`<w:${kind}Reference[^>]*w:type="default"[^>]*/>`)
+    const refM = sectXml.match(refRe)
+    // rels 查询（页眉部件名从 relationship 的 Target 拿）
+    let resolvedPart = null
+    if (refM) {
+      const rid = (refM[0].match(/r:id="([^"]+)"/) || [])[1]
+      const relsFile = zip.file('word/_rels/document.xml.rels')
+      if (relsFile) {
+        const relsXml2 = await relsFile.async('string')
+        const tm = relsXml2.match(new RegExp(`<Relationship[^>]*Id="${rid}"[^>]*Target="([^"]+)"`))
+        if (tm) resolvedPart = 'word/' + String(tm[1]).replace(/^\//, '')
+      }
+    }
+    if (resolvedPart && zip.file(resolvedPart)) {
+      // 已有部件：重建其内容（保留 root 属性），文字居中
+      const hfXml = await zip.file(resolvedPart).async('string')
+      const rootAttrs = (hfXml.match(new RegExp(`<${rootTag}\\b([^>]*)>`)) || [])[1] || ''
+      const inner = op.text === '' ? `<w:p/>` : `<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t xml:space="preserve">${escapeXml(String(op.text))}</w:t></w:r></w:p>`
+      zip.file(resolvedPart, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><${rootTag}${rootAttrs}>${inner}</${rootTag}>`)
+      op.__hfHit = true
+    } else {
+      // 无部件：创建 header1/footer1.xml（编号避让已有文件）+ 注册三件套
+      let idx = 1
+      while (zip.file(`word/${partPrefix}${idx}.xml`)) idx++
+      partName = `word/${partPrefix}${idx}.xml`
+      const inner = op.text === '' ? `<w:p/>` : `<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t xml:space="preserve">${escapeXml(String(op.text))}</w:t></w:r></w:p>`
+      const rootAttrs = ` xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"`
+      zip.file(partName, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><${rootTag}${rootAttrs}>${inner}</${rootTag}>`)
+      // ContentTypes
+      let ct = await zip.file('[Content_Types].xml').async('string')
+      const ctMime = isHdr ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml'
+      if (!ct.includes(`/${partPrefix}${idx}.xml`)) ct = ct.replace('</Types>', `<Override PartName="/${partName}" ContentType="${ctMime}"/></Types>`)
+      zip.file('[Content_Types].xml', ct)
+      // rels
+      let relsF = zip.file('word/_rels/document.xml.rels')
+      let relsS = relsF ? await relsF.async('string') : '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>'
+      let maxRid2 = 0
+      for (const rm of relsS.matchAll(/Id="rId(\d+)"/g)) maxRid2 = Math.max(maxRid2, parseInt(rm[1], 10))
+      const newRid = `rId${maxRid2 + 1}`
+      relsS = relsS.replace('</Relationships>', `<Relationship Id="${newRid}" Type="${relType}" Target="${partPrefix}${idx}.xml"/></Relationships>`)
+      zip.file('word/_rels/document.xml.rels', relsS)
+      // sectPr 引用
+      if (/<w:sectPr[\s\S]*?<\/w:sectPr>/.test(xml)) {
+        xml = xml.replace(/<w:sectPr/, `<w:sectPr><w:${kind}Reference w:type="default" r:id="${newRid}"/>`)
+      }
+      op.__hfHit = true
+    }
+  }
+
+  // 列表指令基础设施：确保 numbering.xml 有 bullet/number 两个标准定义（numId 10/11），没有就建
+  async function ensureNumbering() {
+    const NUM_CT = 'application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml'
+    const BULLET_ABS = `<w:abstractNum w:abstractNumId="90"><w:multiLevelType w:val="hybridMultilevel"/><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val=""/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="420" w:hanging="420"/></w:pPr><w:rPr><w:rFonts w:ascii="Symbol" w:hAnsi="Symbol" w:hint="default"/></w:rPr></w:lvl>${[1, 2, 3, 4, 5].map((i) => `<w:lvl w:ilvl="${i}"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val=""/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="${420 + 360 * i}" w:hanging="420"/></w:pPr><w:rPr><w:rFonts w:ascii="Symbol" w:hAnsi="Symbol" w:hint="default"/></w:rPr></w:lvl>`).join('')}</w:abstractNum>`
+    const NUM_ABS = `<w:abstractNum w:abstractNumId="91"><w:multiLevelType w:val="hybridMultilevel"/><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="420" w:hanging="420"/></w:pPr></w:lvl>${[1, 2, 3, 4, 5].map((i) => `<w:lvl w:ilvl="${i}"><w:start w:val="1"/><w:numFmt w:val="lowerLetter"/><w:lvlText w:val="%${i + 2}."/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="${420 + 360 * i}" w:hanging="420"/></w:pPr></w:lvl>`).join('')}</w:abstractNum>`
+    let numF = zip.file('word/numbering.xml')
+    if (numF) {
+      let ns = await numF.async('string')
+      if (!/w:numId w:val="10"/.test(ns)) {
+        ns = ns.replace('</w:numbering>', `${BULLET_ABS}${NUM_ABS}<w:num w:numId="10"><w:abstractNumId w:val="90"/></w:num><w:num w:numId="11"><w:abstractNumId w:val="91"/></w:num></w:numbering>`)
+        zip.file('word/numbering.xml', ns)
+      }
+      return
+    }
+    const numXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">${BULLET_ABS}${NUM_ABS}<w:num w:numId="10"><w:abstractNumId w:val="90"/></w:num><w:num w:numId="11"><w:abstractNumId w:val="91"/></w:num></w:numbering>`
+    zip.file('word/numbering.xml', numXml)
+    let ct = await zip.file('[Content_Types].xml').async('string')
+    if (!ct.includes('/word/numbering.xml')) ct = ct.replace('</Types>', `<Override PartName="/word/numbering.xml" ContentType="${NUM_CT}"/></Types>`)
+    zip.file('[Content_Types].xml', ct)
+    let relsF2 = zip.file('word/_rels/document.xml.rels')
+    let relsS2 = relsF2 ? await relsF2.async('string') : '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>'
+    if (!relsS2.includes('numbering.xml')) {
+      let mr = 0
+      for (const rm of relsS2.matchAll(/Id="rId(\d+)"/g)) mr = Math.max(mr, parseInt(rm[1], 10))
+      relsS2 = relsS2.replace('</Relationships>', `<Relationship Id="rId${mr + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/></Relationships>`)
+      zip.file('word/_rels/document.xml.rels', relsS2)
+    }
+  }
+  if (list.some((o) => o.list != null)) await ensureNumbering()
+
   // 第二轮：逐段匹配 ops 并手术
   for (let i = 0; i < segs.length; i++) {
     const seg = segs[i]
@@ -806,18 +977,60 @@ async function styleDocx(filePath, ops) {
       else if (typeof op.target === 'object' && op.target.contains) match = pText.includes(op.target.contains)
       if (!match) continue
       hit = true
+      // 列表指令（list:'bullet'|'number'|'none'）：numPr 注入/移除（numId 10=项目符号 11=编号）
+      if (op.list != null) {
+        if (op.list === 'none') {
+          np = np.replace(/<w:numPr>[\s\S]*?<\/w:numPr>/, '')
+        } else {
+          const numId = op.list === 'number' ? 11 : 10
+          if (/<w:numPr>/.test(np)) np = np.replace(/<w:numPr>[\s\S]*?<\/w:numPr>/, `<w:numPr><w:ilvl w:val="0"/><w:numId w:val="${numId}"/></w:numPr>`)
+          else if (/<w:pStyle\b[^>]*\/>/.test(np)) np = np.replace(/(<w:pStyle\b[^>]*\/>)/, `$1<w:numPr><w:ilvl w:val="0"/><w:numId w:val="${numId}"/></w:numPr>`)
+          else if (/<w:pPr\b[^>]*>/.test(np)) np = np.replace(/(<w:pPr\b[^>]*>)/, `$1<w:numPr><w:ilvl w:val="0"/><w:numId w:val="${numId}"/></w:numPr>`)
+          else np = np.replace(/(<w:p\b[^>]*>)/, `$1<w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="${numId}"/></w:numPr></w:pPr>`)
+        }
+      }
       if (op.align) {
-        const val = { center: 'center', left: 'left', right: 'right', justify: 'both', both: 'both' }[String(op.align).toLowerCase()]
-        if (!val) throw new Error(`align 无效: ${op.align}（center/left/right/justify）`)
+        // distribute = 分散对齐（中文排版标题撑满常用）
+        const val = { center: 'center', left: 'left', right: 'right', justify: 'both', both: 'both', distribute: 'distribute' }[String(op.align).toLowerCase()]
+        if (!val) throw new Error(`align 无效: ${op.align}（center/left/right/justify/distribute）`)
         np = setParaAlign(np, val)
       }
       if (op.firstLine === 'none') {
         np = np.replace(/(<w:ind [^>]*?) w:firstLine="\d+"/, '$1').replace(/(<w:ind [^>]*?) w:firstLineChars="\d+"/, '$1')
+      } else if (op.firstLine != null && Number(op.firstLine) > 0) {
+        // 首行缩进 N 字符（firstLineChars 单位 1/100 字符）
+        const ch = Math.round(Number(op.firstLine) * 100)
+        if (/<w:ind [^>]*w:firstLineChars="/.test(np)) np = np.replace(/w:firstLineChars="\d+"/, `w:firstLineChars="${ch}"`)
+        else if (/<w:ind\b[^>]*\/>/.test(np)) np = np.replace(/<w:ind\b([^>]*)\/>/, `<w:ind$1 w:firstLineChars="${ch}"/>`)
+        else np = np.replace(/(<w:pPr\b[^>]*>)/, `$1<w:ind w:firstLineChars="${ch}"/>`)
+      }
+      // 行距（倍数）/段前段后（pt）：spacing 有则改，无则插（pPr 首位附近合法）
+      const line240 = Number(op.lineRatio) > 0 ? Math.round(Number(op.lineRatio) * 240) : null
+      const bef20 = Number(op.beforePt) > 0 ? Math.round(Number(op.beforePt) * 20) : (op.beforePt === 0 ? 0 : null)
+      const aft20 = Number(op.afterPt) > 0 ? Math.round(Number(op.afterPt) * 20) : (op.afterPt === 0 ? 0 : null)
+      if (line240 != null || bef20 != null || aft20 != null) {
+        if (/<w:spacing\b[^>]*\/>/.test(np)) {
+          np = np.replace(/<w:spacing\b[^>]*\/>/, (sm) => {
+            let s = sm
+            if (line240 != null) s = /w:line="/.test(s) ? s.replace(/w:line="\d+"/, `w:line="${line240}"`) : s.replace(/<w:spacing\b/, `<w:spacing w:line="${line240}"`)
+            if (line240 != null) s = /w:lineRule="/.test(s) ? s.replace(/w:lineRule="[^"]*"/, 'w:lineRule="auto"') : s.replace(/<w:spacing\b/, '<w:spacing w:lineRule="auto"')
+            if (bef20 != null) s = /w:before="/.test(s) ? s.replace(/w:before="\d+"/, `w:before="${bef20}"`) : s.replace(/<w:spacing\b/, `<w:spacing w:before="${bef20}"`)
+            if (aft20 != null) s = /w:after="/.test(s) ? s.replace(/w:after="\d+"/, `w:after="${aft20}"`) : s.replace(/<w:spacing\b/, `<w:spacing w:after="${aft20}"`)
+            return s
+          })
+        } else {
+          const bits = `${line240 != null ? `w:line="${line240}" w:lineRule="auto" ` : ''}${bef20 != null ? `w:before="${bef20}" ` : ''}${aft20 != null ? `w:after="${aft20}"` : ''}`.trim()
+          np = np.replace(/(<w:pPr\b[^>]*>)/, `$1<w:spacing ${bits}/>`)
+        }
       }
       const colorHex = op.color ? (/^[0-9a-fA-F]{6}$/.test(String(op.color)) ? String(op.color).toUpperCase() : { black: '000000', red: 'FF0000', blue: '0000FF', gray: '808080', auto: 'auto' }[String(op.color).toLowerCase()] || null) : null
       if (op.color && !colorHex) throw new Error(`color 无效: ${op.color}（6 位 hex 如 000000，或 black/red/blue/gray/auto）`)
+      // 突出显示（Word 高亮笔）：标准 16 色名或取消
+      const HL = { yellow: 'yellow', green: 'green', cyan: 'cyan', magenta: 'magenta', blue: 'blue', red: 'red', darkblue: 'darkBlue', darkcyan: 'darkCyan', darkgreen: 'darkGreen', darkmagenta: 'darkMagenta', darkred: 'darkRed', darkyellow: 'darkYellow', darkgray: 'darkGray', lightgray: 'lightGray', black: 'black', white: 'white', none: null }
+      const hlVal = op.highlight != null ? (op.highlight === 'none' || op.highlight === false ? null : (HL[String(op.highlight).toLowerCase()] || null)) : undefined
+      if (op.highlight != null && hlVal == null && op.highlight !== 'none' && op.highlight !== false) throw new Error(`highlight 无效: ${op.highlight}（yellow/green/cyan/magenta/blue/red…或 none 取消）`)
       const sizeHalf = Number(op.sizePt) > 0 ? Math.round(Number(op.sizePt) * 2) : null
-      if (op.color || op.font || sizeHalf || op.bold !== undefined) {
+      if (op.color || op.font || sizeHalf || op.bold !== undefined || op.italic !== undefined || op.underline !== undefined || op.strike !== undefined || hlVal !== undefined || op.vertAlign !== undefined) {
         // run 级手术：只动有文字的 run（<w:t> 非空），空 run（sectPr/书签等）不动
         np = np.replace(/<w:r\b[^>]*>[\s\S]*?<\/w:r>/g, (run) => {
           if (!/<w:t[^>]*>[^<]/.test(run)) return run
@@ -839,6 +1052,51 @@ async function styleDocx(filePath, ops) {
           } else if (op.bold === false) {
             if (/<w:b\/>/.test(r)) r = r.replace(/<w:b\/>/, '<w:b w:val="0"/>')
             else if (/<w:b\b[^>]*\/>/.test(r) && !/<w:b\s*w:val="(?:1|true)"/.test(r)) r = r.replace(/<w:b\b[^>]*\/>/, '<w:b w:val="0"/>')
+          }
+          // 斜体（schema 顺序：i 在 b 之后 color 之前）
+          if (op.italic === true) {
+            if (/<w:i\s*w:val="(?:0|false)"/.test(r)) r = r.replace(/<w:i\s*w:val="(?:0|false)"\s*\/>/, '<w:i/>')
+            else if (!/<w:i\b[^>]*\/>/.test(r)) r = rprSet(r, 'i', '<w:i/>', [/<w:color\b/, /<w:szCs\b/, /<w:sz\b/, /<w:u\b/, /<w:highlight\b/, /<\/w:rPr>/])
+          } else if (op.italic === false) {
+            if (/<w:i\/>/.test(r)) r = r.replace(/<w:i\/>/, '<w:i w:val="0"/>')
+            else if (/<w:i\b[^>]*\/>/.test(r) && !/<w:i\s*w:val="(?:1|true)"/.test(r)) r = r.replace(/<w:i\b[^>]*\/>/, '<w:i w:val="0"/>')
+          }
+          // 下划线（线型：single/double/wavy/thick/dotted…；false/none 取消——取消用 w:u w:val="none" 保持 schema 位置）
+          if (op.underline !== undefined) {
+            if (op.underline === false || op.underline === 'none') {
+              if (/<w:u\b[^>]*\/>/.test(r)) r = r.replace(/<w:u\b[^>]*\/>/, '<w:u w:val="none"/>')
+              else r = rprSet(r, 'u', '<w:u w:val="none"/>', [/<w:highlight\b/, /<\/w:rPr>/])
+            } else {
+              const uv = { single: 'single', double: 'double', wavy: 'wavy', thick: 'thick', dotted: 'dotted', dash: 'dashed' }[String(op.underline)] || 'single'
+              if (/<w:u\b[^>]*\/>/.test(r)) r = r.replace(/<w:u\b[^>]*\/>/, `<w:u w:val="${uv}"/>`)
+              else r = rprSet(r, 'u', `<w:u w:val="${uv}"/>`, [/<w:highlight\b/, /<\/w:rPr>/])
+            }
+          }
+          // 删除线
+          if (op.strike === true) {
+            if (!/<w:strike\b[^>]*\/>/.test(r)) r = rprSet(r, 'strike', '<w:strike/>', [/<w:color\b/, /<w:szCs\b/, /<w:sz\b/, /<w:u\b/, /<w:highlight\b/, /<\/w:rPr>/])
+          } else if (op.strike === false) {
+            if (/<w:strike\b[^>]*\/>/.test(r)) r = r.replace(/<w:strike\b[^>]*\/>/, '<w:strike w:val="0"/>')
+          }
+          // 突出显示（高亮笔）
+          if (hlVal !== undefined) {
+            if (hlVal == null) {
+              if (/<w:highlight\b[^>]*\/>/.test(r)) r = r.replace(/<w:highlight\b[^>]*\/>/, '<w:highlight w:val="none"/>')
+            } else {
+              if (/<w:highlight\b[^>]*\/>/.test(r)) r = r.replace(/<w:highlight w:val="[^"]*"\s*\/>/, `<w:highlight w:val="${hlVal}"/>`)
+              else r = rprSet(r, 'highlight', `<w:highlight w:val="${hlVal}"/>`, [/<w:u\b/, /<\/w:rPr>/])
+            }
+          }
+          // 上标/下标（superscript/subscript）
+          if (op.vertAlign !== undefined) {
+            if (op.vertAlign === 'none' || op.vertAlign === false) {
+              if (/<w:vertAlign\b[^>]*\/>/.test(r)) r = r.replace(/<w:vertAlign\b[^>]*\/>/, '')
+            } else {
+              const vv = { superscript: 'superscript', subscript: 'subscript' }[String(op.vertAlign)]
+              if (!vv) throw new Error(`vertAlign 无效: ${op.vertAlign}（superscript/subscript/none）`)
+              if (/<w:vertAlign\b[^>]*\/>/.test(r)) r = r.replace(/<w:vertAlign w:val="[^"]*"\s*\/>/, `<w:vertAlign w:val="${vv}"/>`)
+              else r = rprSet(r, 'vertAlign', `<w:vertAlign w:val="${vv}"/>`, [/<\/w:rPr>/])
+            }
           }
           if (op.font) {
             const f = escapeXml(String(op.font))
@@ -870,7 +1128,9 @@ async function styleDocx(filePath, ops) {
   }
 
   const miss = list.map((o, i) => ({ o, n: report[i] })).filter((x) => !x.n)
-  if (report.every((n) => !n)) throw new Error(`没有任何段落命中——target 写法：title/h1/h2/h3/all 或 { contains:"段落里的文字" }。可先 read_word 看内容再定位`)
+  // 文档级指令（page/header/footer/list）无段级 op 时不判空命中
+  const hasParaOp = list.some((o) => o.target !== 'page' && o.target !== 'header' && o.target !== 'footer' && o.list == null)
+  if (hasParaOp && report.every((n) => !n)) throw new Error(`没有任何段落命中——target 写法：title/h1/h2/h3/all 或 { contains:"段落里的文字" }。可先 read_word 看内容再定位`)
   zip.file('word/document.xml', xml)
   const buffer = await zip.generateAsync({ type: 'nodebuffer' })
   fs.writeFileSync(filePath, buffer)
@@ -1308,6 +1568,8 @@ const firstAttr = (el, tag, attr = 'w:val') => {
 function readRPr(rPr) {
   if (!rPr) return null
   const fonts = rPr.getElementsByTagName('w:rFonts')[0]
+  const va = rPr.getElementsByTagName('w:vertAlign')[0]
+  const hl = rPr.getElementsByTagName('w:highlight')[0]
   const out = {
     bold: !!rPr.getElementsByTagName('w:b')[0] && firstAttr(rPr, 'w:b') !== '0' && firstAttr(rPr, 'w:b') !== 'false',
     italic: !!rPr.getElementsByTagName('w:i')[0] && firstAttr(rPr, 'w:i') !== '0',
@@ -1316,7 +1578,9 @@ function readRPr(rPr) {
     sizePt: szToPt(firstAttr(rPr, 'w:sz')),
     color: firstAttr(rPr, 'w:color') || null,
     font: (fonts && (fonts.getAttribute('w:ascii') || fonts.getAttribute('w:hAnsi'))) || null,
-    eastAsiaFont: (fonts && fonts.getAttribute('w:eastAsia')) || null
+    eastAsiaFont: (fonts && fonts.getAttribute('w:eastAsia')) || null,
+    vertAlign: (va && va.getAttribute('w:val')) || null,        // 上标 superscript / 下标 subscript
+    highlight: (hl && hl.getAttribute('w:val') && hl.getAttribute('w:val') !== 'none') ? hl.getAttribute('w:val') : null  // 高亮笔
   }
   const shd = rPr.getElementsByTagName('w:shd')[0]
   if (shd && shd.getAttribute('w:fill') && shd.getAttribute('w:fill') !== 'auto') out.shade = shd.getAttribute('w:fill')
@@ -1338,7 +1602,9 @@ function readPPr(pPr) {
     indentFirstLine: ind && ind.getAttribute('w:firstLineChars') ? parseInt(ind.getAttribute('w:firstLineChars'), 10) / 100 : (ind && ind.getAttribute('w:firstLine') ? Math.round((parseInt(ind.getAttribute('w:firstLine'), 10) / 240) * 10) / 10 : null), // firstLineChars 单位 1/100 字符优先；firstLine twips≈/240 字符
     indentLeftChars: ind && ind.getAttribute('w:leftChars') ? parseInt(ind.getAttribute('w:leftChars'), 10) / 100 : (ind && ind.getAttribute('w:left') ? Math.round((parseInt(ind.getAttribute('w:left'), 10) / 240) * 10) / 10 : null),
     outlineLvl: firstAttr(pPr, 'w:outlineLvl') != null ? parseInt(firstAttr(pPr, 'w:outlineLvl'), 10) : null,
-    numPr: !!pPr.getElementsByTagName('w:numPr')[0]
+    numPr: !!pPr.getElementsByTagName('w:numPr')[0],
+    keepNext: !!pPr.getElementsByTagName('w:keepNext')[0],   // 与下段同页（表标题不与表格拆页）
+    keepLines: !!pPr.getElementsByTagName('w:keepLines')[0]  // 段内不拆页
   }
   if (out.lineRule === 'auto' && out.lineRaw) out.lineRatio = lineToRatio(out.lineRaw, 'auto')
   else if (out.lineRaw) out.linePt = lineToRatio(out.lineRaw, out.lineRule)
@@ -1455,11 +1721,20 @@ async function parseWordFormat(filePath) {
         const fmt = resolveParaFormat(child, stylesCtx)
         paras.push({ idx: idx++, tag: 'p', text, role: fmt.role, para: fmt.para, run: fmt.run })
       } else if (tag === 'w:tbl') {
-        // 表格：取首行首段格式代表 + 表格属性（底纹/边框色）
+        // 表格：取首行首段格式代表 + 表格属性（底纹/边框色）+ 跨页属性（表头跨页重复/行不拆分）
         const firstP = child.getElementsByTagName('w:p')[0]
         const fmt = firstP ? resolveParaFormat(firstP, stylesCtx) : null
         const shd = child.getElementsByTagName('w:shd')[0]
-        paras.push({ idx: idx++, tag: 'table', text: firstP ? paraText(firstP) : '', role: 'table', para: fmt ? fmt.para : {}, run: fmt ? fmt.run : {}, shade: (shd && shd.getAttribute('w:fill') !== 'auto' && shd.getAttribute('w:fill')) || null })
+        const firstTrPr = (child.getElementsByTagName('w:tr')[0] || {}).getElementsByTagName
+          ? child.getElementsByTagName('w:tr')[0].getElementsByTagName('w:trPr')[0] : null
+        paras.push({
+          idx: idx++, tag: 'table', text: firstP ? paraText(firstP) : '', role: 'table', para: fmt ? fmt.para : {}, run: fmt ? fmt.run : {},
+          shade: (shd && shd.getAttribute('w:fill') !== 'auto' && shd.getAttribute('w:fill')) || null,
+          crossPage: {
+            headerRepeat: !!(firstTrPr && firstTrPr.getElementsByTagName('w:tblHeader')[0]),   // 跨页重复表头
+            rowCantSplit: !!(firstTrPr && firstTrPr.getElementsByTagName('w:cantSplit')[0])   // 行不拆分跨页
+          }
+        })
       }
     }
   }
@@ -1493,13 +1768,17 @@ function fmtDesc(fmt) {
   if (fmt.sizePt) parts.push(`${fmt.sizePt}pt`)
   if (fmt.bold) parts.push('加粗')
   if (fmt.italic) parts.push('斜体')
+  if (fmt.underline && fmt.underline !== 'none') parts.push(`下划线(${fmt.underline})`)
+  if (fmt.strike) parts.push('删除线')
+  if (fmt.vertAlign) parts.push(fmt.vertAlign === 'superscript' ? '上标' : '下标')
+  if (fmt.highlight) parts.push(`高亮#${fmt.highlight}`)
   if (fmt.color) parts.push(`颜色 #${fmt.color}`)
   if (fmt.lineRatio) parts.push(`行距${fmt.lineRatio}倍`)
   else if (fmt.linePt) parts.push(`行距${fmt.linePt}`)
   if (fmt.beforePt != null) parts.push(`段前${fmt.beforePt}pt`)
   if (fmt.afterPt != null) parts.push(`段后${fmt.afterPt}pt`)
   if (fmt.indentFirstLine) parts.push(`首行缩进${fmt.indentFirstLine}字符`)
-  if (fmt.align) parts.push(fmt.align === 'center' ? '居中' : fmt.align === 'right' ? '右对齐' : fmt.align === 'both' ? '两端对齐' : fmt.align)
+  if (fmt.align) parts.push(fmt.align === 'center' ? '居中' : fmt.align === 'right' ? '右对齐' : fmt.align === 'both' ? '两端对齐' : fmt.align === 'distribute' ? '分散对齐' : fmt.align)
   return parts.join(' ')
 }
 function wordFormatFingerprint(parsed) {
@@ -1526,9 +1805,14 @@ function wordFormatFingerprint(parsed) {
     font: modeOf(bodyParas.map((p) => p.run.eastAsiaFont || p.run.font)),
     sizePt: modeOf(bodyParas.map((p) => p.run.sizePt)),
     color: modeOf(bodyParas.map((p) => p.run.color)),
+    italic: modeOf(bodyParas.map((p) => (p.run.italic ? '1' : '0'))),
+    underline: modeOf(bodyParas.map((p) => p.run.underline || 'none')),
+    strike: modeOf(bodyParas.map((p) => (p.run.strike ? '1' : '0'))),
+    highlight: modeOf(bodyParas.map((p) => p.run.highlight || 'none')),
     lineRatio: modeOf(bodyParas.map((p) => p.para.lineRatio)),
     linePt: modeOf(bodyParas.map((p) => p.para.linePt)),
     indentFirstLine: modeOf(bodyParas.map((p) => p.para.indentFirstLine)),
+    beforePt: modeOf(bodyParas.map((p) => p.para.beforePt)),
     afterPt: modeOf(bodyParas.map((p) => p.para.afterPt))
   } : null
   // 角色采样防污染（v2.5.79）：模板作者常拿标题样式排承诺书/封面大字（实测"诚信承诺书"挂 Heading 3，
@@ -1561,6 +1845,17 @@ function wordFormatFingerprint(parsed) {
     h3: head('h3'),
     body,
     quote: head('quote'),
+    // 跨页属性（v2.9 指纹补盲）：表格级取"存在即真"（一篇文档的表格跨页策略应统一）；keepNext 计数供 diff
+    crossPage: (() => {
+      const tbls = parsed.paragraphs.filter((p) => p.tag === 'table')
+      const keepNextCnt = paras.filter((p) => p.tag === 'p' && p.para && p.para.keepNext).length
+      if (!tbls.length && !keepNextCnt) return null
+      return {
+        headerRepeat: tbls.some((t) => t.crossPage && t.crossPage.headerRepeat),     // 表格跨页重复表头
+        rowCantSplit: tbls.some((t) => t.crossPage && t.crossPage.rowCantSplit),    // 表格行不拆分跨页
+        keepNextParas: keepNextCnt                                                   // 与下段同页的段落数（表标题类）
+      }
+    })(),
     stats: {
       totalParas: paras.length,
       headings: paras.filter((p) => /^h[123]$/.test(p.role) || p.role === 'title').length,
@@ -1569,8 +1864,9 @@ function wordFormatFingerprint(parsed) {
   }
   // 人类可读摘要（AI 直接读）
   const pg = parsed.page ? `${parsed.page.widthCm}×${parsed.page.heightCm}cm 页边距 上${parsed.page.marginTopCm}/下${parsed.page.marginBottomCm}/左${parsed.page.marginLeftCm}/右${parsed.page.marginRightCm}cm` : '页面设置未显式定义'
+  const cp = fp.crossPage ? `，跨页：表头重复${fp.crossPage.headerRepeat ? '开' : '关'} · 行不拆分${fp.crossPage.rowCantSplit ? '开' : '关'}${fp.crossPage.keepNextParas ? ` · 同页段${fp.crossPage.keepNextParas}个` : ''}` : ''
   const lines = [
-    `【文档格式指纹】页面：${pg}${parsed.hasHeader ? '，有页眉' : ''}${parsed.hasFooter ? '，有页脚' : ''}`,
+    `【文档格式指纹】页面：${pg}${parsed.hasHeader ? '，有页眉' : ''}${parsed.hasFooter ? '，有页脚' : ''}${cp}`,
     fp.title ? `大标题：${fmtDesc(fp.title)}` : null,
     fp.h1 ? `一级标题：${fmtDesc(fp.h1)}` : null,
     fp.h2 ? `二级标题：${fmtDesc(fp.h2)}` : null,
@@ -2124,10 +2420,57 @@ async function applyWordFormat(targetPath, sourcePath, rules) {
   if (!applied.length) {
     throw new Error(`没有段落被套用：${missedPicks.length ? `picks 文字没匹配上（${missedPicks.slice(0, 3).join('、')}）` : 'map 里没有任何角色命中文档段落'}。可先 read_word 看目标文档实际文字，match 用段落开头连续文字`)
   }
+
+  // 跨页属性同步（v2.9 指纹补盲的套用侧）：map source 时把 A 的表格跨页策略对齐到 B 全部表格——
+  // "照着 A 的格式"应含版面行为（表头跨页重复/行不拆分），否则字体全对而翻页表现不同=半套
+  let crossPageFixed = null
+  if (sourceFp && sourceFp.crossPage) {
+    const src = sourceFp.crossPage
+    let touched = 0
+    let out2 = ''
+    let last2 = 0
+    const tblRe = /<w:tbl(?:\s[^>]*)?>[\s\S]*?<\/w:tbl>/g
+    let m2
+    while ((m2 = tblRe.exec(outXml)) !== null) {
+      let tblXml = m2[0]
+      const rows = tblXml.match(/<w:tr(?:\s[^>]*)?>[\s\S]*?<\/w:tr>/g) || []
+      if (rows.length) {
+        const firstTr = rows[0]
+        let newFirst = firstTr
+        // 表头跨页重复：对齐 A（A 开 B 关 → 加；A 关 B 开 → 移除）
+        if (src.headerRepeat && !/<w:tblHeader\/>/.test(newFirst)) {
+          newFirst = /<w:trPr>/.test(newFirst)
+            ? newFirst.replace(/<w:trPr>/, '<w:trPr><w:tblHeader/>')
+            : newFirst.replace(/(<w:tr(?:\s[^>]*)?>)/, '$1<w:trPr><w:tblHeader/></w:trPr>')
+        } else if (!src.headerRepeat && /<w:tblHeader\/>/.test(newFirst)) {
+          newFirst = newFirst.replace(/<w:tblHeader\/>/, '')
+        }
+        // 行不拆分：对齐 A（所有行）
+        if (newFirst !== firstTr) tblXml = tblXml.replace(firstTr, newFirst.replace(/\$/g, '$$$$'))
+        if (src.rowCantSplit) {
+          tblXml = tblXml.replace(/<w:tr(?:\s[^>]*)?>[\s\S]*?<\/w:tr>/g, (tr) => {
+            if (/<w:cantSplit\/>/.test(tr)) return tr
+            return /<w:trPr>/.test(tr)
+              ? tr.replace(/<w:trPr>/, '<w:trPr><w:cantSplit/>')
+              : tr.replace(/(<w:tr(?:\s[^>]*)?>)/, '$1<w:trPr><w:cantSplit/></w:trPr>')
+          })
+        }
+        if (tblXml !== m2[0]) touched++
+        out2 += outXml.slice(last2, m2.index) + tblXml
+        last2 = m2.index + m2[0].length
+      }
+    }
+    if (last2) out2 += outXml.slice(last2)
+    if (touched) {
+      outXml = out2
+      crossPageFixed = { tables: touched, headerRepeat: src.headerRepeat, rowCantSplit: src.rowCantSplit }
+    }
+  }
+
   zip.file('word/document.xml', outXml)
   const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
   fs.writeFileSync(targetPath, buf)
-  return { applied, missedPicks, size: buf.length }
+  return { applied, missedPicks, size: buf.length, crossPageFixed }
 }
 
 // ===== Word 模板嫁接引擎（v2.5.5）：学校模板出骨架（分节+页眉页脚+封面+罗马/阿拉伯页码分区），论文出血肉 =====
@@ -2951,7 +3294,7 @@ async function formatWordTable(paperPath, params = {}) {
     gridXml = `<w:tblGrid>${params.colWidths.map((cm) => `<w:gridCol w:w="${cmToDxa(cm)}"/>`).join('')}</w:tblGrid>`
   }
   // 行级重写
-  const newRows = rows.map((trXml, trIdx) => {
+  let newRows = rows.map((trXml, trIdx) => {
     const isHeader = trIdx < headerRows
     const isZebra = !isHeader && st.zebraFill && (trIdx - headerRows) % 2 === 0
     let newRow = trXml
@@ -2997,6 +3340,18 @@ async function formatWordTable(paperPath, params = {}) {
   const tblStyle = (tbl.xml.match(/<w:tblStyle[^>]*\/>/) || [''])[0]
   const tblW = params.widthPct != null ? `<w:tblW w:w="${params.widthPct * 50}" w:type="pct"/>` : ((tbl.xml.match(/<w:tblW[^>]*\/>/) || ['<w:tblW w:w="0" w:type="auto"/>'])[0])
   const newTblPr = `<w:tblPr>${tblStyle}${tblW}${tblBorders}<w:tblLayout w:type="${Array.isArray(params.colWidths) ? 'fixed' : 'autofit'}"/></w:tblPr>`
+  // 行高（v2.9）：rowHeightCm 数字=全行统一；数组=逐行（cm → dxa，atLeast 模式不裁内容）
+  const rowH = params.rowHeightCm != null ? params.rowHeightCm : null
+  if (rowH != null) {
+    const hOf = (ri) => Array.isArray(rowH) ? (rowH[ri] != null ? Math.round(Number(rowH[ri]) * 567) : null) : Math.round(Number(rowH) * 567)
+    newRows = newRows.map((tr, ri) => {
+      const h = hOf(ri)
+      if (!h || h <= 0) return tr
+      return /<w:trPr>/.test(tr)
+        ? tr.replace(/<w:trPr>/, `<w:trPr><w:trHeight w:val="${h}" w:hRule="atLeast"/>`)
+        : tr.replace(/(<w:tr(?:\s[^>]*)?>)/, '$1<w:trPr><w:trHeight w:val="' + h + '" w:hRule="atLeast"/></w:trPr>')
+    })
+  }
   const newTbl = tblOpen + newTblPr + gridXml + newRows.join('') + '</w:tbl>'
   let docXml = docXml0.replace(tbl.xml, () => newTbl)
   // v2.5.71：keepWithPrev——表格前最近的段落加 keepNext（表标题和表格不被分页拆开）
@@ -3570,9 +3925,11 @@ async function createPptx(filePath, content) {
 // 读取 PPT：逐页提取文本（a:p 段落 / a:t 文本，JSZip 轻解析零依赖，对标 markitdown 的文本层）
 async function readPptx(filePath) {
   const zip = await JSZip.loadAsync(fs.readFileSync(filePath))
-  const names = Object.keys(zip.files).filter(n => /^ppt\/slides\/slide\d+\.xml$/.test(n))
+  if (!zip.file('ppt/presentation.xml')) throw new Error('不是有效的 PPT 文件（缺少 ppt/presentation.xml）')
+  // 页序以 presentation.xml 的 sldIdLst 为准（用户调过序的文件，文件名顺序≠页序）
+  const orderNames = await pptSlideOrder(zip)
+  const names = orderNames.length ? orderNames : Object.keys(zip.files).filter(n => /^ppt\/slides\/slide\d+\.xml$/.test(n))
     .sort((a, b) => (parseInt(a.match(/(\d+)/)[1], 10)) - (parseInt(b.match(/(\d+)/)[1], 10)))
-  if (!names.length) throw new Error('不是有效的 PPT 文件（缺少 ppt/slides/）')
   const slides = []
   for (const name of names) {
     const xml = await zip.file(name).async('string')
@@ -3581,14 +3938,152 @@ async function readPptx(filePath) {
       const txt = [...pm[1].matchAll(/<a:t[^>]*>([\s\S]*?)<\/a:t>/g)].map(m => decodeEntities(m[1])).join('').trim()
       if (txt) lines.push(txt)
     }
-    slides.push({ page: slides.length + 1, lines })
+    // 结构计数：AI 改前知道这页有什么（图/形状/表格）
+    const pics = (xml.match(/<p:pic>/g) || []).length
+    const shapes = (xml.match(/<p:sp>/g) || []).length
+    const tables = (xml.match(/<a:tbl>/g) || []).length
+    const struct = [pics ? `${pics}图` : '', shapes ? `${shapes}形状` : '', tables ? `${tables}表` : ''].filter(Boolean).join(' ')
+    slides.push({ page: slides.length + 1, lines, pics, shapes, tables, struct })
   }
-  return { count: slides.length, slides, text: slides.map(s => `【第 ${s.page} 页】\n` + s.lines.join('\n')).join('\n\n') }
+  return { count: slides.length, slides, text: slides.map(s => `【第 ${s.page} 页】${s.struct ? `（${s.struct}）` : ''}\n` + s.lines.join('\n')).join('\n\n') }
+}
+
+// PPT 页序（presentation.xml sldIdLst → rId → rels Target → slide 文件名）
+async function pptSlideOrder(zip) {
+  try {
+    const presXml = await zip.file('ppt/presentation.xml').async('string')
+    const relsXml = await zip.file('ppt/_rels/presentation.xml.rels').async('string')
+    const rid2target = new Map([...relsXml.matchAll(/<Relationship\b[^>]*Id="(rId\d+)"[^>]*Target="([^"]+)"/g)].map(m => [m[1], m[2]]))
+    const lst = presXml.match(/<p:sldIdLst>([\s\S]*?)<\/p:sldIdLst>/)
+    if (!lst) return []
+    return [...lst[1].matchAll(/r:id="(rId\d+)"/g)].map(m => {
+      const t = rid2target.get(m[1]) || ''
+      const n = 'ppt/' + String(t).replace(/^\//, '')
+      return zip.file(n) ? n : null
+    }).filter(Boolean)
+  } catch { return [] }
+}
+
+// PPT 页级操作（JSZip 手术）：deleteSlide 摘除 sldIdLst 条目（物理文件保留防引用断裂，页序读取已按 sldIdLst 所以"删"即不可见）；
+// moveSlide 调序。与 replacements 并列使用
+async function pptSlideActions(filePath, actions) {
+  const zip = await JSZip.loadAsync(fs.readFileSync(filePath))
+  const presFile = zip.file('ppt/presentation.xml')
+  if (!presFile) throw new Error('不是有效的 PPT 文件')
+  let presXml = await presFile.async('string')
+  const lstM = presXml.match(/<p:sldIdLst>([\s\S]*?)<\/p:sldIdLst>/)
+  if (!lstM) throw new Error('presentation.xml 没有 sldIdLst（页清单）')
+  const done = []
+  for (const act of (Array.isArray(actions) ? actions : [actions])) {
+    const entries = [...lstM[1].matchAll(/<p:sldId\b[^>]*\/>/g)].map(m => m[0])
+    const page = Number(act.page)
+    if (!Number.isInteger(page) || page < 1 || page > entries.length) throw new Error(`page 越界：${page}（当前共 ${entries.length} 页）`)
+    if (act.op === 'deleteSlide') {
+      entries.splice(page - 1, 1)
+      lstM[1] = entries.join('')
+      done.push(`第 ${page} 页已删除（现 ${entries.length} 页）`)
+    } else if (act.op === 'moveSlide') {
+      const to = Number(act.to)
+      if (!Number.isInteger(to) || to < 1 || to > entries.length) throw new Error(`to 越界：${to}（当前共 ${entries.length} 页）`)
+      const [item] = entries.splice(page - 1, 1)
+      entries.splice(to - 1, 0, item)
+      lstM[1] = entries.join('')
+      done.push(`第 ${page} 页已移到第 ${to} 位`)
+    } else if (act.op === 'insertSlide') {
+      // 加新页（v2.9）：造标题+正文占位 slide + 四件套注册（ContentTypes/slide rels/presentation rels/sldIdLst）
+      // page = 插到第 N 页之后（缺省/0 = 插最前）；版式引用从现有页继承（ph type=title/body 自动对位）
+      const title = String(act.title || '新页').trim() || '新页'
+      const bodyLines = String(act.body || '').split('\n').map((l) => l.trim()).filter(Boolean)
+      const physSlides = Object.keys(zip.files).filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n))
+      if (!physSlides.length) throw new Error('文档没有任何幻灯片可参考版式')
+      let layoutTarget = '../slideLayouts/slideLayout1.xml'
+      const refRels = zip.file('ppt/slides/_rels/' + physSlides[0].split('/').pop() + '.rels')
+      if (refRels) {
+        const rs = await refRels.async('string')
+        const lm = rs.match(/<Relationship[^>]*Type="[^"]*slideLayout"[^>]*Target="([^"]+)"/)
+        if (lm) layoutTarget = lm[1]
+      }
+      let maxN = 0
+      for (const n of physSlides) maxN = Math.max(maxN, parseInt(n.match(/(\d+)/)[1], 10))
+      const newN = maxN + 1
+      const esc2 = escapeXml
+      const bodyParas = bodyLines.map((l) => `<a:p><a:r><a:rPr lang="zh-CN" altLang="en-US"/><a:t>${esc2(l)}</a:t></a:r></a:p>`).join('') || '<a:p><a:endParaRPr lang="zh-CN"/></a:p>'
+      const slideXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+        `<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">` +
+        `<p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>` +
+        `<p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>` +
+        `<p:sp><p:nvSpPr><p:cNvPr id="2" name="标题 1"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>` +
+        `<p:spPr><a:xfrm><a:off x="838200" y="365125"/><a:ext cx="7810500" cy="1325563"/></a:xfrm></p:spPr>` +
+        `<p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="zh-CN" altLang="en-US"/><a:t>${esc2(title)}</a:t></a:r></a:p></p:txBody></p:sp>` +
+        `<p:sp><p:nvSpPr><p:cNvPr id="3" name="内容占位符 2"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr>` +
+        `<p:spPr><a:xfrm><a:off x="838200" y="1825625"/><a:ext cx="7810500" cy="4460875"/></a:xfrm></p:spPr>` +
+        `<p:txBody><a:bodyPr/><a:lstStyle/>${bodyParas}</p:txBody></p:sp>` +
+        `</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>`
+      zip.file(`ppt/slides/slide${newN}.xml`, slideXml)
+      zip.file(`ppt/slides/_rels/slide${newN}.xml.rels`, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="${layoutTarget}"/></Relationships>`)
+      let ct4 = await zip.file('[Content_Types].xml').async('string')
+      if (!ct4.includes(`/ppt/slides/slide${newN}.xml`)) ct4 = ct4.replace('</Types>', `<Override PartName="/ppt/slides/slide${newN}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/></Types>`)
+      zip.file('[Content_Types].xml', ct4)
+      const prf2 = zip.file('ppt/_rels/presentation.xml.rels')
+      let prs2 = await prf2.async('string')
+      let mr4 = 0
+      for (const rm of prs2.matchAll(/Id="rId(\d+)"/g)) mr4 = Math.max(mr4, parseInt(rm[1], 10))
+      const newRid = `rId${mr4 + 1}`
+      prs2 = prs2.replace('</Relationships>', `<Relationship Id="${newRid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide${newN}.xml"/></Relationships>`)
+      zip.file('ppt/_rels/presentation.xml.rels', prs2)
+      // sldIdLst：id 取现有最大 +1（至少 256 起）
+      const at = Math.max(0, Math.min(Number(act.page) || 0, entries.length))
+      const sidMax = entries.reduce((mx, e) => Math.max(mx, parseInt((e.match(/id="(\d+)"/) || [])[1] || '255', 10)), 255)
+      entries.splice(at, 0, `<p:sldId id="${sidMax + 1}" r:id="${newRid}"/>`)
+      lstM[1] = entries.join('')
+      done.push(`新页「${title}」已插入到第 ${at + 1} 位（现 ${entries.length} 页）`)
+    } else if (act.op === 'animate') {
+      // 进入动画（v2.9.2 老大补全"添加动画"）：effect=fade(淡入,默认)/wipe(擦除)，进页自动播；
+      // target=title(默认)/body，或 find:'某文字' 定位所在形状
+      const rid = (entries[page - 1].match(/r:id="(rId\d+)"/) || [])[1]
+      const relsAll = await zip.file('ppt/_rels/presentation.xml.rels').async('string')
+      const tgt = ([...relsAll.matchAll(/<Relationship\b[^>]*Id="(rId\d+)"[^>]*Target="([^"]+)"/g)].find(m => m[1] === rid) || [])[2] || ''
+      const slideName = 'ppt/' + String(tgt).replace(/^\//, '')
+      if (!zip.file(slideName)) throw new Error(`animate: 第 ${page} 页物理文件缺失（${slideName}）`)
+      let sxml = await zip.file(slideName).async('string')
+      const sps = [...sxml.matchAll(/<p:sp>[\s\S]*?<\/p:sp>/g)].map(m => m[0])
+      let spid = null
+      const sps2 = sps.map(sp => ({ sp, id: (sp.match(/<p:cNvPr id="(\d+)"/) || [])[1] })).filter(x => x.id)
+      if (act.find) {
+        const hit = sps2.find(x => [...x.sp.matchAll(/<a:t[^>]*>([\s\S]*?)<\/a:t>/g)].some(t => decodeEntities(t[1]).includes(act.find)))
+        spid = hit && hit.id
+      } else if (Number.isInteger(Number(act.target)) && Number(act.target) >= 1) {
+        // 形状序号（1-based，与 read_pptx 的结构计数对应）
+        spid = sps2[Number(act.target) - 1] && sps2[Number(act.target) - 1].id
+      } else {
+        // 缺省 = 第一个有文本的形状（PptxGenJS 造的页无 ph 占位符，标题通常是首个文本形状）
+        const hit = sps2.find(x => /<a:t[^>]*>\s*[^<\s]/.test(x.sp))
+        spid = hit && hit.id
+      }
+      if (!spid) throw new Error(`animate: 没找到目标形状——用法 target:形状序号(1=标题,与read_pptx结构计数对应) / find:'某文字' / 缺省=首个文本形状`)
+      const timing = pptTimingXml(spid, String(act.effect || 'fade'))
+      sxml = /<p:timing>[\s\S]*?<\/p:timing>/.test(sxml) ? sxml.replace(/<p:timing>[\s\S]*?<\/p:timing>/, timing) : sxml.replace('</p:sld>', timing + '</p:sld>')
+      zip.file(slideName, sxml)
+      done.push(`第 ${page} 页已加进入动画（${act.effect || 'fade'}，spid=${spid}，进页自动播）`)
+    } else throw new Error(`未知 op: ${act.op}（deleteSlide/moveSlide/insertSlide/animate）`)
+  }
+  presXml = presXml.replace(/<p:sldIdLst>[\s\S]*?<\/p:sldIdLst>/, `<p:sldIdLst>${lstM[1]}</p:sldIdLst>`)
+  presFile ? zip.file('ppt/presentation.xml', presXml) : null
+  const buffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
+  fs.writeFileSync(filePath, buffer)
+  return { done, count: (presXml.match(/<p:sldId\b/g) || []).length, size: buffer.length }
 }
 
 // 编辑 PPT：find/replace 文本替换（层1 同一 a:t 内替换；层2 跨 run 段落重建，保留首 run rPr 格式）——与 editDocx 同构
+// content.actions（可选，页级操作）：[{op:'deleteSlide',page:3},{op:'moveSlide',page:2,to:1}]，与 replacements 并列
 async function editPptx(filePath, content) {
-  const reps = normReplacements(content)
+  const hasReps = content && (Array.isArray(content.replacements) || content.find != null || (content.replacements && Array.isArray(content.replacements)))
+  const reps = hasReps ? normReplacements(content) : []
+  const actions = (content && Array.isArray(content.actions)) ? content.actions : []
+  if (!hasReps && !actions.length && !(content && content.style)) throw new Error('缺少操作：传 replacements（[{find,replace}] 改文字）或 actions（[{op:"deleteSlide",page:3} / {op:"moveSlide",page:2,to:1} / {op:"animate",page:1,effect:"fade"}] 页级操作）或 style（字体/字号/颜色/对齐）')
+  if (actions.length) await pptSlideActions(filePath, actions)
+  if (content && content.style) await pptStyleActions(filePath, content.style)
+  if (!hasReps) return { replaced: 0, missed: [], actionsDone: true }
   const zip = await JSZip.loadAsync(fs.readFileSync(filePath))
   const names = Object.keys(zip.files).filter(n => /^ppt\/slides\/slide\d+\.xml$/.test(n))
   if (!names.length) throw new Error('不是有效的 PPT 文件（缺少 ppt/slides/）')
@@ -3638,7 +4133,92 @@ async function editPptx(filePath, content) {
   return { replaced, missed, size: buffer.length }
 }
 
-// ===== docx 校验关卡（v2.7.15：学 MiniMax minimax-docx 的 XSD validation gate 思路——坏件不交差）=====
+// ===== PPT 样式手术（v2.9.2 老大补全"文本字体大小"）：字体/字号/加粗/斜体/颜色/对齐 =====
+// style: {page(逻辑页,与read_pptx同序), find(可选,命中文本的run才改;省略=整页), fontSize(磅), bold, italic, color('RRGGBB'), font(中英文同设), align('left'/'center'/'right')}
+async function pptStyleActions(filePath, styles) {
+  const list = Array.isArray(styles) ? styles : [styles]
+  const zip = await JSZip.loadAsync(fs.readFileSync(filePath))
+  const order = await pptSlideOrder(zip)
+  const names = order.length ? order : Object.keys(zip.files).filter(n => /^ppt\/slides\/slide\d+\.xml$/.test(n))
+    .sort((a, b) => (parseInt(a.match(/(\d+)/)[1], 10)) - (parseInt(b.match(/(\d+)/)[1], 10)))
+  const done = []
+  const ALGN = { left: 'l', center: 'ctr', right: 'r', justify: 'just' }
+  for (const st of list) {
+    const page = Number(st.page)
+    if (!Number.isInteger(page) || page < 1 || page > names.length) throw new Error(`style.page 越界：${page}（当前共 ${names.length} 页）`)
+    let xml = await zip.file(names[page - 1]).async('string')
+    const myAttrs = []
+    if (st.fontSize != null) myAttrs.push(`sz="${Math.round(Number(st.fontSize) * 100)}"`) // OOXML 字号单位=百分之一磅
+    if (st.bold != null) myAttrs.push(`b="${st.bold ? 1 : 0}"`)
+    if (st.italic != null) myAttrs.push(`i="${st.italic ? 1 : 0}"`)
+    const sub = [
+      st.color ? `<a:solidFill><a:srgbClr val="${String(st.color).replace('#', '').toUpperCase()}"/></a:solidFill>` : '',
+      st.font ? `<a:latin typeface="${escapeXml(st.font)}"/><a:ea typeface="${escapeXml(st.font)}"/>` : ''
+    ].join('')
+    const alignVal = st.align ? ALGN[String(st.align).toLowerCase()] : null
+    if (st.align && !alignVal) throw new Error('align 只支持 left/center/right/justify')
+    let runs = 0
+    // 重建 rPr：保留原有属性（lang 等），套用新属性；solidFill/latin/ea 按需重写（原有同类子元素丢弃——高亮/特效等罕见子元素不保留，诚实边界）
+    const buildRPr = (oldRPr) => {
+      let attrs = oldRPr ? (oldRPr.match(/^<a:rPr\b([^>]*?)(?:\/>|>)/) || [])[1] || '' : ' lang="zh-CN" altLang="en-US"'
+      for (const a of myAttrs) {
+        const key = a.match(/^(\w+)="/)[1]
+        if (new RegExp(`\\s${key}="[^"]*"`).test(attrs)) attrs = attrs.replace(new RegExp(`\\s${key}="[^"]*"`), ' ' + a)
+        else attrs += ' ' + a
+      }
+      return `<a:rPr${attrs}>${sub}</a:rPr>`
+    }
+    xml = xml.replace(/<a:r>([\s\S]*?)<\/a:r>/g, (m, inner) => {
+      const tm = inner.match(/<a:t[^>]*>([\s\S]*?)<\/a:t>/)
+      if (!tm) return m
+      if (st.find && !decodeEntities(tm[1]).includes(st.find)) return m
+      runs++
+      const oldRPr = (inner.match(/<a:rPr\b[^>]*(?:\/>|>[\s\S]*?<\/a:rPr>)/) || [])[0] || null
+      return '<a:r>' + inner.replace(oldRPr || '', buildRPr(oldRPr)) + '</a:r>'
+    })
+    let paras = 0
+    if (alignVal) {
+      xml = xml.replace(/<a:p>([\s\S]*?)<\/a:p>/g, (m, pInner) => {
+        const tm = pInner.match(/<a:t[^>]*>([\s\S]*?)<\/a:t>/)
+        if (st.find && (!tm || !decodeEntities(tm[1]).includes(st.find))) return m
+        paras++
+        if (/<a:pPr\b/.test(pInner)) {
+          const p2 = /algn="/.test(pInner)
+            ? pInner.replace(/algn="[^"]*"/, `algn="${alignVal}"`)
+            : pInner.replace(/(<a:pPr\b[^>]*?)(\/?>)/, `$1 algn="${alignVal}"$2`)
+          return `<a:p>${p2}</a:p>`
+        }
+        return `<a:p><a:pPr algn="${alignVal}"/>${pInner}</a:p>`
+      })
+    }
+    zip.file(names[page - 1], xml)
+    done.push(`第 ${page} 页：${runs} 个 run 已设样式${alignVal ? `，${paras} 段对齐=${st.align}` : ''}`)
+  }
+  const buffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
+  fs.writeFileSync(filePath, buffer)
+  return { done }
+}
+
+// 进入动画最小合法 p:timing（PowerPoint/WPS 兼容模板，afterEffect=进页自动播）；effect: fade(淡入)/wipe(擦除)
+function pptTimingXml(spid, effect) {
+  const fade = effect !== 'wipe'
+  const presetID = fade ? '10' : '22'
+  const filter = fade ? 'fade' : 'wipe(down)'
+  let id = 5
+  const nid = () => ++id
+  const tgt = `<p:tgtEl><p:spTgt spid="${spid}"/></p:tgtEl>`
+  return `<p:timing><p:tnLst><p:par><p:cTn id="1" dur="indefinite" restart="never" nodeType="tmRoot"><p:childTnLst>` +
+    `<p:seq concurrent="1" nextAc="seek"><p:cTn id="2" dur="indefinite" nodeType="mainSeq"><p:childTnLst>` +
+    `<p:par><p:cTn id="3" fill="hold"><p:stCondLst><p:cond delay="indefinite"/></p:stCondLst><p:childTnLst>` +
+    `<p:par><p:cTn id="4" fill="hold"><p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst>` +
+    `<p:par><p:cTn id="5" presetID="${presetID}" presetClass="entr" presetSubtype="0" fill="hold" grpId="0" nodeType="afterEffect"><p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst>` +
+    `<p:set><p:cBhvr><p:cTn id="${nid()}" dur="1" fill="hold"><p:stCondLst><p:cond delay="0"/></p:stCondLst></p:cTn>${tgt}<p:attrNameLst><p:attrName>style.visibility</p:attrName></p:attrNameLst></p:cBhvr><p:to><p:strVal val="visible"/></p:to></p:set>` +
+    `<p:animEffect transition="in" filter="${filter}"><p:cBhvr><p:cTn id="${nid()}" dur="500"/><p:tgtEl><p:spTgt spid="${spid}"/></p:tgtEl></p:cBhvr></p:animEffect>` +
+    `</p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn>` +
+    `<p:prevCondLst><p:cond evt="onPrev" delay="0"><p:tgtEl><p:sldTgt/></p:tgtEl></p:cond></p:prevCondLst>` +
+    `<p:nextCondLst><p:cond evt="onNext" delay="0"><p:tgtEl><p:sldTgt/></p:tgtEl></p:cond></p:nextCondLst>` +
+    `</p:seq></p:childTnLst></p:cTn></p:par></p:tnLst></p:timing>`
+}
 // 硬错误（结构损坏，Word 会弹修复框）直接 throw 让 AI 当场自愈；软告警返回 issues
 async function validateDocx(filePath, opts = {}) {
   const issues = []
@@ -3683,4 +4263,4 @@ async function validateDocx(filePath, opts = {}) {
   return { ok, issues }
 }
 
-module.exports = { createDocx, readDocxText, readPdfText, parseWordComments, parseWordFormat, wordFormatFingerprint, parseFormatRuleText, extractPaperFormatSpec, checkPaperFormat, anchorSpecRole, convertNumPrToText, replaceCoverFields, applyWordFormat, applyWordTemplate, modifyDocx, styleDocx, createXlsx, appendXlsxRows, readXlsx, modifyXlsxCell, modifyXlsxCells, formatXlsx, listXlsxSheets, scanWordTables, formatWordTable, addWordTable, editWordTable, fixPaperPaging, svgToPng, isLegacyDoc, isFormatDemoPara, splitTplSections, classifyTplSection, softbreakSplitBlocks, createPptx, readPptx, editPptx, validateDocx, PPT_PALETTES, PPT_STYLES }
+module.exports = { createDocx, readDocxText, readPdfText, parseWordComments, parseWordFormat, wordFormatFingerprint, parseFormatRuleText, extractPaperFormatSpec, checkPaperFormat, anchorSpecRole, convertNumPrToText, replaceCoverFields, applyWordFormat, applyWordTemplate, modifyDocx, styleDocx, addWordImage, createXlsx, appendXlsxRows, readXlsx, modifyXlsxCell, modifyXlsxCells, formatXlsx, listXlsxSheets, scanWordTables, formatWordTable, addWordTable, editWordTable, fixPaperPaging, svgToPng, isLegacyDoc, isFormatDemoPara, splitTplSections, classifyTplSection, softbreakSplitBlocks, createPptx, readPptx, editPptx, pptSlideActions, validateDocx, PPT_PALETTES, PPT_STYLES }

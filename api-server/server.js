@@ -2007,10 +2007,10 @@ function readBody(req, maxBytes) {
 // ─────────────────── 服务器 ───────────────────
 
 const LATEST = {
-  version: '2.8.8',
+  version: '2.8.9',
   url: 'https://github.com/Mosina1102/MSMate/releases/latest',
-  notes: 'AI 控制电脑技能补齐：新增鼠标拖拽（拖文件/滑块/选文字/框选）、悬停（tooltip/悬停菜单）、横向滚轮、按住 Ctrl/Shift 点击多选——用户会的键鼠操作它都会了',
-  publishedAt: '2026-09-22'
+  notes: '莫西桌宠全面升级：打字/睡觉/摸摸头三序列动画（睡眠分段不再鬼畜）+ 干活念叨状态播报（准备/成功/失败带工具名）+ 判定框贴合角色（空白处点击穿透直达桌面）+ 计费公平分流（网页 DP 登录优先扣积分，积分不足自动降级用户 Key，自定义用户始终走自己的 Key）',
+  publishedAt: '2026-09-24'
 }
 
 const server = http.createServer(async (req, res) => {

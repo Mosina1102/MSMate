@@ -11,9 +11,9 @@
       cursor: grab; font-family: "Microsoft YaHei", sans-serif;
     }
     body.dragging { cursor: grabbing; }
-    /* 角色容器：呼吸浮动（待机慢浮 / 干活快浮），消除"贴图静止感" */
+    /* 角色容器：呼吸浮动（待机慢浮 / 干活快浮），消除"贴图静止感"；尺寸贴角色实体（点击判定框=可视框） */
     #actor {
-      position: absolute; bottom: 18px; left: 50%; width: 270px; height: 270px;
+      position: absolute; bottom: 14px; left: 50%; width: 290px; height: 270px;
       transform: translateX(-50%);
       animation: bob 2.8s ease-in-out infinite alternate;
       filter: drop-shadow(0 10px 22px rgba(90, 70, 200, 0.3));
@@ -24,19 +24,21 @@
       to   { transform: translateX(-50%) translateY(-5px); }
     }
     /* 双层帧：换帧时交叉淡入淡出（220ms 柔切），替代硬跳变 */
-    /* background-size 4320x270 = 16 格 × 270：对任意 4×4 素材等比缩放后每格恰好 270，天然对齐 */
+    /* 背景恒定 typing-loop（新 16 帧连续序列，4×4 网格切条）：probe 加载后动态设 background-size
+       （缩放只能走 body.zoom 整体放大，勿手改 background-size 的像素值），初值 4631x270 = 5104x300 归一到 270 高的近似 */
     #actor .frame {
       position: absolute; inset: 0;
-      background-image: url('../assets/moxi/work-strip.webp');
+      background-image: url('../assets/moxi/typing-loop.webp');
       background-repeat: no-repeat;
-      background-size: 4320px 270px;
+      background-size: 4631px 270px;
       opacity: 0;
       transition: opacity .22s ease;
     }
     /* 序列动画模式（typing-loop 连续帧）：帧率高时关掉 crossfade，硬切即动画 */
     #actor.seq .frame { transition: none; }
+    /* 气泡：挂在角色头顶正上方（actor 容器内 bottom:100% 定位，随档位缩放+呼吸浮动自然跟随），判定不算气泡（穿透层管） */
     #bubble {
-      position: absolute; top: 6px; left: 50%; transform: translateX(-50%);
+      position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
       max-width: 250px; padding: 7px 12px;
       background: rgba(255, 255, 255, 0.97);
       border: 1.5px solid rgba(122, 90, 245, 0.45);
@@ -50,42 +52,42 @@
   </style>
 </head>
 <body>
-  <div id="bubble"></div>
   <div id="actor">
     <div id="frameA" class="frame"></div>
     <div id="frameB" class="frame"></div>
+    <div id="bubble"></div>
   </div>
   <script>
     // 渲染层异常上报（主进程 console-message 过滤后落 app.log，桌宠消失类问题靠它定位）
     window.addEventListener('error', (e) => console.error('[pet-uncaught]', e.message, e.filename + ':' + e.lineno))
     window.addEventListener('unhandledrejection', (e) => console.error('[pet-rejection]', e.reason && e.reason.message))
     // ===== 莫西情绪状态机（全场景统一"坐在笔记本前"设定）=====
-    // 表情全部来自 work-strip 16 格（动作帧素材），Q 版立绘留作界面形象（空状态/关于页）。
+    // 表情全部来自 typing-loop 新打字序列 16 格（背景恒定），Q 版立绘留作界面形象（空状态/关于页）。
     // 事件由主进程 petBroadcast 转发（WorkAgent send + 传输完成）。
     // 表达贴合人设（三无·傲娇·寡言）：气泡语一律短句；"无语"是高频反应，"喜欢"是稀有奖励。
     const actorEl = document.getElementById('actor')
     const layers = [document.getElementById('frameA'), document.getElementById('frameB')]
     const bubbleEl = document.getElementById('bubble')
 
-    // 精灵帧用途表（index = work-strip 格号 0-15，内容对照素材原图标注）
+    // 精灵帧用途表（index = 新打字序列 16 格号 0-15，4×4 阅读序；内容对照素材原图标注）
     const FRAME = {
-      typingStart: 0, // 打字+闪电：任务启动
-      typing: 1,      // 平静打字（默认）
-      music: 2,       // 打字+音符：哼歌干活
-      question: 4,    // 打字+?：思考/需要用户拿主意
-      speechless: 5,  // 打字+……：无语（傲娇高频）
-      star: 6,        // 打字+星星：来了精神
-      stressed: 7,    // 打字+乱线：头大/出错
-      shock: 8,       // 打字+!!：惊讶（收到文件）
-      serious: 9,     // 低头认真打字
-      sleep: 10,      // 趴笔记本 ZZZ：空闲睡觉
-      shout: 11,      // 举手大喊：搞砸了
-      talk: 13,       // 打字张嘴笑
-      heart: 14,      // 打字+爱心：满意
-      love: 15        // 打字+双爱心脸红：任务完成（稀有奖励）
+      typingStart: 1, // 打字抬手：任务启动起手
+      typing: 0,      // 安静打字（默认待机/工作基准帧）
+      music: 13,      // 眨眼笑：哼歌干活
+      question: 2,    // 侧头：思考/需要用户拿主意
+      speechless: 14, // 闭眼平静：无语不想说话（傲娇高频）
+      star: 11,       // 星星眼：来了精神
+      stressed: 9,    // 残影狂敲：头大/出错乱按
+      shock: 10,      // 头发大飘惊讶：收到文件
+      serious: 5,     // 低头认真狂敲
+      sleep: 14,      // 闭眼平静：空闲休息
+      shout: 12,      // 举拳：搞砸了激动
+      talk: 3,        // 张嘴：说话
+      heart: 11,      // 星星眼：满意
+      love: 6         // 大笑举拳：任务完成（稀有奖励）
     }
-    // 干活轮播池：打字系姿势（乱线/问号/睡觉等情绪帧不进池，事件到了才亮）
-    const WORK_ROTATE = [FRAME.typingStart, FRAME.typing, FRAME.music, FRAME.speechless, FRAME.star, FRAME.serious, FRAME.talk]
+    // 干活轮播池：打字系姿势（情绪帧不进池，事件到了才亮）
+    const WORK_ROTATE = [FRAME.typingStart, FRAME.typing, FRAME.serious, FRAME.talk, FRAME.question]
 
     let bubbleTimer = null
     let idleTimer = null
@@ -95,14 +97,17 @@
     let failStreak = 0
     let activeLayer = 0 // crossfade：写非活动层帧→升其透明度→切换活动指针
     let curFrame = -1
+    let seqCellW = 289 // 序列格宽初值 = 5104x300 归一 270 高的理论值；probe 加载后按素材实测修正
+                       // （必须声明在 showFrame 之前：const/let 有暂时性死区，声明在后=启动首帧 ReferenceError 全脚本炸）
 
     // 交叉淡入淡出换帧（同帧跳过，避免 opacity 抖动）
-    // background-size 已等比缩放到"每格 270"坐标系，偏移固定 270 与素材尺寸解耦
-    function showFrame(i) {
+    // 背景恒定 typing-loop：步长默认 seqCellW（probe 异步算出，初值兜底 289 ≈ 5104/16 归一 270 高）
+    function showFrame(i, cellW) {
       if (i === curFrame) return
+      const step = cellW || seqCellW || 289
       const showL = layers[1 - activeLayer]
       const hideL = layers[activeLayer]
-      showL.style.backgroundPosition = (-i * 270) + 'px 0px'
+      showL.style.backgroundPosition = (-i * step) + 'px 0px'
       showL.style.opacity = '1'
       hideL.style.opacity = '0'
       activeLayer = 1 - activeLayer
@@ -121,12 +126,23 @@
       workTimer = null
       stopSeq()
       actorEl.classList.remove('working')
+      idleDefault()
+    }
+
+    // 待机默认帧：打字序列首帧（安静打字坐姿）
+    function idleDefault() {
+      const s = SEQ_LIB.typing
+      curSeq = 'typing'
+      actorEl.classList.remove('seq')
+      if (s.ready) { applySeqBg(s); showFrame(0, s.cellW) }
+      else showFrame(FRAME.typing)
+      armIdle() // 回待机=重新计空闲：苏醒/摸头/完事后再空闲 90s 重新入睡（老大节奏闭环）
     }
 
     // 单帧情绪：亮一格 + 可选气泡，hold 后回默认打字（revert:false 常驻）
     function setFrame(i, opts) {
       opts = opts || {}
-      stopWork()
+      stopWork() // 内部已回落待机帧
       showFrame(i)
       if (opts.bubble) bubble(opts.bubble, opts.hold)
       clearTimeout(revertTimer)
@@ -136,82 +152,119 @@
       armIdle()
     }
 
-    // 工作中：优先播"连续打字序列"（typing-loop，真动画帧），素材缺位时退回姿势轮播
-    // 序列素材由生图（参考图→连续动作）产出，moxi-asset-prep 切成 16 帧横条
-    // 网格自适应：按素材实际宽高比算格宽（生成图不一定是正方形格子），帧数按宽度整除推算
+    // ===== 多序列播放器（背景按条带切换，格宽各条带独立标定）=====
+    // 序列素材由生图（参考图→连续动作）产出，moxi-asset-prep --motion --out 切成 16 帧横条（4×4 网格）
+    // 格宽换算：帧数固定 16（管线产出恒为 4×4），高度统一缩到 270 显示高，单格宽 = 总宽/16 × (270/高)
     let seqTimer = null
-    let hasSeq = false
-    let seqCellW = 270
-    let seqFrames = 16
-    try {
-      const seqProbe = new Image()
-      seqProbe.onload = () => {
-        hasSeq = true
-        seqCellW = Math.round(270 * (seqProbe.naturalWidth / seqProbe.naturalHeight))
-        seqFrames = Math.max(1, Math.round(seqProbe.naturalWidth / seqCellW))
-        const size = `${seqCellW * seqFrames}px 270px`
-        layers.forEach((l) => { if (l.style.backgroundImage.includes('typing-loop')) l.style.backgroundSize = size })
+    let curSeq = 'typing'
+    const SEQ_LIB = {
+      typing: { src: '../assets/moxi/typing-loop.webp' },   // 打字（工作/待机）
+      sleep: { src: '../assets/moxi/sleep-loop.webp' },     // 睡觉（空闲循环：犯困→趴键盘→惊醒）
+      petting: { src: '../assets/moxi/petting-loop.webp' }  // 摸摸头（双击互动，播一轮）
+    }
+    function applySeqBg(s) {
+      layers.forEach((l) => {
+        l.style.backgroundImage = `url('${s.src}')`
+        l.style.backgroundSize = `${s.cellW * 16}px 270px`
+      })
+    }
+    // 探测各条带实际尺寸（异步，完成后存格宽；typing 先就绪先显待机帧）
+    for (const key of Object.keys(SEQ_LIB)) {
+      const s = SEQ_LIB[key]
+      const probe = new Image()
+      probe.onload = () => {
+        s.ready = true
+        s.cellW = Math.round((probe.naturalWidth / 16) * (270 / probe.naturalHeight))
+        if (curSeq === key && !seqTimer) idleDefault()
       }
-      seqProbe.src = '../assets/moxi/typing-loop.webp'
-    } catch {}
+      probe.src = s.src
+    }
 
-    function startSeq() {
+    // 播放序列：loop=true 循环；from/to 限定播放段（打字主体 0-11 / 完成欢呼 12-15）；interval 每帧毫秒
+    function playSeq(name, opts = {}) {
+      const s = SEQ_LIB[name]
+      if (!s || !s.ready) return false
+      clearTimeout(seqTimer); seqTimer = null
+      curSeq = name
       actorEl.classList.add('seq')
-      const url = "url('../assets/moxi/typing-loop.webp')"
-      layers[0].style.backgroundImage = url
-      layers[1].style.backgroundImage = url
-      layers[0].style.backgroundSize = `${seqCellW * seqFrames}px 270px`
-      layers[1].style.backgroundSize = `${seqCellW * seqFrames}px 270px`
-      let f = 0
+      applySeqBg(s)
+      const from = opts.from || 0
+      const to = opts.to != null ? opts.to : 15
+      const gap = opts.interval || 160
+      let f = from
       const step = () => {
-        showFrame(f, seqCellW)
-        f = (f + 1) % seqFrames
-        seqTimer = setTimeout(step, 160) // ~6fps 序列循环
+        showFrame(f, s.cellW)
+        const next = f >= to ? from : f + 1
+        if (!opts.loop && next === from) {
+          seqTimer = null
+          actorEl.classList.remove('seq')
+          if (opts.onDone) opts.onDone()
+          return
+        }
+        f = next
+        seqTimer = setTimeout(step, gap)
       }
       step()
+      return true
     }
 
     function stopSeq() {
       clearTimeout(seqTimer)
       seqTimer = null
       actorEl.classList.remove('seq')
-      layers.forEach((l) => { l.style.backgroundImage = '' }) // 回退到 work-strip
-      curFrame = -1 // 格宽变了，强制下一帧重绘
+      curFrame = -1 // 条带可能切换，强制下一帧重绘
     }
 
     function startWork() {
       failStreak = 0
       clearTimeout(revertTimer)
-      if (workTimer || seqTimer) return
+      if (workTimer) return
+      if (seqTimer) stopSeq() // 从睡觉/摸头序列唤醒进工作
       actorEl.classList.add('working')
-      if (hasSeq) return startSeq()
-      const next = () => {
-        workFrame = WORK_ROTATE[Math.floor(Math.random() * WORK_ROTATE.length)]
-        showFrame(workFrame)
-      }
-      next()
-      const schedule = () => {
-        workTimer = setTimeout(() => { next(); schedule() }, 600 + Math.random() * 900)
-      }
-      schedule()
+      // 工作态：打字主体段（0-11）循环——12-15 是完成欢呼段，任务结束时才播
+      playSeq('typing', { loop: true, from: 0, to: 11 })
       armIdle()
     }
 
     function armIdle() {
       clearTimeout(idleTimer)
       idleTimer = setTimeout(() => {
+        if (curSeq === 'sleep') return // 已在深睡循环中：不打断重入睡（否则苏醒段被吞回入睡段）
         stopWork()
-        showFrame(FRAME.sleep)
         bubbleEl.classList.remove('show')
+        // 睡眠三段式（老大定的节奏）：入睡段(0-3)播一遍→深睡循环(4-7)→30s 后苏醒段(8-15)→普通待机
+        // 入睡段禁止 loop：playSeq 的 loop 模式永不触发 onDone → sleepDeep 进不去 → 入睡动作 220ms 无限重复=鬼畜
+        if (!playSeq('sleep', { from: 0, to: 3, interval: 220, onDone: () => sleepDeep() })) showFrame(FRAME.sleep)
       }, 90 * 1000)
     }
+
+    function sleepDeep() {
+      if (workTimer || seqTimer) return // 被任务/交互打断就不继续睡
+      playSeq('sleep', { loop: true, from: 4, to: 7, interval: 480 }) // 深睡 ZZZ 慢速循环
+      setTimeout(() => {
+        if (seqTimer && curSeq === 'sleep') {
+          // 深睡 30s → 苏醒一遍（8-15）→ 普通待机；再无响应则从头重新入睡
+          playSeq('sleep', { from: 8, to: 15, interval: 200, onDone: () => idleDefault() })
+        }
+      }, 30 * 1000)
+    }
+
+    // ===== 念叨语料（老大定调：桌宠=挂后台看完成度的东西，状态句带工具名，日常句短轮换）=====
+    const pick = (arr) => arr[Math.floor(Math.random() * arr.length)]
+    const SAY = {
+      received: ['收到。', '来了。', '在看。', '嗯，交给我。'],
+      done: ['完事了。', '干完了。', '搞定，看一眼吧。', '都弄好了。'],
+      fileArrived: ['文件到了。', '收到文件。']
+    }
+    // callId → 工具中文摘要（tool_call 时存，tool_result 拿来念"成功/失败：XXX"）
+    const callSummary = {}
 
     // ===== 事件 → 帧映射 =====
     const HANDLERS = {
       user_msg: () => {
-        stopWork()
+        stopWork() // 内部已回落待机帧
         showFrame(FRAME.typingStart)
-        bubble('收到。', 3000)
+        bubble(pick(SAY.received), 3000)
         clearTimeout(revertTimer)
         revertTimer = setTimeout(startWork, 1500) // 起手式亮 1.5s 进打字轮播
       },
@@ -219,31 +272,47 @@
       tool_call: (ev) => {
         if (ev.name === 'ask_user') return setFrame(FRAME.question, { bubble: '需要你拿主意。', hold: 30000, revert: false })
         if (ev.name === 'delegate') return setFrame(FRAME.star, { bubble: '分身干活。', hold: 3000 })
+        // 干活念叨：准备执行 XXX（classify 中文摘要）；desktop_* 的细粒度动作随后的 pet_action 同源覆盖
+        const s = String(ev.summary || '').slice(0, 60)
+        if (ev.callId && s) { callSummary[ev.callId] = s; if (Object.keys(callSummary).length > 200) Object.keys(callSummary).slice(0, 100).forEach((k) => delete callSummary[k]) }
+        if (s) bubble(`准备：${s}`, 2600)
         startWork()
       },
       tool_running: () => startWork(),
       tool_result: (ev) => {
+        const s = callSummary[ev.callId] || (ev.name === 'ask_user' || ev.name === 'task_plan' ? '' : String(ev.name || ''))
         if (ev.ok === false) {
           failStreak++
           setFrame(failStreak >= 2 ? FRAME.speechless : FRAME.stressed, {
-            bubble: failStreak >= 2 ? '……换个法子。' : '唔，报错了。',
+            bubble: failStreak >= 2 ? '……换个法子。' : (s ? `${s}，报错了。` : '唔，报错了。'),
             hold: 5000
           })
-        } else { failStreak = 0 }
+        } else {
+          failStreak = 0
+          // 成功也念（老大定调：执行成功 XXX 是看完成度的状态句）；task_plan/ask_user 不念避免刷屏
+          if (s) bubble(`成功：${s}`, 2200)
+        }
       },
       tool_parse_error: () => startWork(), // 自动重试中，仍是工作态
       run_done: (ev) => {
-        if (ev && ev.error) setFrame(FRAME.shout, { bubble: '没干完，抱歉。', hold: 6000 })
-        else setFrame(FRAME.love, { bubble: '完事了。', hold: 6000 })
+        if (ev && ev.error) { setFrame(FRAME.shout, { bubble: '没干完，抱歉。', hold: 6000 }); return }
+        // 任务完成：播完成欢呼段（12-15，慢速 350ms/帧）→ 回待机
+        stopWork()
+        bubble(pick(SAY.done), 6000)
+        if (!playSeq('typing', { from: 12, to: 15, interval: 350, onDone: () => idleDefault() })) setFrame(FRAME.love, { hold: 6000 })
+      },
+      pet_action: (ev) => {
+        // 工作过程实时动作（与控制遮罩同源）：气泡跟上节奏，不打断序列动画
+        if (ev && ev.text) bubble(ev.text, 2600)
       },
       media_done: (ev) => { if (ev && ev.ok) setFrame(FRAME.heart, { bubble: '好了。', hold: 5000 }) },
-      transfer_complete: (ev) => setFrame(FRAME.shock, { bubble: '文件到了。', hold: 5000 }),
+      transfer_complete: (ev) => setFrame(FRAME.shock, { bubble: pick(SAY.fileArrived), hold: 5000 }),
       error: () => setFrame(FRAME.stressed, { bubble: '出问题了。', hold: 5000 }),
       chat_cleared: () => setFrame(FRAME.typing, { bubble: '', hold: 1 })
     }
 
-    // 默认亮平静打字帧
-    showFrame(FRAME.typing)
+    // 默认亮帧：有序列素材=序列首帧（安静打字坐姿）
+    idleDefault()
 
     // 开机时段问候（莫西人设：记住习惯、熬夜关怀）
     try {
@@ -299,7 +368,8 @@
     // 单击/双击冲突解法：单击延迟 260ms 确认——期间来第二击=双击摸头（爱心帧），超时=开主界面
     let drag = null
     let clickTimer = null
-    document.addEventListener('mousedown', (e) => {
+    // 点击/拖拽起点绑在 actor 上：判定框=角色可视框（点窗口空白不响应，不再出现"框比角色大"）
+    actorEl.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return // 只处理左键：右键留给 context-menu，不相撞
       drag = { moved: false }
       document.body.classList.add('dragging')
@@ -307,7 +377,8 @@
     })
     document.addEventListener('mousemove', (e) => {
       if (!drag) return
-      if (Math.abs(e.movementX) + Math.abs(e.movementY) > 0) drag.moved = true
+      // 拖拽判定阈值 3px：鼠标微抖不算拖（否则双击摸头永不触发——两次按抬间手一抖就被当拖拽吞掉）
+      if (Math.abs(e.movementX) + Math.abs(e.movementY) > 3) drag.moved = true
       if (drag.moved && window.api && window.api.petDragMove) window.api.petDragMove(e.screenX, e.screenY)
     })
     document.addEventListener('mouseup', (e) => {
@@ -315,8 +386,10 @@
       if (!drag.moved) {
         if (clickTimer) {
           clearTimeout(clickTimer); clickTimer = null
-          // 双击：摸摸头——爱心帧 + 傲娇短反应
-          setFrame(FRAME.heart, { bubble: '……（耳朵抖了抖）', hold: 2600 })
+          // 双击：摸摸头——播摸头序列一轮（手出现→爱心享受→手离开），傲娇短反应
+          stopWork()
+          bubble('……（耳朵抖了抖）', 2600)
+          if (!playSeq('petting', { onDone: () => idleDefault() })) setFrame(FRAME.heart, { hold: 2600 })
         } else {
           clickTimer = setTimeout(() => {
             clickTimer = null
@@ -326,6 +399,21 @@
       }
       drag = null
       document.body.classList.remove('dragging')
+    })
+
+    // ===== 判定框穿透（老大定调：角色多大判定框就多大，气泡不算判定框，空白处点击穿透到桌面）=====
+    // 窗口默认全穿透（forward 模式仅转发 mousemove 供坐标判定），悬停角色框内才恢复接收事件——
+    // body.zoom 缩放后 getBoundingClientRect 即实际渲染框（大中小档位自动跟随）；拖拽中绝不穿透（否则丢 mousemove）
+    let mouseIgnore = true
+    function setIgnore(v) {
+      if (v === mouseIgnore) return
+      mouseIgnore = v
+      try { if (window.api && window.api.petMouseIgnore) window.api.petMouseIgnore(v) } catch {}
+    }
+    document.addEventListener('mousemove', (e) => {
+      if (drag) { setIgnore(false); return }
+      const r = actorEl.getBoundingClientRect()
+      setIgnore(!(e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom))
     })
   </script>
 </body>

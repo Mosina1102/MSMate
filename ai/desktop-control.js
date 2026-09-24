@@ -58,6 +58,9 @@ public static class MSDesk {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
   [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
+  public struct RECT { public int L; public int T; public int R; public int B; }
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT r);
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint nFlags);
   public static string Click(int x, int y, int btn, int clicks, int wheel) {
     if (x >= 0 && y >= 0) SetCursorPos(x, y);
     if (wheel != 0) {
@@ -68,11 +71,21 @@ public static class MSDesk {
     }
     uint df; uint uf;
     if (btn == 2) { df = RDOWN; uf = RUP; } else if (btn == 1) { df = MDOWN; uf = MUP; } else { df = LDOWN; uf = LUP; }
-    INPUT[] s = new INPUT[clicks * 2];
-    for (int i = 0; i < clicks; i++) {
-      s[i * 2].type = INPUT_MOUSE; s[i * 2].U.mi.dwFlags = df;
-      s[i * 2 + 1].type = INPUT_MOUSE; s[i * 2 + 1].U.mi.dwFlags = uf;
+    if (clicks == 2) {
+      // 双击：两次独立点击 + 60ms 间隔（贴近人手，必落在系统双击窗口 500ms 内；连发 4 个输入部分程序不认）
+      INPUT[] a = new INPUT[2];
+      a[0].type = INPUT_MOUSE; a[0].U.mi.dwFlags = df;
+      a[1].type = INPUT_MOUSE; a[1].U.mi.dwFlags = uf;
+      SendInput(2, a, Marshal.SizeOf(typeof(INPUT)));
+      System.Threading.Thread.Sleep(60);
+      INPUT[] b = new INPUT[2];
+      b[0].type = INPUT_MOUSE; b[0].U.mi.dwFlags = df;
+      b[1].type = INPUT_MOUSE; b[1].U.mi.dwFlags = uf;
+      SendInput(2, b, Marshal.SizeOf(typeof(INPUT)));
+      return "ok";
     }
+    INPUT[] s = new INPUT[clicks * 2];
+    for (int i = 0; i < clicks; i++) { s[i * 2].type = INPUT_MOUSE; s[i * 2].U.mi.dwFlags = df; s[i * 2 + 1].type = INPUT_MOUSE; s[i * 2 + 1].U.mi.dwFlags = uf; }
     SendInput((uint)s.Length, s, Marshal.SizeOf(typeof(INPUT)));
     return "ok";
   }
@@ -260,6 +273,89 @@ while ($true) {
         }
         $resp = @{ id = $id; ok = $true; els = $items }
       }
+      'uiainvoke' {
+        # UIA 后台操作（CUA 思路）：不抢鼠标不抢焦点，对名册控件直接 Invoke/SetValue/Toggle——用户办公零干扰
+        Add-Type -AssemblyName UIAutomationClient
+        Add-Type -AssemblyName UIAutomationTypes
+        $AE = [System.Windows.Automation.AutomationElement]
+        $target = $null
+        if ($cmd.pid) {
+          $p = Get-Process -Id ([int]$cmd.pid) -ErrorAction Stop
+          if ($p.MainWindowHandle -eq [IntPtr]::Zero) { throw '该进程没有主窗口' }
+          $target = $AE::FromHandle($p.MainWindowHandle)
+        } else {
+          $sig = 'using System; using System.Runtime.InteropServices; public static class FG2 { [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); }'
+          if (-not ('FG2' -as [type])) { Add-Type -TypeDefinition $sig }
+          $h = [FG2]::GetForegroundWindow()
+          if ($h -eq [IntPtr]::Zero) { throw '取前台窗口失败' }
+          $target = $AE::FromHandle($h)
+        }
+        # 名册序号定位：过滤规则与 uiatree 完全一致（IsEnabled + 尺寸 + filter），序号才对得上
+        $els = $target.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+        $n = [int]$cmd.n
+        $i = 0; $el = $null
+        $kw = if ($cmd.filter) { B64Dec $cmd.filter } else { '' }
+        foreach ($e in $els) {
+          if ($i -ge $n) { break }
+          try {
+            $c = $e.Current
+            if (-not $c.IsEnabled) { continue }
+            $r = $c.BoundingRectangle
+            if ($r.Width -le 1 -or $r.Height -le 1) { continue }
+            $nm = $c.Name
+            if ($kw -and $nm -and ($nm.IndexOf($kw, [System.StringComparison]::OrdinalIgnoreCase) -lt 0)) { continue }
+            $i++
+            if ($i -eq $n) { $el = $e; break }
+          } catch {}
+        }
+        if (-not $el) { throw "名册序号 #$n 定位失败（界面可能已变化，重新 desktop_uia 刷新名册）" }
+        $action = B64Dec $cmd.action
+        try {
+          switch ($action) {
+            'invoke'   { ($el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)).Invoke() }
+            'toggle'   { ($el.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)).Toggle() }
+            'expand'   { ($el.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)).Expand() }
+            'setValue' { ($el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)).SetValue((B64Dec $cmd.value)) }
+            'select'   { ($el.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)).Select() }
+            default    { throw "未知 action: $action（invoke/setValue/toggle/expand/select）" }
+          }
+        } catch {
+          throw "控件不支持 $action（对照名册 p 列的 patterns 选别的 action，或降级 desktop_click）"
+        }
+        Start-Sleep -Milliseconds 150   # 状态落定后回读验证
+        $c2 = $el.Current
+        $val = ''
+        try { $val = ($el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)).Current.Value } catch {}
+        $resp = @{ id = $id; ok = $true; nm = (B64Enc $c2.Name); ty = (B64Enc $c2.LocalizedControlType); val = (B64Enc $val) }
+      }
+      'winshot' {
+        # 窗口级截图（CUA 思路）：PrintWindow 抓窗口自身表面——被遮挡也截得到；DirectComposition 渲染的
+        # 窗口（UWP/WinUI/Chromium）PrintWindow 输出全黑，检测后返回 rect 由 JS 降级全屏裁剪
+        Add-Type -AssemblyName System.Drawing
+        $p = Get-Process -Id ([int]$cmd.pid) -ErrorAction Stop
+        if ($p.MainWindowHandle -eq [IntPtr]::Zero) { throw '该进程没有主窗口' }
+        $hwnd = $p.MainWindowHandle
+        $r = New-Object MSDesk+RECT
+        [void][MSDesk]::GetWindowRect($hwnd, [ref]$r)
+        $w = $r.R - $r.L; $h = $r.B - $r.T
+        if ($w -le 0 -or $h -le 0) { throw '窗口尺寸无效' }
+        $bmp = New-Object System.Drawing.Bitmap($w, $h)
+        $g = [System.Drawing.Graphics]::FromImage($bmp)
+        $hdc = $g.GetHdc()
+        $ok = [MSDesk]::PrintWindow($hwnd, $hdc, 2)   # 2 = PW_RENDERFULLCONTENT（部分 Win32 需要才不缺内容）
+        $g.ReleaseHdc($hdc); $g.Dispose()
+        if (-not $ok) { $bmp.Dispose(); throw 'PrintWindow 失败（该窗口拒绝被抓取）' }
+        $dark = 0; $total = 0
+        for ($sx = 8; $sx -lt $w; $sx += 48) { for ($sy = 8; $sy -lt $h; $sy += 48) { $c = $bmp.GetPixel($sx, $sy); $total++; if ($c.R -lt 6 -and $c.G -lt 6 -and $c.B -lt 6) { $dark++ } } }
+        if ($total -gt 0 -and (($dark / $total) -gt 0.96)) {
+          $bmp.Dispose()
+          $resp = @{ id = $id; ok = $true; black = $true; x = $r.L; y = $r.T; w = $w; h = $h }
+        } else {
+          $bmp.Save((B64Dec $cmd.path), [System.Drawing.Imaging.ImageFormat]::Png)
+          $bmp.Dispose()
+          $resp = @{ id = $id; ok = $true; saved = $true }
+        }
+      }
       default { $resp = @{ id = $id; ok = $false; err = (B64Enc "unknown op: $op") } }
     }
   } catch {
@@ -269,7 +365,7 @@ while ($true) {
 }
 `
 
-const BOOT_VER = 'msdesk-v5' // 改引导脚本必升版本：旧文件靠 includes 判定不重写（v5：拖拽/横向滚轮/修饰键按住点击）
+const BOOT_VER = 'msdesk-v7' // 改引导脚本必升版本：旧文件靠 includes 判定不重写（v7：UIA 后台操作 uiainvoke + 窗口级截图 winshot，CUA 思路）
 
 class DesktopControl {
   constructor(log) {
@@ -486,6 +582,30 @@ class DesktopControl {
     if (!r.ok) return { ok: false, error: b64dec(r.err) || '控件树读取失败' }
     const els = (r.els || []).map((e) => ({ n: e.n, type: b64dec(e.t), name: b64dec(e.nm), x: e.x, y: e.y, w: e.w, h: e.h, patterns: e.p }))
     return { ok: true, elements: els }
+  }
+
+  // UIA 后台操作（零干扰）：不碰真实鼠标键盘、不抢焦点，用户办公时也能操作目标窗口。
+  // 故意不做用户占用检测（_checkUserBusy）——后台通道的价值就是"用户在用电脑也照常干活"
+  async uiaInvoke({ pid, n, action = 'invoke', value = '', filter = '' } = {}) {
+    const idx = Number(n)
+    if (!Number.isInteger(idx) || idx <= 0) return { ok: false, error: 'n 为名册序号（desktop_uia 结果里的 #n）' }
+    const act = String(action || 'invoke').trim().toLowerCase()
+    if (!['invoke', 'setvalue', 'toggle', 'expand', 'select'].includes(act)) return { ok: false, error: `未知 action: ${act}（invoke/setValue/toggle/expand/select）` }
+    if (act === 'setvalue' && value === '') return { ok: false, error: 'setValue 需要 value（要填入的文本）' }
+    const r = await this._run('uiainvoke', { pid: Number(pid) || 0, n: idx, action: b64(act), value: b64(String(value || '')), filter: filter ? b64(String(filter)) : '' }, 15000)
+    if (!r.ok) return { ok: false, error: b64dec(r.err) || '后台操作失败' }
+    return { ok: true, name: b64dec(r.nm), type: b64dec(r.ty), value: b64dec(r.val) }
+  }
+
+  // 窗口级截图：PrintWindow 抓窗口自身表面（被遮挡也截得到）；black=true 表示 DirectComposition
+  // 渲染窗口输出全黑，调用方降级全屏截图裁剪（附窗口 rect）
+  async windowShot(pid, savePath) {
+    if (!Number.isInteger(Number(pid)) || Number(pid) <= 0) return { ok: false, error: 'pid 非法' }
+    if (!savePath) return { ok: false, error: '缺少保存路径' }
+    const r = await this._run('winshot', { pid: Number(pid), path: b64(String(savePath)) }, 15000)
+    if (!r.ok) return { ok: false, error: b64dec(r.err) || '窗口截图失败' }
+    if (r.black) return { ok: true, black: true, x: r.x, y: r.y, w: r.w, h: r.h }
+    return { ok: true, path: savePath }
   }
 
   kill() {

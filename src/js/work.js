@@ -186,6 +186,8 @@ function initWorkMode() {
       if (genRefImages.length && parseInt(genBatch, 10) > 1) showToast(`参考图编辑将连续生成 ${genBatch} 张变体（逐张生成，稍慢）`, 'info')
     }
     if (!full) return
+    // 会话自动取名：发送侧直接命名（不依赖事件回环——此前靠 user_msg 事件+豁免名单比对从未生效）
+    try { autoTitleSession(work.active, full) } catch {}
     chatInput.value = ''
     fitChatInput()
     chatRefList.length = 0
@@ -887,13 +889,18 @@ function sessionMeta(sid) {
 }
 
 async function autoTitleSession(sid, text) {
+  // 剥掉引用协议再截断（存档实锤"参考这个写论文。[引用文件: "难看）
+  const t = String(text || '').replace(/\[引用文件:[^\]]*\]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 20)
   const meta = sessionMeta(sid)
   if (!meta) return
-  const t = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 20)
-  // 默认名（主进程建会话时是"新对话"，历史上还有"新会话"）都不算已命名，首条消息来了就自动取名
-  if (!t || ['', '新会话', '新对话', '未命名会话'].includes(meta.title)) return
+  // 只给默认名（主进程建会话是"新对话"，历史还有"新会话"/"未命名会话"）的会话自动取名；
+  // 已命名的（用户手动改过/已自动取过）不覆盖。
+  // ⚠ 真凶史：v2.8.7"豁免对齐"把方向写反（includes→return），默认名会话反而直接 return——9/8 起全部卡死"新对话"，
+  // 探针实锤（入口行后无任何后续）。2026-09-24 修正方向：不在默认名单里才 return。
+  if (!t || !['', '新会话', '新对话', '未命名会话'].includes(meta.title)) return
   meta.title = t
-  try { await _api.aiSessionRename(sid, t) } catch {}
+  try { await _api.aiSessionRename(sid, t) } catch (e) { console.error('[auto-title] rename ERROR:', (e && (e.stack || e.message)) || e) }
+  console.error('[auto-title] renamed:', t)
   renderSessionBar()
 }
 

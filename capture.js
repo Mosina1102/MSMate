@@ -164,8 +164,16 @@ function createCaptureManager({ getMainWindow, workspaceDir, log, isDev, appendC
       })
       overlayWin.setAlwaysOnTop(true, 'screen-saver')
       overlayWin.loadFile(path.join(__dirname, 'src', 'control-overlay.html'))
-      overlayWin.once('ready-to-show', () => { if (overlayWin && !overlayWin.isDestroyed()) overlayWin.showInactive() })
+      // 显式设置鼠标穿透（老大实锤构造参数在部分环境不生效→用户什么都点不动）：forward 让系统继续派发鼠标移动供动态判断
+      try { overlayWin.setIgnoreMouseEvents(true, { forward: true }) } catch {}
+      overlayWin.once('ready-to-show', () => {
+        if (overlayWin && !overlayWin.isDestroyed()) {
+          try { overlayWin.setIgnoreMouseEvents(true, { forward: true }) } catch {}
+          overlayWin.showInactive()
+        }
+      })
     } else {
+      try { overlayWin.setIgnoreMouseEvents(true, { forward: true }) } catch {}
       overlayWin.showInactive()
     }
     armOverlayIdle()
@@ -211,6 +219,11 @@ function createCaptureManager({ getMainWindow, workspaceDir, log, isDev, appendC
   // 截图前临时隐藏：遮罩会污染 AI 的视觉定位（view_image 要看真实界面），截完恢复
   function hideOverlayForShot() { if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null }; if (overlayWin && !overlayWin.isDestroyed()) overlayWin.hide() }
   function restoreOverlayAfterShot() { if (overlayWin && !overlayWin.isDestroyed()) { overlayWin.showInactive(); armOverlayIdle() } }
+  // 实时进度：把当前动作推到遮罩底部动作行（executeJavaScript 直改 DOM——遮罩页无 preload，最轻路径）
+  function updateOverlayAction(text) {
+    if (!overlayWin || overlayWin.isDestroyed()) return
+    try { overlayWin.webContents.executeJavaScript(`setAction(${JSON.stringify(String(text || ''))})`, true).catch(() => {}) } catch {}
+  }
   function emergencyStop() {
     controlAborted = true
     hideControlOverlay()
@@ -226,6 +239,8 @@ function createCaptureManager({ getMainWindow, workspaceDir, log, isDev, appendC
       restoreAfterShot: restoreOverlayAfterShot,
       isAborted: () => controlAborted,
       isControlActive: () => !!(overlayWin && !overlayWin.isDestroyed()), // 窗口存在即活跃（创建中/hide 避让中都算，防序列中误判非控制）
+      updateOverlayAction,
+      forceCollapse: hideControlOverlay, // 任务结束主动收遮罩+还原主窗（不再等 30s idle）
       minimizeMainForAI,
       restoreMainForAI
     }

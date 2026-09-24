@@ -70,18 +70,18 @@ style: soft               ← 可选，风格 sharp/soft/rounded/pill，默认 s
 
 **params**: path(pptx完整路径), target(可选)
 
-**desc**: 逐页读取 PPT 文字内容，按【第X页】分页列出。用户给了一份 PPT 要改/要总结/要提问，先 read_pptx 看内容再动手；改完用 read_pptx 复查。
+**desc**: 逐页读取 PPT，按【第X页】分页列出（**页序按真实页序**，调过序的文件也读对），每页标题行带结构计数（如"（2图 3形状）"）——改前先看每页有什么。用户给了一份 PPT 要改/要总结/要提问，先 read_pptx 看内容再动手；改完用 read_pptx 复查。
 
 ### edit_pptx
 
-**params**: path(pptx完整路径), replacements([{find:"旧文字", replace:"新文字", all?}]), target(可选)
+**params**: path(pptx完整路径), replacements([{find:"旧文字", replace:"新文字", all?}]) 改文字, actions([{op:"deleteSlide",page:3},{op:"moveSlide",page:2,to:1},{op:"insertSlide",page:1,title:"新页标题",body:"正文\\n多行"}]) 页级删页/调序/加页, target(可选)
 
-**desc**: 精准替换已有 PPT 的文字（自动备份）。适合改错别字、换标题、改几处数据；跨样式碎 run 的句子也能匹配。**只改文字不动版式**——要改配色/版式/页数就 read_pptx 拿到内容后用 create_pptx 重做，别用替换硬凑。
+**desc**: 三种操作可并列：**replacements** 精准替换文字（自动备份，跨样式碎 run 的句子也能匹配，只改文字不动版式）；**actions** 页级操作——deleteSlide 删第 N 页、moveSlide 把第 N 页移到第 to 位、insertSlide 加新页（page=插到第 N 页后，标题+正文占位版式，body 支持多行）。适合改数据/删多余页/调页序/补一页。**要改配色/版式**就 read_pptx 拿到内容后用 create_pptx 重做，别用替换硬凑。
 
 ## 标准工作流
 
 1. **从零做 PPT**：问清场合/页数/主题 → 选 theme+style → 写大纲（封面+目录+每章过渡页+内容页+总结页）→ create_pptx → open_path 交付
-2. **改现有 PPT**：read_pptx 看全文 → 改几处文字用 edit_pptx；改版式/配色 → 内容提炼成大纲 create_pptx 重做
+2. **改现有 PPT**：read_pptx 看全文（注意每页结构计数）→ 改文字/删页/调序/加页用 edit_pptx；改版式/配色 → 内容提炼成大纲 create_pptx 重做
 3. **PPT 里配图**：generate_image 或找本机图片 → 大纲里 `![说明](图片路径)` → 自动右侧混排
 
 ## 踩坑经验
@@ -92,3 +92,5 @@ style: soft               ← 可选，风格 sharp/soft/rounded/pill，默认 s
 4. 目录条目会自动补 01/02 编号，大纲里不用手写；章节页同理自动编号
 5. 表格列宽按内容自动分配，窄列数据长会挤——表头写短词（"渠道"不是"渠道名称分类"）
 6. 图片必须本机真实存在路径，远程图片先 transfer_file/下载到本机再引用；图片加载失败不挡生成但页上无图
+
+> 组合提示：本册工具的跨册搭配、选路推导与反模式见「工具组合.md」——多步/复合任务开工前值得读一眼。

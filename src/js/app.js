@@ -880,6 +880,7 @@ function getPreviewKind(name) {
   if (['mp3', 'wav', 'ogg', 'm4a', 'flac'].includes(ext)) return 'audio'
   if (ext === 'pdf') return 'pdf'
   if (ext === 'docx') return 'docx'
+  if (ext === 'pptx') return 'pptx'
   if (ext === 'xlsx' || ext === 'xlsm') return 'xlsx'
   if (['htm', 'html', 'mht', 'mhtml'].includes(ext)) return 'html'
   if (['txt', 'md', 'markdown', 'json', 'js', 'ts', 'jsx', 'tsx', 'css', 'less', 'scss', 'vue',

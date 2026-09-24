@@ -480,6 +480,8 @@ function initServices() {
         desktop: desktopCtl,
         browserCtl,
         controlOverlay: captureMgr.controlOverlay,
+        // 桌面控制动作 → 桌宠气泡（莫西干活念叨，直连 petMgr 不走 per-session 的 send）
+        petAction: (text) => { if (petMgr) petMgr.petBroadcast({ type: 'pet_action', text }) },
         // 下载进度 → 聊天框顶部进度条（渲染层）
         onDownloadProgress: (info) => {
           if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('ai:download-progress', info)
@@ -507,6 +509,8 @@ function initServices() {
           send: (event) => {
             if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('ai:event', { ...event, sessionId })
             if (petMgr) petMgr.petBroadcast(event) // 桌宠情绪状态机同源吃事件
+            // 任务结束主动收控制遮罩+还原被 AI 最小化的主窗（否则要等 30s idle 才还，用户以为"不恢复"）
+            if (event.type === 'run_done' && captureMgr) captureMgr.controlOverlay.forceCollapse()
           },
           // 回滚落盘后 → 工作台页签自动刷新（真实回退的最后一环，界面不残留旧内容）
           onFileChanged: (p) => {
@@ -541,6 +545,7 @@ function initServices() {
       })
       ipcMain.on('pet:drag-start', (_e, p) => { if (petMgr) petMgr.dragStart(p.screenX, p.screenY) })
       ipcMain.on('pet:drag-move', (_e, p) => { if (petMgr) petMgr.dragMove(p.screenX, p.screenY) })
+      ipcMain.on('pet:mouse-ignore', (_e, p) => { if (petMgr) petMgr.setMouseIgnore(p && p.ignore) })
       ipcMain.on('pet:click', () => { if (mainWindow) { mainWindow.show(); mainWindow.focus() } })
       // 拖文件给莫西：注入默认会话的 WorkAgent 自动阅读理解，结果进主界面 Work 会话
       ipcMain.on('pet:file-drop', (_e, p) => {
@@ -3306,8 +3311,11 @@ function registerAIIPC() {
     return sessionStore.create(title)
   })
   ipcMain.handle('ai:session-rename', async (event, { id, title }) => {
+    log('[session-rename] in id=' + id + ' title=' + title + ' store=' + !!sessionStore)
     if (!sessionStore) return null
-    return sessionStore.rename(id, title)
+    const r = sessionStore.rename(id, title)
+    log('[session-rename] done -> ' + (r ? r.title : 'null'))
+    return r
   })
   ipcMain.handle('ai:session-pin', async (event, { id, pinned }) => {
     if (!sessionStore) return null

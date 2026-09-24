@@ -530,6 +530,11 @@ async function openPreview(item, opts) {
     return
   }
 
+  if (kind === 'pptx') {
+    mountWbPptxPreview(item) // pptx 内置预览：页签内直接渲染，不再丢给系统程序
+    return
+  }
+
   const url = fileToUrl(item.path)
   if (kind === 'html') {
     mountWbHtmlDual(item) // html 双模式：渲染预览（默认）⇄ 编辑源码，改完刷新即看效果（Trae 式）
@@ -651,6 +656,75 @@ async function mountWbHtmlDual(item) {
   body.querySelector('#whm-preview').addEventListener('click', () => showPreview())
   body.querySelector('#whm-edit').addEventListener('click', showEdit)
   if (mode === 'edit') await showEdit(); else showPreview()
+}
+
+// pptx 内置预览（pptx-preview UMD 渲染，探针 test/pptx-preview-probe.js 锁死兼容性）：
+// 读文件走 _api.docxBuffer（通用二进制 base64 通道，20MB 上限），base64→ArrayBuffer 交给库渲染。
+// 兼容坑：office.js 产物（pptxgenjs）的 [Content_Types].xml 会声明幽灵 master Override（文件不存在），
+// pptx-preview 逐个读取时炸在缺失文件上被 try/catch 静默吞掉 → 0 页。首渲染 0 页时用 vendor 的 JSZip
+// 剔除指向缺失文件的 Override 重打包再试一次（标准 PowerPoint/WPS 文件不走修复，零开销）
+async function _wbPptxRepair(buf) {
+  if (typeof JSZip === 'undefined') return null
+  const zip = await JSZip.loadAsync(buf)
+  const f = zip.file('[Content_Types].xml')
+  if (!f) return null
+  let ct = await f.async('string')
+  let removed = 0
+  ct = ct.replace(/<Override PartName="([^"]+)"[^>]*\/>/g, (m, part) => {
+    const ent = zip.files[part.replace(/^\//, '')]
+    if (!ent || ent.dir) { removed++; return '' }
+    return m
+  })
+  if (!removed) return null
+  zip.file('[Content_Types].xml', ct)
+  return zip.generateAsync({ type: 'arraybuffer' })
+}
+
+async function mountWbPptxPreview(item) {
+  const key = wbKey(item)
+  const body = $('wbViewBody')
+  body.innerHTML = `
+    <div class="wb-view-content" style="height:100%;display:flex;flex-direction:column;">
+      <div class="wb-pptx-host" style="flex:1;min-height:0;overflow:auto;background:#fff;"></div>
+    </div>`
+  const host = body.querySelector('.wb-pptx-host')
+  if (typeof pptxPreview === 'undefined') {
+    host.innerHTML = `<div class="pv-fallback"><div>渲染组件未加载</div><div class="wb-view-meta">点上方「系统打开」用默认程序查看</div></div>`
+    return
+  }
+  const bufResp = await _api.docxBuffer(item.path).catch(() => null)
+  if (wbRenderedKey !== key) return // 已切到别的页签/文件，丢弃本次渲染（同 text 分支守卫）
+  if (!bufResp || !bufResp.base64) {
+    const msg = (bufResp && (bufResp.error || bufResp.message)) || '读取失败'
+    host.innerHTML = `<div class="pv-fallback"><div>${escapeHtml(msg)}</div><div class="wb-view-meta">点上方「系统打开」用默认程序查看</div></div>`
+    if (bufResp && bufResp.tooBig) _api.openFile(item.path).catch(() => {}) // 超 20MB：系统打开兜底
+    return
+  }
+  try {
+    const bin = atob(bufResp.base64)
+    const bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    let buf = bytes.buffer
+    const w = Math.max(host.clientWidth || 960, 320)
+    let pv = pptxPreview.init(host, { width: w, height: Math.round(w * 9 / 16) })
+    await pv.preview(buf)
+    if (pv.slideCount === 0) {
+      const fixed = await _wbPptxRepair(buf)
+      if (fixed) {
+        buf = fixed
+        pv.destroy()
+        host.innerHTML = ''
+        pv = pptxPreview.init(host, { width: w, height: Math.round(w * 9 / 16) })
+        await pv.preview(buf)
+      }
+    }
+    if (pv.slideCount === 0) {
+      host.innerHTML = `<div class="pv-fallback"><div>未能解析出演示页</div><div class="wb-view-meta">点上方「系统打开」用默认程序查看</div></div>`
+    }
+  } catch (err) {
+    if (wbRenderedKey !== key) return
+    host.innerHTML = `<div class="pv-fallback"><div>预览失败：${escapeHtml(err.message)}</div><div class="wb-view-meta">点上方「系统打开」用默认程序查看</div></div>`
+  }
 }
 
 // 图片查看翻页（v2.4.73，老大要求"方便用户"）：同目录图片按名称排序，左右箭头/键盘 ←→ 切换，

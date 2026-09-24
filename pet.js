@@ -5,8 +5,8 @@
 const path = require('path')
 const { app, BrowserWindow, Menu, screen } = require('electron')
 
-const PET_W = 280
-const PET_H = 360
+const PET_W = 292
+const PET_H = 330
 // 尺寸档位（比例 × 基准 280x360）：settings.petScale 持久化；
 // 渲染层用 body.style.zoom 整体等比缩放——精灵图 background-size 写死定律不动
 const PET_SCALES = [
@@ -58,6 +58,9 @@ function createPetManager({ getSetting, setSetting, log, isDev, showMainWindow, 
       }
     })
     petWin.setAlwaysOnTop(true, 'screen-saver')
+    // 默认全窗鼠标穿透（forward 模式仅转发 mousemove 供渲染层坐标判定）：
+    // 判定框=角色可视框（老大定调），悬停角色框内渲染层才回调恢复接收；空白处点击/右键穿透直达桌面
+    try { petWin.setIgnoreMouseEvents(true, { forward: true }) } catch {}
     petWin.loadFile(htmlPath)
     petWin.once('ready-to-show', () => {
       log('pet: ready-to-show 触发')
@@ -147,6 +150,13 @@ function createPetManager({ getSetting, setSetting, log, isDev, showMainWindow, 
     }
   }
 
+  // 判定框穿透开关（渲染层按鼠标是否落在角色框内回调）：true=穿透（空白处），false=接收事件（角色上）
+  function setMouseIgnore(ignore) {
+    if (petWin && !petWin.isDestroyed()) {
+      try { petWin.setIgnoreMouseEvents(!!ignore, { forward: true }) } catch {}
+    }
+  }
+
   // 拖拽：mousedown 记录"光标-窗口"偏移，mousemove 光标坐标减偏移即窗口位置（贴边收敛防拖丢）
   function dragStart(sx, sy) {
     if (!petWin || petWin.isDestroyed()) return
@@ -164,7 +174,7 @@ function createPetManager({ getSetting, setSetting, log, isDev, showMainWindow, 
     petWin.setPosition(x, y)
   }
 
-  return { createPetWindow, showPet, hidePet, destroyPet, setPetEnabled, isPetEnabled, petBroadcast, dragStart, dragMove, setPetScale, petScale, PET_W, PET_H }
+  return { createPetWindow, showPet, hidePet, destroyPet, setPetEnabled, isPetEnabled, petBroadcast, dragStart, dragMove, setMouseIgnore, setPetScale, petScale, PET_W, PET_H }
 }
 
 module.exports = { createPetManager }

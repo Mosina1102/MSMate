@@ -16,6 +16,15 @@
   .txt { color: #ece9ff; font-size: 15px; font-weight: 600; letter-spacing: 0.5px;
          font-family: "Microsoft YaHei", sans-serif; white-space: nowrap; }
   .key { color: #c9c2ff; font-size: 12.5px; font-family: "Microsoft YaHei", sans-serif; white-space: nowrap; }
+  #actwrap { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%);
+             max-width: 72vw; padding: 7px 18px; opacity: 0; transition: opacity 0.25s;
+             background: rgba(20, 16, 40, 0.72); border: 1px solid rgba(139, 110, 230, 0.35);
+             border-radius: 999px; display: flex; align-items: center; gap: 9px; }
+  #actspin { width: 11px; height: 11px; border: 2px solid rgba(167,139,250,0.3); border-top-color: #a78bfa;
+             border-radius: 50%; animation: spin 0.9s linear infinite; flex: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #act { color: #d9d4ff; font-size: 13px; font-family: "Microsoft YaHei", sans-serif;
+         white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 </style>
 </head>
 <body>
@@ -25,5 +34,17 @@
   <span class="txt">Mate 正在控制电脑 · 请勿操作鼠标键盘</span>
   <span class="key">按 Ctrl+Shift+X 紧急停止</span>
 </div>
+<div id="actwrap">
+  <span id="actspin"></span>
+  <span id="act"></span>
+</div>
+<script>
+  // 主进程通过 executeJavaScript 调 setAction 推当前动作（desktop_* 每步实时更新）
+  function setAction(t) {
+    const wrap = document.getElementById('actwrap')
+    document.getElementById('act').textContent = t || ''
+    wrap.style.opacity = t ? '1' : '0'
+  }
+</script>
 </body>
 </html>

@@ -347,6 +347,7 @@ try {
     },
     petDragStart: (screenX, screenY) => ipcRenderer.send('pet:drag-start', { screenX, screenY }),
     petDragMove: (screenX, screenY) => ipcRenderer.send('pet:drag-move', { screenX, screenY }),
+    petMouseIgnore: (ignore) => ipcRenderer.send('pet:mouse-ignore', { ignore: !!ignore }),
     petClick: () => ipcRenderer.send('pet:click'),
     petFileDrop: (paths) => ipcRenderer.send('pet:file-drop', { paths }),
     petGetEnabled: () => ipcRenderer.invoke('pet:get-enabled'),
