@@ -68,6 +68,20 @@ MSMate 是装在你 Windows 电脑上的一个软件。它最特别的地方：*
 2. 邮箱注册登录（密码全程加密传输）
 3. 直接说人话交代任务——**内置模型开箱即用，不用配置任何东西**；懂行的也可以填自己的 API Key，走自己额度零抽成
 
+## 它是怎么实现的（给开发者）
+
+代码全在仓库里，这里把几条主干亮出来，每条都对应真实文件：
+
+- **AI 主循环**（`ai/agent.js`）：`classifyAutoTask` 四档判定（闲聊/常规/代码/复杂）→ `AUTO_MAINS` 映射模型（规划用旗舰、执行用便宜 MoE，"高规低干"）→ 上下文用到 80% 自动压缩成交接摘要，被压缩的原文进召回库（`ai/chat-recall.js`，语义向量+关键词双轨检索）——长任务不丢记忆，想找回随时搜
+- **工具注册表**（`ai/tools.js`）：92 个工具统一在 `TOOL_DEFS` 定义，`name/params/desc/manual` 四件套——`manual` 字段直连 `ai/manuals/` 的深度手册，工具怎么用，AI 按需自己读（25 册，带防循环读判重）
+- **安全三闸**（`ai/snapshots.js` + `tools.js`）：删除/覆盖前自动快照（`backupLocal` 写 `meta.json`，`restore` 一键还原，恢复前当前内容也再备份一层）；`structDocWriteBlock` 守卫拦住 `write_file` 直接毁掉 office 文件的 zip 结构；`classify` 分级标记 `destructive/forceApproval`，危险操作必弹审批卡片
+- **论文流水线**（`ai/office.js`）：`read_paper_spec` 把学校模板蒸馏成格式规范书 → `apply_word_template` 嫁接内容 → `check_paper_format` 逐项体检产出 issue 清单 → `fix_paper_paging` 修分页——"套模板后必验"是硬关卡，不交付坏件
+- **互传协议栈**（`server/`）：UDP 子网定向广播自动发现（`udpDiscovery.js`）→ TCPAgent 粘包解析 + 文件传输状态机六事件（`tcpAgent.js`）→ 互联网桥接走 TLS + 自签证书 TOFU 指纹校验（`netRelay.js`）→ IPv6 邀请串 `MS6.base64url`（`ipv6Invite.js`）——四条通道独立实现，不依赖第三方传输库
+- **桌面控制**（`ai/desktop-control.js`）：常驻 PowerShell 子进程 + stdin/stdout JSON 协议，`user32.dll` 直调 `SetCursorPos`/`SendInput`，进程崩溃自动重启——后台操作不抢鼠标键盘
+- **质量门**：`test/` 探针逐功能断言 + 冒烟全量回归，1350+ 项断言全绿才发版
+
+外加几个较真的细节：账号池密码走 Electron safeStorage/DPAPI 加密、拒绝明文落盘；网页抓取遇到反爬不硬闯——等 `cf_clearance` 自动过；模拟打字每 120 字符分批防丢字；数据同步白名单过滤防路径穿越。
+
 ## 诚实的边界
 
 不藏着，这些它现在做不到：
